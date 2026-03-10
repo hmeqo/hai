@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                COUNT(*)::INT as \"message_count!\",\n                COALESCE(SUM(token_count), 0)::INT as \"token_count!\"\n            FROM message\n            WHERE topic_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_count!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "token_count!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "4e9ead1cfca95717d263348083d24ec2e4fd16d3872a807026df5c7d2c109d9e"
+}

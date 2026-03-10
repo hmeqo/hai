@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE topic SET last_active_at = GREATEST(last_active_at, $1) WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a1a2a80f1ec44d75bb72c9a2959088f406787c0bdf2ab149fac3975f5ed1567"
+}

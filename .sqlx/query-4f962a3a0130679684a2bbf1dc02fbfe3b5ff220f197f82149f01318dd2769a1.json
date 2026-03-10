@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE message SET interaction_status = 'seen' WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f962a3a0130679684a2bbf1dc02fbfe3b5ff220f197f82149f01318dd2769a1"
+}

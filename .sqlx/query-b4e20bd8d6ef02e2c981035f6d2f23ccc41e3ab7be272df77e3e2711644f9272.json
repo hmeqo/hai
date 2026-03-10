@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, identity_id as \"identity_id: Uuid\", platform, external_id, meta,\n                last_active_at as \"last_active_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM account\n            WHERE platform = $1 AND external_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "identity_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "platform",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "external_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "meta",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_active_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b4e20bd8d6ef02e2c981035f6d2f23ccc41e3ab7be272df77e3e2711644f9272"
+}

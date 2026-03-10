@@ -1,0 +1,17 @@
+[database]
+url = "postgres://postgres:@localhost/hai"
+
+[agent]
+api-key = "API_KEY"
+default-model = "google/gemini-3-flash-preview"
+reasoning = true
+reasoning-effort = "low"
+
+[telegram]
+bot-token = "BOT_TOKEN"
+allowed-chat-ids = []
+
+[mcp.tavily]
+command = "pnpx"
+args = ["tavily-mcp@latest"]
+env.TAVILY_API_KEY = "API_KEY"

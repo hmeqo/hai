@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE message SET topic_id = $1, interaction_status = 'replied' WHERE id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eee7322eddf47a8b80a5353d9bf3552bf4727fb77c727216df11961f612f093e"
+}

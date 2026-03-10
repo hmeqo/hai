@@ -1,0 +1,43 @@
+[package]
+name = "hai"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "hai"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+config = { workspace = true }
+dotenvy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+autoagents = { workspace = true }
+autoagents-derive = { workspace = true }
+autoagents-toolkit = { workspace = true }
+teloxide = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-serde = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+mime = { workspace = true }
+arc-swap = { workspace = true }
+derive_more = { workspace = true }
+tap = { workspace = true }
+jiff = { workspace = true }
+sqlx = { workspace = true }
+pgvector = { workspace = true }
+uuid = { workspace = true }
+jiff-sqlx = { workspace = true }
+strum = { workspace = true }
+tiktoken-rs = { workspace = true }
+struct-patch = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }

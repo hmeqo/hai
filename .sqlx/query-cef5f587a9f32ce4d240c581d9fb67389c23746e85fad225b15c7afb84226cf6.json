@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE topic\n            SET started_at = (SELECT MIN(sent_at) FROM message WHERE topic_id = $1),\n                last_active_at = (SELECT MAX(sent_at) FROM message WHERE topic_id = $1)\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cef5f587a9f32ce4d240c581d9fb67389c23746e85fad225b15c7afb84226cf6"
+}
