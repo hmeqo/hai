@@ -4,7 +4,6 @@ pub struct PathResolver;
 
 impl PathResolver {
     /// 解析配置文件路径（支持多路径回退）
-    /// 优先级：XDG_CONFIG_HOME/hai/config.toml > .hai/config.toml
     pub fn config_file() -> PathBuf {
         let local = PathBuf::from(".hai/config.toml");
 

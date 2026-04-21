@@ -78,7 +78,11 @@ pub fn conversation_element(messages: &[&Message], ctx: &RenderContext) -> Rende
         root.push_child(reply_section);
     }
 
-    root.push_child(section("history").add_children(messages_elements(&history, ctx)));
+    root.push_child(
+        section("history")
+            .with_attr("limit", history.len() as i64)
+            .add_children(messages_elements(&history, ctx)),
+    );
 
     if !unread.is_empty() {
         root.push_child(section("unread").add_children(messages_elements(&unread, ctx)));

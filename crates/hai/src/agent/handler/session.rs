@@ -16,7 +16,7 @@ pub fn spawn_chat_session(
     chat_id: i64,
 ) -> mpsc::UnboundedSender<AgentEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let debounce_min = Duration::from_millis(handler.config.agent.debounce_ms);
+    let debounce_min = Duration::from_millis(handler.config.agent.trigger.debounce_ms);
     tokio::spawn(ChatSession::new(handler, chat_id, rx, debounce_min).run());
     tx
 }

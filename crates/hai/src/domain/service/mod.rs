@@ -41,6 +41,7 @@ impl Services {
         let memory = Arc::new(MemoryService::new(pool.clone(), embedding.clone()));
         let scratchpad = Arc::new(ScratchpadService::new(pool.clone()));
         let context = Arc::new(ContextService::new(
+            Arc::clone(&config),
             platform.clone(),
             topic.clone(),
             message.clone(),

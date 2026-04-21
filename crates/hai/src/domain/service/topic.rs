@@ -93,7 +93,7 @@ impl TopicService {
     }
 
     /// 通过向量语义检索相关话题
-    pub async fn search_topics(
+    pub async fn search_related_topics(
         &self,
         chat_id: i64,
         query_embedding: &Vector,
@@ -116,7 +116,7 @@ impl TopicService {
     ) -> Result<Vec<TopicSearchResult>> {
         let embedding = self.embedding.generate_embedding(query).await?;
         let vector = pgvector::Vector::from(embedding);
-        self.search_topics(chat_id, &vector, limit).await
+        self.search_related_topics(chat_id, &vector, limit).await
     }
 
     /// 分页获取话题列表

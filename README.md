@@ -1,32 +1,82 @@
 # 👋 hai
 
-`hai` 是一个能够深度融入群聊氛围、拥有独立性格、并能自主管理对话上下文的数字生命。
+Telegram 群聊机器人，拥有独立性格和长期记忆的数字生命。
 
 ## 核心特性
 
-- **智能话题管理**：自动识别并整理群聊中的不同话题，支持话题的创建、归类、总结与结项。
-- **长期记忆系统**：能够记住群友的特征、爱好、黑历史以及群聊规则，并基于这些记忆进行更具个性化的回复。
-- **多模态支持**：支持图片生成、语音分析等多种交互方式。
-- **现代化工具集**：基于 `autoagents` 框架，拥有高度整合且灵活的工具调用能力。
+- **人格系统**：6 维性格参数（社恐/话痨、话量、坦诚度、幽默感、共情、情绪稳定性），可灵活配置
+- **智能话题管理**：自动识别、归类、总结群聊话题
+- **长期记忆**：记住群友特征、爱好、群规，支持向量检索
+- **多模态**：图片生成、语音分析
 
 ## 快速开始
 
-1. **配置环境**：
+### 1. 环境准备
 
-    - 安装 Rust 开发环境
-    - OpenRouter Api Key
-    - 准备一个 PostgreSQL 数据库并启用 `vector` 扩展
+- Rust 1.75+
+- PostgreSQL + pgvector 扩展
+- Telegram Bot Token
+- LLM API Key（OpenRouter / OpenAI / Anthropic 等）
 
-2. **配置文件**：
+### 2. 配置
 
-    - 将 `hai.toml` 中的数据库连接、API Key 和 Telegram Bot Token 替换为你的配置。
+创建 `.hai/config.toml`：
 
-3. **运行项目**：
+```toml
+[database]
+url = "postgres://user:password@localhost:5433/hai"
 
-    ```bash
-    cargo sqlx prepare --workspace
-    cargo run --bin hai
-    ```
+[telegram]
+bot_token = "your-bot-token"
+allowed_chat_ids = [123456789]  # 可留空允许所有
+
+[agent]
+provider = "openrouter"
+default_model = "anthropic/claude-3.5-sonnet"
+
+[agent.personality]
+name = "hai"
+sociability = 0.05
+verbosity = 0.35
+honesty = 0.65
+humor = 0.70
+empathy = 0.75
+mood = 0.30
+
+[providers.openrouter]
+type = "openrouter"
+api_key = "your-api-key"
+```
+
+### 3. 运行
+
+```bash
+# 初始化 SQLx 查询缓存
+cargo sqlx prepare --workspace
+
+# 启动
+cargo run --bin hai -- run
+```
+
+### 4. 查看配置
+
+```bash
+# 查看当前配置（支持 toml/json 格式）
+cargo run --bin hai -- config --format toml
+```
+
+## 开发
+
+```bash
+# 编译检查（离线模式）
+SQLX_OFFLINE=true cargo check
+
+# 运行
+cargo run --bin hai -- run
+
+# 查看配置
+cargo run --bin hai -- config
+```
 
 ## TODO
 

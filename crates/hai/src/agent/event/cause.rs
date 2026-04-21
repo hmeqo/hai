@@ -69,9 +69,7 @@ impl TriggerCause {
         match self {
             Self::Private => "你收到了一条私信。".to_string(),
             Self::Mention => "你在群里被 @ 了。".to_string(),
-            Self::Random => {
-                "你随手翻了一眼群消息。本次没有主要任务，做完后台整理就好。".to_string()
-            }
+            Self::Random => "你闲着没事翻了一眼群消息。".to_string(),
             Self::Cron(payload) => {
                 if let Some(id) = payload.task_id {
                     format!(
@@ -169,6 +167,6 @@ pub enum BotSignal {
         /// 内部消息 ID，用于平台侧回复特定消息
         platform_reply_to_id: Option<i64>,
     },
-    /// 发送"正在输入"状态提示（私聊场景下 Agent 开始处理时）
+    /// 发送"正在输入"状态提示
     Typing { chat_id: i64 },
 }

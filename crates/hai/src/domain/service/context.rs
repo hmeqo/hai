@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     agent::multimodal::EmbeddingService,
+    config::AppConfig,
     domain::{
         entity::{Account, Chat, Message, Scratchpad, Topic},
         service::{
@@ -60,6 +61,7 @@ pub struct CommonContext {
 /// 职责：从数据库并发拉取数据并组装为 CommonContext（纯数据）。
 /// 不涉及任何渲染逻辑，渲染由 agent 层负责。
 pub struct ContextService {
+    config: Arc<AppConfig>,
     platform_service: Arc<PlatformService>,
     topic_service: Arc<TopicService>,
     message_service: Arc<MessageService>,
@@ -70,6 +72,7 @@ pub struct ContextService {
 
 impl ContextService {
     pub fn new(
+        config: Arc<AppConfig>,
         platform_service: Arc<PlatformService>,
         topic_service: Arc<TopicService>,
         message_service: Arc<MessageService>,
@@ -78,6 +81,7 @@ impl ContextService {
         embedding: Arc<EmbeddingService>,
     ) -> Self {
         Self {
+            config,
             platform_service,
             topic_service,
             message_service,
@@ -209,9 +213,16 @@ impl ContextService {
             pgvector::Vector::from(self.embedding.generate_embedding(&search_query).await?);
 
         let (memories, related_topics) = tokio::try_join!(
-            self.memory_service
-                .search_related_memories(chat_id, &vector, 5),
-            self.topic_service.search_topics(chat_id, &vector, 3),
+            self.memory_service.search_related_memories(
+                chat_id,
+                &vector,
+                self.config.agent.context.related_memory_limit
+            ),
+            self.topic_service.search_related_topics(
+                chat_id,
+                &vector,
+                self.config.agent.context.related_topic_limit
+            ),
         )?;
 
         // 过滤掉已在 active topics 中的话题（避免重复）

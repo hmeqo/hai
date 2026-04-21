@@ -114,14 +114,16 @@ impl AgentHandler {
         let causes: Vec<&str> = events.causes().map(|c| c.label()).collect();
         tracing::info!(chat_id, triggers = ?causes, "Agent woke up");
 
-        if events.has_private() {
-            self.notify_typing(chat_id);
-        }
+        self.notify_typing(chat_id);
 
         let ctx = self
             .services
             .context
-            .build_context(self.bot.clone(), chat_id, 10)
+            .build_context(
+                self.bot.clone(),
+                chat_id,
+                self.config.agent.context.message_history_limit,
+            )
             .await?;
 
         let message_ids: Vec<i64> = ctx.messages.message_ids.clone();
@@ -227,7 +229,9 @@ impl AgentHandler {
             system_prompt: self.build_system_prompt(chat_type),
         }))
         .llm(self.main_llm().await)
-        .memory(Box::new(SlidingWindowMemory::new(20)))
+        .memory(Box::new(SlidingWindowMemory::new(
+            self.config.agent.context.sliding_window_size,
+        )))
         .build()
         .await
         .map_err(Into::into)
@@ -243,8 +247,8 @@ impl AgentHandler {
     pub fn build_system_prompt(&self, chat_type: ChatType) -> String {
         let personality_prompt = personality_context(&self.personality);
         let scene = match chat_type {
-            ChatType::Private => &self.config.agent.private_prompt,
-            ChatType::Group | ChatType::Supergroup => &self.config.agent.group_prompt,
+            ChatType::Private => &self.config.agent.context.private_prompt,
+            ChatType::Group | ChatType::Supergroup => &self.config.agent.context.group_prompt,
             // TODO
             ChatType::Channel => "",
         };
@@ -261,9 +265,9 @@ impl AgentHandler {
         prompt.push_str("\n\n");
         prompt.push_str(TOOL_MANUAL);
 
-        if !self.config.agent.system_prompt.is_empty() {
+        if !self.config.agent.context.system_prompt.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&self.config.agent.system_prompt);
+            prompt.push_str(&self.config.agent.context.system_prompt);
         }
 
         // 注入 skills 发现列表（Level 1）

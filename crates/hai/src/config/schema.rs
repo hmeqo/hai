@@ -69,19 +69,44 @@ pub struct AgentConfig {
     /// 当前使用的 provider 名称（对应 AppConfig.providers 中的 key）
     pub provider: String,
     pub default_model: String,
-    pub system_prompt: String,
-    pub group_prompt: String,
-    pub private_prompt: String,
-    pub personality: PersonalityConfig,
-    pub debounce_ms: u64,
     pub max_tokens: u32,
     pub reasoning: bool,
     pub reasoning_effort: String,
     pub temperature: f32,
-    pub format_context: bool,
-    /// 草稿板总 token 上限（slot 0-9 合计）
-    pub scratchpad_max_tokens: usize,
+
+    pub context: ContextConfig,
+    pub personality: PersonalityConfig,
     pub trigger: TriggerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
+#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
+#[patch(attribute(skip_serializing_none))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ContextConfig {
+    pub system_prompt: String,
+    pub group_prompt: String,
+    pub private_prompt: String,
+    pub sliding_window_size: usize,
+    pub message_history_limit: i64,
+    pub related_memory_limit: i64,
+    pub related_topic_limit: i64,
+    pub format_context: bool,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            group_prompt: GROUP_SCENE_PROMPT.into(),
+            private_prompt: PRIVATE_SCENE_PROMPT.into(),
+            message_history_limit: 10,
+            sliding_window_size: 10,
+            related_memory_limit: 5,
+            related_topic_limit: 3,
+            format_context: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
@@ -93,6 +118,7 @@ pub struct TriggerConfig {
     pub min_heat: f64,
     /// 最小热度上限（由 sociability 决定的 min_heat 不能超过这个值，防止过于频繁）
     pub min_heat_cap: f64,
+    pub debounce_ms: u64,
 }
 
 impl Default for TriggerConfig {
@@ -100,6 +126,7 @@ impl Default for TriggerConfig {
         Self {
             min_heat: 0.02,
             min_heat_cap: 0.33,
+            debounce_ms: 1000,
         }
     }
 }
@@ -207,18 +234,13 @@ impl Default for AgentConfig {
         Self {
             provider: String::new(),
             default_model: String::new(),
-            system_prompt: String::new(),
-            group_prompt: GROUP_SCENE_PROMPT.into(),
-            private_prompt: PRIVATE_SCENE_PROMPT.into(),
-            personality: PersonalityConfig::default(),
-            trigger: TriggerConfig::default(),
-            debounce_ms: 1000,
             max_tokens: 8000,
             reasoning: true,
             reasoning_effort: "low".into(),
             temperature: 0.5,
-            format_context: true,
-            scratchpad_max_tokens: 1000,
+            trigger: TriggerConfig::default(),
+            context: ContextConfig::default(),
+            personality: PersonalityConfig::default(),
         }
     }
 }
