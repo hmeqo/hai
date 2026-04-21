@@ -44,7 +44,6 @@ empathy = 0.75
 mood = 0.30
 
 [providers.openrouter]
-type = "openrouter"
 api_key = "your-api-key"
 ```
 
