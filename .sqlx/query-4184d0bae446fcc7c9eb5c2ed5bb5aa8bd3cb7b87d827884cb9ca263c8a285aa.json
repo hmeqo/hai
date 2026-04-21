@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status = 'pending'\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $2\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "role",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "content",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "topic_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "interaction_status!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "reply_to_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "external_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "meta",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "token_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "sent_at: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "4184d0bae446fcc7c9eb5c2ed5bb5aa8bd3cb7b87d827884cb9ca263c8a285aa"
+}

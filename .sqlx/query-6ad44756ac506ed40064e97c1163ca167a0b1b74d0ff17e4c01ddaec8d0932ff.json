@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO scratchpad (chat_id, content, token_count)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (chat_id) DO UPDATE\n            SET content     = EXCLUDED.content,\n                token_count = EXCLUDED.token_count,\n                updated_at  = NOW()\n            RETURNING\n                chat_id,\n                content,\n                token_count,\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6ad44756ac506ed40064e97c1163ca167a0b1b74d0ff17e4c01ddaec8d0932ff"
+}

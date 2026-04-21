@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE topic\n            SET started_at = COALESCE(\n                (SELECT MIN(COALESCE(sent_at, created_at)) FROM message WHERE topic_id = $1),\n                topic.started_at\n            ),\n            last_active_at = COALESCE(\n                (SELECT MAX(COALESCE(sent_at, created_at)) FROM message WHERE topic_id = $1),\n                topic.last_active_at\n            )\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17996c9e926572015fc8b46d411ea3b460db69cbf5c7075ecab5da29cf179c38"
+}

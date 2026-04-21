@@ -57,6 +57,8 @@ Cargo.lock
 # Custom rules (everything added below won't be overriden by 'Generate .gitignore File' if you use 'Update' option)
 
 # Config files with sensitive data
-hai.toml
-.env
-dist
+/.env
+/dist
+/.agents
+/.hai
+/skills-lock.json

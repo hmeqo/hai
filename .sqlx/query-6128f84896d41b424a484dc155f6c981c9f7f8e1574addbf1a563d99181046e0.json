@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                chat_id,\n                content,\n                token_count,\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM scratchpad\n            WHERE chat_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6128f84896d41b424a484dc155f6c981c9f7f8e1574addbf1a563d99181046e0"
+}

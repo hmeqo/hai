@@ -1,9 +1,10 @@
 pub mod agent;
+pub mod app;
 pub mod cli;
 pub mod config;
-pub mod coordinator;
+pub mod domain;
 pub mod error;
-pub mod app;
-pub mod platform;
-pub mod trigger;
+pub mod infra;
 pub mod util;
+
+pub use app::App;

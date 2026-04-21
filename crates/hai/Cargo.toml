@@ -15,6 +15,7 @@ dotenvy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
+serde_yml = { workspace = true }
 autoagents = { workspace = true }
 autoagents-derive = { workspace = true }
 autoagents-toolkit = { workspace = true }
@@ -41,3 +42,7 @@ toml = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
+xmlformat = { workspace = true }
+indexmap = { workspace = true }
+futures = { workspace = true }
+dirs = { workspace = true }

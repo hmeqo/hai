@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE message SET interaction_status = $1 WHERE id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "426cb8289b33f14ceaa17c024de434efddca61755412b99f193720fce038cc83"
+}

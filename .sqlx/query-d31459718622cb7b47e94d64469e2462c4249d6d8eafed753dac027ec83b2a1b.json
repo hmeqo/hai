@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id,\n                account_id,\n                chat_id,\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM memory\n            WHERE type = 'agent_note' AND chat_id = $1 AND content = $2\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "type_!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "content!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "embedding: Vector",
+        "type_info": {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "importance!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "references: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "meta",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "last_accessed_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "d31459718622cb7b47e94d64469e2462c4249d6d8eafed753dac027ec83b2a1b"
+}

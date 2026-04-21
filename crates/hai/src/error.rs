@@ -3,9 +3,11 @@ use std::net::AddrParseError;
 
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr};
+use teloxide::RequestError;
 use thiserror::Error;
 
-type AnyError = dyn std::error::Error + Send + Sync + 'static;
+type DynError = dyn std::error::Error + Send + Sync + 'static;
+type BoxedDynError = Box<DynError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, strum::Display, IntoStaticStr)]
 pub enum ErrorKind {
@@ -84,26 +86,29 @@ impl ErrorKind {
     }
 
     /// Wraps any error into an AppError of this kind
-    pub fn with_error<E>(self, err: E) -> AppError
+    pub fn with_err<E>(self, err: E) -> AppError
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        AppError::new(self).with_source(err)
+        AppError::new(self).with_err(err)
     }
 
-    /// Wraps any error into an AppError of this kind with a custom message
-    pub fn with_source<E>(self, err: E, msg: impl Into<String>) -> AppError
+    pub fn with_dyn_err(self, err: BoxedDynError) -> AppError {
+        AppError::new(self).with_dyn_err(err)
+    }
+
+    pub fn with_err_msg<E>(self, err: E, msg: impl Into<String>) -> AppError
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        AppError::new(self).with_message(msg).with_source(err)
+        AppError::new(self).with_message(msg).with_err(err)
     }
 
     pub fn wrap_internal<E>(err: E) -> AppError
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        Self::Internal.with_error(err)
+        Self::Internal.with_err(err)
     }
 }
 
@@ -116,7 +121,7 @@ pub struct AppError {
     errors: Option<Value>,
 
     #[source]
-    source: Option<Box<AnyError>>,
+    source: Option<Box<DynError>>,
 }
 
 impl AppError {
@@ -134,15 +139,23 @@ impl AppError {
         self
     }
 
-    fn with_source<E>(mut self, err: E) -> Self
+    fn with_err<E>(mut self, err: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
         if self.message.is_none() && !self.kind.is_internal_error() {
-            self.message = Some((&err).to_string());
+            self.message = Some(err.to_string());
         }
 
         self.source = Some(Box::new(err));
+        self
+    }
+
+    fn with_dyn_err(mut self, err: BoxedDynError) -> Self {
+        if self.message.is_none() && !self.kind.is_internal_error() {
+            self.message = Some(err.to_string());
+        }
+        self.source = Some(err);
         self
     }
 
@@ -186,7 +199,13 @@ impl Debug for AppError {
 
 impl Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.kind, self.message())
+        write!(f, "[{}] {}", self.kind, self.message()).and_then(|_| {
+            if let Some(err) = self.source.as_ref() {
+                write!(f, "\nCause: {}", err)
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 
@@ -205,10 +224,10 @@ macro_rules! register_errors {
                 fn from(e: $err_type) -> Self {
                     let err = $kind;
                     $(
-                        return err.with_source(e, $msg);
+                        return err.with_err_msg(e, $msg);
                     )?
                     #[allow(unreachable_code)]
-                    err.with_error(e)
+                    err.with_err(e)
                 }
             }
         )*
@@ -221,4 +240,11 @@ register_errors! {
     serde_json::Error   => ErrorKind::DataParse;
     config::ConfigError => ErrorKind::Config;
     AddrParseError      => ErrorKind::InvalidParameter, "Invalid address format";
+    RequestError        => ErrorKind::Internal;
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(e: anyhow::Error) -> Self {
+        ErrorKind::Internal.with_dyn_err(e.into())
+    }
 }

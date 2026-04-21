@@ -23,11 +23,8 @@ pub trait Configurable: Patch<Self::Patch> + Default + Clone + Send + Sync + 'st
 #[derive(Debug)]
 struct ConfigInner<T: Configurable> {
     file_path: String,
-    /// 内存中的修改意图（对应文件内容）
     intent: Mutex<T::Patch>,
-    /// 环境变量覆盖（只读）
     env_intent: ArcSwap<Option<T::Patch>>,
-    /// 当前生效的完整配置
     current: ArcSwap<T>,
 }
 
@@ -38,7 +35,7 @@ pub struct Config<T: Configurable> {
 
 impl<T: Configurable> Config<T> {
     pub fn from_file(file_path: &str) -> Result<Self> {
-        let intent = Self::load_patch_from_file(file_path)?;
+        let intent = Self::try_load_patch_from_file(file_path).unwrap_or_default();
 
         let manager = Self {
             inner: Arc::new(ConfigInner {
@@ -95,7 +92,9 @@ impl<T: Configurable> Config<T> {
 
     /// 从文件重新加载配置（丢弃未保存的内存修改）
     pub async fn reload(&self) -> Result<()> {
-        let new_intent = Self::load_patch_from_file(&self.inner.file_path)?;
+        let Some(new_intent) = Self::try_load_patch_from_file(&self.inner.file_path) else {
+            return Ok(());
+        };
         let mut intent_guard = self.inner.intent.lock().await;
         *intent_guard = new_intent;
         self.rebuild_and_store(&intent_guard);
@@ -111,6 +110,10 @@ impl<T: Configurable> Config<T> {
             next_config.apply(env_intent.clone());
         }
         self.inner.current.store(Arc::new(next_config));
+    }
+
+    fn try_load_patch_from_file(path: &str) -> Option<T::Patch> {
+        Self::load_patch_from_file(path).ok()
     }
 
     fn load_patch_from_file(path: &str) -> Result<T::Patch> {

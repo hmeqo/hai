@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE message SET topic_id = $1, interaction_status = $2 WHERE id = ANY($3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d06cea7eda5f7e9fbc8e03a4b7faefb6db246e71618ea32fb19e12e7b856041d"
+}
