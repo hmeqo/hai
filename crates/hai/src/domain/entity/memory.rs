@@ -39,7 +39,7 @@ impl Memory {
     pub fn new(type_: MemoryType, content: String) -> Self {
         let now = jiff_sqlx::Timestamp::from(jiff::Timestamp::now());
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             account_id: None,
             chat_id: None,
             type_: type_.to_string(),

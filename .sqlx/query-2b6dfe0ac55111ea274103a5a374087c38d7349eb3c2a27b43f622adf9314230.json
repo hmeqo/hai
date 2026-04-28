@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                p.source->>'file_id' as \"file_id!\",\n                p.id as \"id!: Uuid\",\n                p.source as \"source: serde_json::Value\",\n                p.parser as \"parser!\",\n                p.prompt,\n                p.content as \"content!\",\n                p.embedding as \"embedding: Vector\",\n                p.created_at as \"created_at!: jiff_sqlx::Timestamp\"\n            FROM perception p\n            WHERE p.source->>'type' = 'platform'\n              AND p.source->>'file_id' = ANY($1)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "file_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "source: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "parser!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "prompt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "content!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "embedding: Vector",
+        "type_info": {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "2b6dfe0ac55111ea274103a5a374087c38d7349eb3c2a27b43f622adf9314230"
+}

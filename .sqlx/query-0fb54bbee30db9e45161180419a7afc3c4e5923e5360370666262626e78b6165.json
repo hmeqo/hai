@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO perception (source, parser, prompt, content)\n                VALUES ($1, $2, NULL, $3)\n                ON CONFLICT (source, parser)\n                WHERE prompt IS NULL\n                DO UPDATE SET content = EXCLUDED.content\n                RETURNING id, source as \"source: serde_json::Value\", parser, prompt, content,\n                    embedding as \"embedding: Vector\",\n                    created_at as \"created_at: jiff_sqlx::Timestamp\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "parser",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "prompt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "embedding: Vector",
+        "type_info": {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at: jiff_sqlx::Timestamp",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "0fb54bbee30db9e45161180419a7afc3c4e5923e5360370666262626e78b6165"
+}

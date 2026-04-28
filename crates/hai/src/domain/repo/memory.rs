@@ -1,9 +1,11 @@
-use anyhow::Result;
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::{entity::Memory, vo::MemorySearchResult};
+use crate::{
+    domain::{entity::Memory, vo::MemorySearchResult},
+    error::Result,
+};
 
 pub struct MemoryRepo;
 

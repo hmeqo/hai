@@ -1,5 +1,7 @@
 pub mod agent;
+pub mod agentcore;
 pub mod app;
+pub mod bot;
 pub mod cli;
 pub mod config;
 pub mod domain;

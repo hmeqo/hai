@@ -1,8 +1,10 @@
-use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::entity::{Message, MessageStatus};
+use crate::{
+    domain::entity::{Message, MessageStatus},
+    error::Result,
+};
 
 pub struct MessageRepo;
 
@@ -16,7 +18,7 @@ pub struct CreateMessage<'a> {
     pub interaction_status: Option<&'a str>,
     pub reply_to_id: Option<i64>,
     pub external_id: Option<&'a str>,
-    pub meta: Option<serde_json::Value>,
+    pub meta: serde_json::Value,
     pub token_count: Option<i32>,
     pub sent_at: Option<jiff_sqlx::Timestamp>,
 }
@@ -389,5 +391,21 @@ impl MessageRepo {
         .fetch_all(pool)
         .await?;
         Ok(rows)
+    }
+
+    /// 更新消息的 meta 字段
+    pub async fn update_meta(
+        pool: &PgPool,
+        message_id: i64,
+        meta: Option<serde_json::Value>,
+    ) -> Result<()> {
+        sqlx::query!(
+            "UPDATE message SET meta = $1 WHERE id = $2",
+            meta,
+            message_id,
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }

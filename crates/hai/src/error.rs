@@ -1,6 +1,9 @@
-use std::fmt::{Debug, Display};
-use std::net::AddrParseError;
+use std::{
+    fmt::{Debug, Display},
+    net::AddrParseError,
+};
 
+use reqwest::Error as ReqwestError;
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr};
 use teloxide::RequestError;
@@ -45,6 +48,8 @@ pub enum ErrorKind {
     // ========================================================
     #[strum(serialize = "sys.config")]
     Config,
+    #[strum(serialize = "err.external")]
+    External,
     #[strum(serialize = "err.internal")]
     Internal,
 }
@@ -69,7 +74,8 @@ impl ErrorKind {
             Self::AlreadyExists => "Resource already exists",
 
             Self::Config => "Configuration error",
-            _ => "Internal server error",
+            Self::External => "External service error",
+            Self::Internal => "Internal server error",
         }
     }
 
@@ -81,8 +87,8 @@ impl ErrorKind {
         AppError::new(self)
     }
 
-    pub fn with_message(self, msg: impl Into<String>) -> AppError {
-        AppError::new(self).with_message(msg)
+    pub fn with_msg(self, msg: impl Into<String>) -> AppError {
+        AppError::new(self).with_msg(msg)
     }
 
     /// Wraps any error into an AppError of this kind
@@ -101,7 +107,7 @@ impl ErrorKind {
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        AppError::new(self).with_message(msg).with_err(err)
+        AppError::new(self).with_msg(msg).with_err(err)
     }
 
     pub fn wrap_internal<E>(err: E) -> AppError
@@ -134,7 +140,7 @@ impl AppError {
         }
     }
 
-    fn with_message(mut self, msg: impl Into<String>) -> Self {
+    fn with_msg(mut self, msg: impl Into<String>) -> Self {
         self.message = Some(msg.into());
         self
     }
@@ -209,7 +215,40 @@ impl Display for AppError {
     }
 }
 
+pub trait OptionAppExt<T> {
+    fn ok_or_err(self, kind: ErrorKind) -> Result<T>;
+    fn ok_or_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T>;
+}
+
+impl<T> OptionAppExt<T> for Option<T> {
+    fn ok_or_err(self, kind: ErrorKind) -> Result<T> {
+        self.ok_or_else(|| kind.to_error())
+    }
+
+    fn ok_or_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T> {
+        self.ok_or_else(|| kind.with_msg(msg))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AppError>;
+
+pub trait AppResultExt<T> {
+    fn change_err(self, kind: ErrorKind) -> Result<T>;
+    fn change_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T>;
+}
+
+impl<T, E> AppResultExt<T> for std::result::Result<T, E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn change_err(self, kind: ErrorKind) -> Result<T> {
+        self.map_err(|e| kind.with_err(e))
+    }
+
+    fn change_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T> {
+        self.map_err(|e| kind.with_err_msg(e, msg))
+    }
+}
 
 impl From<ErrorKind> for AppError {
     fn from(kind: ErrorKind) -> Self {
@@ -236,15 +275,16 @@ macro_rules! register_errors {
 
 // 注册错误转换
 register_errors! {
-    std::io::Error      => ErrorKind::Internal;
-    serde_json::Error   => ErrorKind::DataParse;
-    config::ConfigError => ErrorKind::Config;
-    AddrParseError      => ErrorKind::InvalidParameter, "Invalid address format";
-    RequestError        => ErrorKind::Internal;
-}
-
-impl From<anyhow::Error> for AppError {
-    fn from(e: anyhow::Error) -> Self {
-        ErrorKind::Internal.with_dyn_err(e.into())
-    }
+    std::io::Error                  => ErrorKind::Internal;
+    serde_json::Error               => ErrorKind::DataParse;
+    config::ConfigError             => ErrorKind::Config;
+    AddrParseError                  => ErrorKind::InvalidParameter, "Invalid address format";
+    RequestError                    => ErrorKind::Internal;
+    ReqwestError                    => ErrorKind::BadRequest, "HTTP request failed";
+    sqlx::Error                     => ErrorKind::Internal;
+    sqlx::migrate::MigrateError      => ErrorKind::Internal;
+    std::num::ParseIntError         => ErrorKind::DataParse, "Failed to parse integer";
+    std::time::SystemTimeError      => ErrorKind::Internal;
+    jiff::Error                     => ErrorKind::Internal;
+    toml::ser::Error                => ErrorKind::DataParse;
 }

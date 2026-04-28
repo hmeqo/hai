@@ -1,8 +1,7 @@
-use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::entity::Account;
+use crate::{domain::entity::Account, error::Result};
 
 pub struct AccountRepo;
 
@@ -13,7 +12,7 @@ impl AccountRepo {
         external_id: &str,
         meta: Option<serde_json::Value>,
     ) -> Result<Account> {
-        // 1. 先尝试查询，避免直接 INSERT 导致 SERIAL 空洞
+        // 1. 先尝试查询，命中则更新 meta 和 last_active_at 后返回
         let existing = sqlx::query_as!(
             Account,
             r#"
@@ -32,7 +31,6 @@ impl AccountRepo {
         .await?;
 
         if let Some(account) = existing {
-            // 2. 如果存在，更新 meta 和 last_active_at
             let updated = sqlx::query_as!(
                 Account,
                 r#"
@@ -54,7 +52,7 @@ impl AccountRepo {
             return Ok(updated);
         }
 
-        // 3. 如果不存在，尝试插入（带上 ON CONFLICT 以防并发竞争）
+        // 2. 不存在则插入；带 ON CONFLICT 兜底并发竞争场景
         let inserted = sqlx::query_as!(
             Account,
             r#"

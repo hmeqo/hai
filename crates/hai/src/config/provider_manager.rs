@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
-use crate::agent::provider::ProviderBackend;
-use crate::config::schema::ResolvedProvider;
-use crate::error::{ErrorKind, Result};
+use crate::{
+    agentcore::{RawAgent, provider::ProviderBackend, rawclient::RawClient},
+    config::{AppConfig, schema::ResolvedProvider},
+    error::{AppResultExt, ErrorKind, OptionAppExt, Result},
+};
 
 /// 统一管理的已解析 provider 集合
 ///
@@ -16,13 +16,14 @@ pub struct ProviderManager {
 }
 
 impl ProviderManager {
-    pub fn new(config: &crate::config::AppConfig) -> Result<Self> {
+    pub fn new(config: &AppConfig) -> Result<Self> {
         let mut providers = HashMap::new();
 
         for (name, provider_cfg) in &config.providers {
-            let backend = ProviderBackend::from_str(name).map_err(|e| {
-                ErrorKind::Config.with_message(format!("Invalid provider type '{}': {}", name, e))
-            })?;
+            let backend = ProviderBackend::from_str(name).change_err_msg(
+                ErrorKind::Config,
+                format!("Invalid provider type '{}'", name),
+            )?;
 
             let base_url = backend.resolve_base_url(provider_cfg.base_url.as_deref());
 
@@ -39,12 +40,23 @@ impl ProviderManager {
         Ok(Self { providers })
     }
 
-    pub fn get(&self, name: &str) -> Option<&Arc<ResolvedProvider>> {
-        self.providers.get(name)
+    pub fn get(&self, provider: &str) -> Option<&Arc<ResolvedProvider>> {
+        self.providers.get(provider)
     }
 
-    pub fn get_checked(&self, name: &str) -> Result<&Arc<ResolvedProvider>> {
-        self.get(name)
-            .ok_or_else(|| ErrorKind::Config.with_message(format!("Provider '{}' not found", name)))
+    pub fn get_checked(&self, provider: &str) -> Result<&Arc<ResolvedProvider>> {
+        self.get(provider).ok_or_err_msg(
+            ErrorKind::Config,
+            format!("Provider '{}' not found", provider),
+        )
+    }
+
+    pub fn build_client(&self, provider: &str) -> RawClient {
+        let resolved = self.get_checked(provider).expect("provider configured");
+        RawClient::new(&resolved.config.api_key, &resolved.base_url)
+    }
+
+    pub fn build_agent(&self, provider: &str, model: &str) -> RawAgent {
+        self.build_client(provider).agent(model)
     }
 }

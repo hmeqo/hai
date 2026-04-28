@@ -1,9 +1,11 @@
-use anyhow::Result;
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::{entity::Topic, vo::TopicSearchResult};
+use crate::{
+    domain::{entity::Topic, vo::TopicSearchResult},
+    error::Result,
+};
 
 pub struct TopicRepo;
 

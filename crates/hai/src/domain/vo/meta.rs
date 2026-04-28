@@ -24,13 +24,18 @@ pub struct TelegramAccountMeta {
 }
 
 impl PlatformAccountMeta {
-    /// 获取完整姓名
     pub fn full_name(&self) -> String {
         match self {
             PlatformAccountMeta::Telegram(v) => match &v.last_name {
                 Some(last) => format!("{} {}", v.first_name, last),
                 None => v.first_name.clone(),
             },
+        }
+    }
+
+    pub fn username(&self) -> Option<String> {
+        match self {
+            PlatformAccountMeta::Telegram(v) => v.username.clone(),
         }
     }
 }
@@ -42,13 +47,10 @@ pub struct LlmMessageMeta {
     /// 大模型 reasoning 内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
-    /// 解析后的内容（如语音转文字、图片 OCR 等）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parsed_content: Option<String>,
 }
 
 /// 消息元数据（顶层结构，包含通用字段和平台特定字段）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageMeta {
     /// 平台特定信息
     #[serde(flatten, skip_serializing_if = "Option::is_none")]

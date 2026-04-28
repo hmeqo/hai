@@ -1,7 +1,6 @@
-use anyhow::Result;
 use sqlx::PgPool;
 
-use crate::domain::entity::Scratchpad;
+use crate::{domain::entity::Scratchpad, error::Result};
 
 pub struct ScratchpadRepo;
 

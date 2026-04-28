@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant, sleep_until};
-
-use crate::agent::event::AgentEvent;
+use tokio::{
+    sync::mpsc,
+    time::{Duration, Instant, sleep_until},
+};
 
 use super::{AgentHandler, debounce::Debouncer, task::ActiveTask};
+use crate::agent::event::AgentEvent;
 
 /// 用于"挂起" sleep 的远期时间点，避免 Duration::MAX 溢出
 const FAR_FUTURE: Duration = Duration::from_secs(365 * 24 * 3600 * 30);
@@ -16,7 +17,7 @@ pub fn spawn_chat_session(
     chat_id: i64,
 ) -> mpsc::UnboundedSender<AgentEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let debounce_min = Duration::from_millis(handler.config.agent.trigger.debounce_ms);
+    let debounce_min = Duration::from_millis(handler.ctx.cfg.agent.trigger.debounce_ms);
     tokio::spawn(ChatSession::new(handler, chat_id, rx, debounce_min).run());
     tx
 }

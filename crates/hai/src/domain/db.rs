@@ -1,9 +1,6 @@
-use anyhow::Result;
-use sqlx::PgPool;
-use sqlx::migrate::MigrateDatabase;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, migrate::MigrateDatabase, postgres::PgPoolOptions};
 
-use crate::config::schema::DatabaseConfig;
+use crate::{config::schema::DatabaseConfig, error::Result};
 
 /// 初始化 PostgreSQL 连接池并运行数据库迁移
 pub async fn init_pool(config: &DatabaseConfig) -> Result<PgPool> {

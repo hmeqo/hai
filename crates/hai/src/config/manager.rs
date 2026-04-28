@@ -1,12 +1,10 @@
+use std::{ops::Deref, path::Path, sync::Arc};
+
 use arc_swap::ArcSwap;
 use config::{Environment, File};
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
-use std::path::Path;
-use std::sync::Arc;
 use struct_patch::Patch;
-use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::{fs, sync::Mutex};
 
 use crate::error::{ErrorKind, Result};
 
@@ -80,7 +78,7 @@ impl<T: Configurable> Config<T> {
         let content = match ext {
             // "toml" => toml::to_string_pretty(&*intent_guard)?,
             "json" => serde_json::to_string_pretty(&*intent_guard)?,
-            _ => return Err(ErrorKind::Config.with_message(format!("不支持的文件格式: {}", ext))),
+            _ => return Err(ErrorKind::Config.with_msg(format!("不支持的文件格式: {}", ext))),
         };
 
         if let Some(parent) = path.parent() {

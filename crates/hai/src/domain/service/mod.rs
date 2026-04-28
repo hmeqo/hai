@@ -1,65 +1,59 @@
-pub mod context;
 pub mod identity;
 pub mod memory;
 pub mod message;
+pub mod perception;
 pub mod platform;
 pub mod scratchpad;
 pub mod topic;
 
-pub use context::ContextService;
-pub use identity::IdentityService;
-pub use memory::MemoryService;
-pub use message::MessageService;
-pub use platform::PlatformService;
-pub use scratchpad::ScratchpadService;
-pub use topic::TopicService;
-
-use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::agent::multimodal::EmbeddingService;
-use crate::config::AppConfig;
+use derive_more::Deref;
+pub use identity::IdentityService;
+pub use memory::MemoryService;
+pub use message::{MessageService, NewAgentMessage, NewUserMessage};
+pub use perception::PerceptionService;
+pub use platform::PlatformService;
+pub use scratchpad::ScratchpadService;
+use sqlx::PgPool;
+pub use topic::TopicService;
 
-pub struct Services {
-    pub config: Arc<AppConfig>,
-    pub platform: Arc<PlatformService>,
-    pub identity: Arc<IdentityService>,
-    pub topic: Arc<TopicService>,
-    pub message: Arc<MessageService>,
-    pub memory: Arc<MemoryService>,
-    pub scratchpad: Arc<ScratchpadService>,
-    pub context: Arc<ContextService>,
-    pub embedding: Arc<EmbeddingService>,
+use crate::agentcore::multimodal::MultimodalService;
+
+#[derive(Debug, Clone, Deref)]
+pub struct DbServices(Arc<DbServicesInner>);
+
+#[derive(Debug)]
+pub struct DbServicesInner {
+    pub platform: PlatformService,
+    pub identity: IdentityService,
+    pub topic: TopicService,
+    pub message: MessageService,
+    pub memory: MemoryService,
+    pub scratchpad: ScratchpadService,
+    pub multimodal: MultimodalService,
+    pub perception: PerceptionService,
 }
 
-impl Services {
-    pub fn new(pool: PgPool, embedding: Arc<EmbeddingService>, config: Arc<AppConfig>) -> Self {
-        let platform = Arc::new(PlatformService::new(pool.clone()));
-        let identity = Arc::new(IdentityService::new(pool.clone()));
-        let topic = Arc::new(TopicService::new(pool.clone(), embedding.clone()));
-        let message = Arc::new(MessageService::new(pool.clone()));
-        let memory = Arc::new(MemoryService::new(pool.clone(), embedding.clone()));
-        let scratchpad = Arc::new(ScratchpadService::new(pool.clone()));
-        let context = Arc::new(ContextService::new(
-            Arc::clone(&config),
-            platform.clone(),
-            topic.clone(),
-            message.clone(),
-            memory.clone(),
-            scratchpad.clone(),
-            embedding.clone(),
-        ));
+impl DbServices {
+    pub fn new(pool: PgPool, multimodal: MultimodalService) -> Self {
+        let platform = PlatformService::new(pool.clone());
+        let identity = IdentityService::new(pool.clone());
+        let message = MessageService::new(pool.clone());
+        let scratchpad = ScratchpadService::new(pool.clone());
+        let topic = TopicService::new(pool.clone(), multimodal.clone());
+        let memory = MemoryService::new(pool.clone(), multimodal.clone());
+        let perception = PerceptionService::new(pool.clone(), multimodal.clone());
 
-        Self {
-            config,
+        Self(Arc::new(DbServicesInner {
             platform,
             identity,
             topic,
             message,
             memory,
             scratchpad,
-            context,
-            embedding,
-        }
+            multimodal,
+            perception,
+        }))
     }
 }

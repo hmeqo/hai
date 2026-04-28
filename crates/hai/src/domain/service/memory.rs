@@ -1,17 +1,15 @@
-use std::sync::Arc;
-
-use anyhow::Result;
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agent::multimodal::EmbeddingService,
+    agentcore::multimodal::MultimodalService,
     domain::{
         entity::{Memory, MemoryType},
         repo::MemoryRepo,
         vo::MemoryInput,
     },
+    error::{ErrorKind, OptionAppExt, Result},
 };
 
 #[derive(Debug, Clone)]
@@ -24,13 +22,14 @@ pub struct RelatedMemory {
 }
 
 /// 记忆管理服务
+#[derive(Debug)]
 pub struct MemoryService {
     pool: PgPool,
-    embedding: Arc<EmbeddingService>,
+    embedding: MultimodalService,
 }
 
 impl MemoryService {
-    pub fn new(pool: PgPool, embedding: Arc<EmbeddingService>) -> Self {
+    pub fn new(pool: PgPool, embedding: MultimodalService) -> Self {
         Self { pool, embedding }
     }
 
@@ -63,9 +62,9 @@ impl MemoryService {
                     .await?
                     .is_some()
                 {
-                    anyhow::bail!(
-                        "DUPLICATE: UserFact already exists for this account and chat with the same content"
-                    );
+                    return Err(ErrorKind::AlreadyExists.with_msg(
+                        "UserFact already exists for this account and chat with the same content",
+                    ));
                 }
                 let embedding = self
                     .compute_embedding_if_needed(memory_type, &content)
@@ -85,9 +84,8 @@ impl MemoryService {
                     .await?
                     .is_some()
                 {
-                    anyhow::bail!(
-                        "DUPLICATE: AgentNote already exists for this chat with the same content"
-                    );
+                    return Err(ErrorKind::AlreadyExists
+                        .with_msg("AgentNote already exists for this chat with the same content"));
                 }
                 let mut memory = Memory::new(memory_type, content);
                 memory.chat_id = Some(chat_id);
@@ -99,9 +97,8 @@ impl MemoryService {
                     .await?
                     .is_some()
                 {
-                    anyhow::bail!(
-                        "DUPLICATE: Knowledge already exists for this chat with the same content"
-                    );
+                    return Err(ErrorKind::AlreadyExists
+                        .with_msg("Knowledge already exists for this chat with the same content"));
                 }
                 let embedding = self
                     .compute_embedding_if_needed(memory_type, &content)
@@ -145,7 +142,7 @@ impl MemoryService {
                     None,
                 )
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("Memory not found: {}", id))
+                .ok_or_err_msg(ErrorKind::NotFound, format!("Memory not found: {}", id))
             }
 
             // --- Upsert Variants ---
@@ -164,7 +161,7 @@ impl MemoryService {
                         None,
                     )
                     .await?
-                    .ok_or_else(|| anyhow::anyhow!("Failed to update rule"));
+                    .ok_or_err_msg(ErrorKind::Internal, "Failed to update rule");
                 }
 
                 let mut memory = Memory::new(memory_type, content);

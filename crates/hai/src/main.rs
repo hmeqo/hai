@@ -2,6 +2,9 @@ use clap::Parser;
 use hai::cli::Cli;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Cli::parse().execute().await
+async fn main() {
+    if let Err(err) = Cli::parse().execute().await {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 }

@@ -1,9 +1,12 @@
-use anyhow::Result;
 use sqlx::PgPool;
 
-use crate::domain::{entity::Scratchpad, repo::ScratchpadRepo};
-use crate::util::token::count_tokens;
+use crate::{
+    agentcore::token::count_tokens,
+    domain::{entity::Scratchpad, repo::ScratchpadRepo},
+    error::Result,
+};
 
+#[derive(Debug)]
 pub struct ScratchpadService {
     pool: PgPool,
 }
@@ -18,6 +21,7 @@ impl ScratchpadService {
     }
 
     pub async fn save(&self, chat_id: i64, content: &str) -> Result<Scratchpad> {
+        tracing::info!(chat_id, content, "Save scratchpad");
         let token_count = count_tokens(content) as i32;
         ScratchpadRepo::upsert(&self.pool, chat_id, content, token_count).await
     }

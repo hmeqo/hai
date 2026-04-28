@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use tokio::task::{JoinError, JoinSet};
 
-use crate::agent::event::{AgentEvent, AgentEvents};
-
 use super::{AgentHandler, debounce::Debouncer};
+use crate::agent::event::{AgentEvent, AgentEvents};
 
 /// 当前运行任务的句柄
 ///

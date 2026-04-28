@@ -2,89 +2,73 @@ mod debounce;
 mod session;
 mod task;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use anyhow::Result;
 use autoagents::{core::agent::DirectAgentHandle, llm::LLMProvider, prelude::*};
 use autoagents_toolkit::mcp::{McpConfig, McpServerConfig, McpTools};
-use base64::{Engine, prelude::BASE64_STANDARD};
-use sqlx::PgPool;
+pub use session::spawn_chat_session;
 use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     agent::{
         MainAgent,
-        components::render_main_context,
+        context::render_main_context,
         event::{AgentEvent, AgentEvents, BotSignal},
-        multimodal::{DataImage, MultimodalService},
-        personality::PersonalityMgr,
         prompts::{TOOL_MANUAL, personality_context},
-        render::{Section, item, section},
-        skills::{SkillManager, load_skill_tool},
-        tools::get_main_agent_tools,
+        tools::{ToolContext, get_main_agent_tools, skills::load_skill_tool},
     },
-    config::{AppConfig, ProviderManager},
-    domain::{entity::ChatType, service::Services, vo::ImageOptions},
-    infra::platform::telegram::BotIdentity,
+    agentcore::{
+        provider::LlmBuildConfig,
+        render::{Section, item, section},
+        skills::SkillManager,
+    },
+    app::AppContext,
+    config::AppConfig,
+    domain::entity::ChatType,
+    error::{AppResultExt, ErrorKind, Result},
 };
 
-pub use session::spawn_chat_session;
-
-/// 核心处理器
+/// 核心 Agent 处理器
 ///
-/// 职责：提供所有的上下文依赖(DB, 配置, 服务) 和 Agent 组装方法。
-/// 并发调度委托给 session 模块。
+/// 持有 `AppContext`（所有共享依赖）+ 运行时独有状态：
+/// - `signal_tx`：向 TelegramSender 发送信号
+/// - `llm`：支持运行时切换的 LLM provider
+/// - `mcp_tools` / `skill_manager`：启动时加载，生命周期与 handler 绑定
+///
+/// 供 `TelegramSender` 记录消息时读取，无需循环依赖。
+///
+/// 并发调度策略委托给 `session` 模块。
 pub struct AgentHandler {
-    pub config: Arc<AppConfig>,
-    pub providers: ProviderManager,
-    pub pool: PgPool,
+    pub ctx: AppContext,
+    pub signal_tx: mpsc::UnboundedSender<BotSignal>,
+    /// LLM 提供商（支持运行时切换）
+    llm: RwLock<Arc<dyn LLMProvider>>,
     pub mcp_tools: McpTools,
     pub skill_manager: Arc<SkillManager>,
-    /// LLM 提供商（支持运行时切换模型）
-    llm: RwLock<Arc<dyn LLMProvider>>,
-    /// 当前模型名称（用于展示）
-    model_name: RwLock<String>,
-    /// 多模态服务（图像生成、音频分析）
-    pub multimodal: MultimodalService,
-    pub signal_tx: mpsc::UnboundedSender<BotSignal>,
-    pub services: Arc<Services>,
-    pub personality: PersonalityMgr,
-    pub bot: BotIdentity,
 }
 
 impl AgentHandler {
-    pub async fn new(
-        config: &Arc<AppConfig>,
-        pool: PgPool,
-        providers: ProviderManager,
-        multimodal: MultimodalService,
-        services: Arc<Services>,
-        signal_tx: mpsc::UnboundedSender<BotSignal>,
-        personality: PersonalityMgr,
-        bot: BotIdentity,
-    ) -> Result<Self> {
-        let config = Arc::clone(config);
+    pub async fn new(ctx: AppContext, signal_tx: mpsc::UnboundedSender<BotSignal>) -> Result<Self> {
+        let config = Arc::clone(&ctx.cfg);
         let mcp_tools = Self::load_mcp_tools(&config).await?;
         let skill_manager = Arc::new(SkillManager::load(&config.skills.dirs).await?);
-        let model_name = config.agent.default_model.clone();
-        let llm = Self::build_llm(&providers, &config.agent)?;
+        let llm = Self::build_llm(&ctx)?;
 
         Ok(Self {
-            config,
-            providers,
-            pool,
+            ctx,
+            signal_tx,
+            llm: RwLock::new(llm),
             mcp_tools,
             skill_manager,
-            llm: RwLock::new(llm),
-            model_name: RwLock::new(model_name),
-            multimodal,
-            signal_tx,
-            services,
-            personality,
-            bot,
         })
     }
+
+    // -------------------------------------------------------------------------
+    // 事件路由
+    // -------------------------------------------------------------------------
 
     /// 事件路由：不同 chat 并行，同一 chat 串行
     pub async fn run(
@@ -108,6 +92,10 @@ impl AgentHandler {
         Ok(())
     }
 
+    // -------------------------------------------------------------------------
+    // 执行
+    // -------------------------------------------------------------------------
+
     /// 构建任务消息并运行 Agent
     pub async fn execute(&self, chat_id: i64, events: &[AgentEvent]) -> Result<()> {
         let events = preprocess_events(events);
@@ -117,37 +105,37 @@ impl AgentHandler {
         self.notify_typing(chat_id);
 
         let ctx = self
-            .services
-            .context
+            .ctx
+            .agent
+            .context_fty
             .build_context(
-                self.bot.clone(),
+                self.ctx.bot.identity.clone(),
                 chat_id,
-                self.config.agent.context.message_history_limit,
+                self.ctx.cfg.agent.context.message_history_limit,
             )
             .await?;
 
-        let message_ids: Vec<i64> = ctx.messages.message_ids.clone();
-
+        let message_ids: Vec<i64> = ctx.message_ids.clone();
         let task_message = render_main_context(&ctx, build_trigger_section(events));
         tracing::info!(chat_id, "Agent task message:\n{task_message}");
 
-        let _resp: String = self
+        let response: String = self
             .main_agent_handle(chat_id, ctx.chat.chat_type())
             .await?
             .agent
             .run(Task::new(task_message))
             .await
-            .map_err(Into::<anyhow::Error>::into)?;
+            .change_err_msg(ErrorKind::Internal, "Agent execution failed")?;
 
         if !message_ids.is_empty() {
-            if let Err(e) = self.services.message.mark_unread_seen(&message_ids).await {
+            if let Err(e) = self.ctx.db.srv.message.mark_unread_seen(&message_ids).await {
                 tracing::warn!(chat_id, "Failed to mark messages seen: {e}");
             } else {
                 tracing::debug!(n = message_ids.len(), "Marked messages seen");
             }
         }
 
-        tracing::info!(chat_id, "Agent done");
+        tracing::info!(chat_id, response, "Agent done");
         Ok(())
     }
 
@@ -165,38 +153,15 @@ impl AgentHandler {
         self.llm.read().await.clone()
     }
 
-    /// 获取当前模型名称（用于展示）
-    pub async fn current_model(&self) -> String {
-        self.model_name.read().await.clone()
-    }
-
-    /// 切换模型（保留当前 provider 不变）
-    pub async fn switch_model(&self, model: &str) -> Result<()> {
-        let mut cfg = self.config.agent.clone();
-        cfg.default_model = model.to_string();
-        let new_llm = Self::build_llm(&self.providers, &cfg)?;
-        *self.llm.write().await = new_llm;
-        *self.model_name.write().await = model.to_string();
-        Ok(())
-    }
-
-    /// 根据配置构建 LLM provider
-    ///
-    /// 从 providers 配置池中查找当前 provider，构建 LLM。
-    /// 所有 provider 统一返回 `Arc<dyn LLMProvider>`，供 AgentBuilder 消费。
-    fn build_llm(
-        providers: &ProviderManager,
-        agent_config: &crate::config::schema::AgentConfig,
-    ) -> Result<Arc<dyn LLMProvider>> {
-        use crate::agent::provider::LlmBuildConfig;
-
-        let provider = providers.get_checked(&agent_config.provider)?;
+    fn build_llm(ctx: &AppContext) -> Result<Arc<dyn LLMProvider>> {
+        let provider = ctx.provider.get_checked(&ctx.cfg.agent.provider)?;
+        let agent_config = &ctx.cfg.agent;
         let effort = agent_config.reasoning_effort()?;
 
         let build_cfg = LlmBuildConfig {
             api_key: provider.config.api_key.clone(),
             base_url: provider.base_url.clone(),
-            model: agent_config.default_model.clone(),
+            model: agent_config.model.clone(),
             reasoning: agent_config.reasoning,
             reasoning_effort: effort,
             temperature: agent_config.temperature,
@@ -215,14 +180,13 @@ impl AgentHandler {
         chat_id: i64,
         chat_type: ChatType,
     ) -> Result<DirectAgentHandle<ReActAgent<MainAgent>>> {
-        let mut tools =
-            get_main_agent_tools(Arc::clone(&self.services), chat_id, self.signal_tx.clone());
+        let mut tools = get_main_agent_tools(ToolContext {
+            ctx: self.ctx.clone(),
+            chat_id,
+            signal_tx: self.signal_tx.clone(),
+        });
         tools.extend(self.mcp_tools.get_tools().await);
-
-        // 若有 skills 可用，注入 load_skill 元工具
-        if !self.skill_manager.is_empty() {
-            tools.push(load_skill_tool(Arc::clone(&self.skill_manager)));
-        }
+        tools.extend(load_skill_tool(Arc::clone(&self.skill_manager)));
 
         AgentBuilder::<_, DirectAgent>::new(ReActAgent::new(MainAgent {
             tools,
@@ -230,11 +194,11 @@ impl AgentHandler {
         }))
         .llm(self.main_llm().await)
         .memory(Box::new(SlidingWindowMemory::new(
-            self.config.agent.context.sliding_window_size,
+            self.ctx.cfg.agent.context.sliding_window_size,
         )))
         .build()
         .await
-        .map_err(Into::into)
+        .change_err_msg(ErrorKind::Internal, "Agent builder failed")
     }
 
     /// System Prompt = 人格画像 + 场景 + 工具手册 + 用户自定义 + Skills
@@ -245,15 +209,15 @@ impl AgentHandler {
     /// 3. 工具手册——知道自己的角色后再看能用什么工具
     /// 4. 用户自定义 / Skills——叠加层
     pub fn build_system_prompt(&self, chat_type: ChatType) -> String {
-        let personality_prompt = personality_context(&self.personality);
+        let config = &self.ctx.cfg;
+        let personality_prompt = personality_context(&self.ctx.agent.personality);
         let scene = match chat_type {
-            ChatType::Private => &self.config.agent.context.private_prompt,
-            ChatType::Group | ChatType::Supergroup => &self.config.agent.context.group_prompt,
+            ChatType::Private => &config.agent.context.private_prompt,
+            ChatType::Group | ChatType::Supergroup => &config.agent.context.group_prompt,
             // TODO
             ChatType::Channel => "",
         };
 
-        // 人格 + 场景 紧密组合，形成完整角色认知
         let mut prompt = personality_prompt;
 
         if !scene.is_empty() {
@@ -261,16 +225,14 @@ impl AgentHandler {
             prompt.push_str(scene);
         }
 
-        // 工具手册放在角色认知之后
         prompt.push_str("\n\n");
         prompt.push_str(TOOL_MANUAL);
 
-        if !self.config.agent.context.system_prompt.is_empty() {
+        if !config.agent.context.system_prompt.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&self.config.agent.context.system_prompt);
+            prompt.push_str(&config.agent.context.system_prompt);
         }
 
-        // 注入 skills 发现列表（Level 1）
         if let Some(skills_prompt) = self.skill_manager.discovery_prompt() {
             prompt.push_str("\n\n");
             prompt.push_str(&skills_prompt);
@@ -300,29 +262,7 @@ impl AgentHandler {
                 .collect(),
         })
         .await
-        .map_err(Into::into)
-    }
-
-    // -------------------------------------------------------------------------
-    // 多模态（对外 API：bot 层无法直接访问 multimodal 字段）
-    // -------------------------------------------------------------------------
-
-    pub async fn image(&self, opts: ImageOptions) -> Result<DataImage> {
-        if let Some(url) = opts.image_url {
-            self.multimodal
-                .image
-                .generate_image_with_image_url(&opts.prompt, &url)
-                .await
-        } else {
-            self.multimodal.image.generate_image(&opts.prompt).await
-        }
-    }
-
-    pub async fn analyze_audio(&self, prompt: &str, audio: &[u8], format: &str) -> Result<String> {
-        self.multimodal
-            .audio
-            .analyze_audio(prompt, &BASE64_STANDARD.encode(audio), format)
-            .await
+        .change_err_msg(ErrorKind::Internal, "Failed to load MCP tools")
     }
 }
 

@@ -1,9 +1,10 @@
-use crate::{
-    App,
-    config::{AppConfigManager, PathResolver},
-};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    App,
+    config::{AppConfigManager, PathResolver, env::ENV_PREFIX},
+};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -29,9 +30,9 @@ pub enum ConfigFormat {
 }
 
 impl Cli {
-    pub async fn execute(self) -> anyhow::Result<()> {
+    pub async fn execute(self) -> crate::error::Result<()> {
         let config = AppConfigManager::from_file(PathResolver::config_file().to_str().unwrap())?
-            .with_env("HAI")?;
+            .with_env(ENV_PREFIX)?;
 
         if let Some(command) = self.command {
             match command {

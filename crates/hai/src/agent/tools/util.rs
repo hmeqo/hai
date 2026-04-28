@@ -1,54 +1,34 @@
 use autoagents::core::tool::ToolCallError;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub success: bool,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+use crate::error::AppError;
+
+pub fn tool_ok() -> Result<Value, ToolCallError> {
+    Ok(json!({ "ok": true }))
 }
 
-impl ToolResult {
-    pub fn success(message: impl Into<String>) -> Self {
-        Self {
-            success: true,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    pub fn success_with_data(message: impl Into<String>, data: Value) -> Self {
-        Self {
-            success: true,
-            message: message.into(),
-            data: Some(data),
-        }
-    }
-
-    pub fn fail(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    pub fn to_value(&self) -> Value {
-        serde_json::to_value(self)
-            .unwrap_or_else(|_| Value::String("Failed to serialize tool result".into()))
-    }
+pub fn tool_msg(msg: impl Into<String>) -> Result<Value, ToolCallError> {
+    Ok(json!({ "ok": true, "message": msg.into() }))
 }
 
-pub fn toolcall_std_err<E: std::error::Error>(e: E) -> ToolCallError {
-    ToolCallError::RuntimeError(e.to_string().into())
+pub fn tool_data(data: Value) -> Result<Value, ToolCallError> {
+    Ok(json!({ "ok": true, "data": data }))
 }
 
-pub fn toolcall_anyhow_err(e: anyhow::Error) -> ToolCallError {
-    ToolCallError::RuntimeError(e.to_string().into())
+pub fn tool_with(msg: impl Into<String>, data: Value) -> Result<Value, ToolCallError> {
+    Ok(json!({ "ok": true, "message": msg.into(), "data": data }))
 }
 
-pub fn toolcall_err(msg: impl Into<String>) -> ToolCallError {
-    ToolCallError::RuntimeError(Into::<String>::into(msg).into())
+pub fn tool_err(msg: impl Into<String>) -> ToolCallError {
+    ToolCallError::RuntimeError(msg.into().into())
+}
+
+pub trait MapToolErr<T> {
+    fn into_tool_err(self) -> Result<T, ToolCallError>;
+}
+
+impl<T> MapToolErr<T> for Result<T, AppError> {
+    fn into_tool_err(self) -> Result<T, ToolCallError> {
+        self.map_err(|e| ToolCallError::RuntimeError(Box::new(e)))
+    }
 }

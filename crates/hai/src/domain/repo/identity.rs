@@ -1,7 +1,6 @@
-use anyhow::Result;
 use sqlx::PgPool;
 
-use crate::domain::entity::Identity;
+use crate::{domain::entity::Identity, error::Result};
 
 pub struct IdentityRepo;
 

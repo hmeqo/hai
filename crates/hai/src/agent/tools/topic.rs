@@ -1,19 +1,25 @@
 use std::sync::Arc;
 
-use anyhow::Result;
-use autoagents::async_trait;
-use autoagents::core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT};
+use autoagents::{
+    async_trait,
+    core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
+};
 use autoagents_derive::{ToolInput, tool};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::components::topic_section;
-use crate::agent::render::render_json;
-use crate::agent::tools::util::{ToolResult, toolcall_anyhow_err};
-use crate::domain::service::Services;
-
-// --- Create Topic Tool ---
+use crate::{
+    agent::{
+        context::topic_section,
+        tools::{
+            ToolContext,
+            util::{MapToolErr, tool_data, tool_ok, tool_with},
+        },
+    },
+    agentcore::render::render_json,
+    domain::service::DbServices,
+};
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct CreateTopicArgs {
@@ -33,7 +39,7 @@ pub struct CreateTopicArgs {
     input = CreateTopicArgs,
 )]
 pub struct CreateTopic {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -52,17 +58,11 @@ impl ToolRuntime for CreateTopic {
                 None,
             )
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
-        Ok(ToolResult::success_with_data(
-            "话题已创建",
-            serde_json::json!({ "topic": render_json(topic_section(&[topic])) }),
-        )
-        .to_value())
+        tool_data(serde_json::json!({ "topic": render_json(topic_section(&[topic])) }))
     }
 }
-
-// --- Assign Topic Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct AssignTopicArgs {
@@ -80,7 +80,7 @@ pub struct AssignTopicArgs {
     input = AssignTopicArgs,
 )]
 pub struct AssignTopic {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -93,17 +93,14 @@ impl ToolRuntime for AssignTopic {
             .topic
             .assign_topic(&typed_args.message_ids, typed_args.topic_id)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
-        Ok(ToolResult::success_with_data(
+        tool_with(
             format!("已归类 {count} 条消息"),
             serde_json::json!({ "topic_id": typed_args.topic_id.to_string(), "count": count }),
         )
-        .to_value())
     }
 }
-
-// --- List Topics Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct ListTopicsArgs {
@@ -123,7 +120,7 @@ pub struct ListTopicsArgs {
     input = ListTopicsArgs,
 )]
 pub struct ListTopics {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -143,21 +140,15 @@ impl ToolRuntime for ListTopics {
                 offset,
             )
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
         if topics.is_empty() {
-            return Ok(ToolResult::success("没有话题").to_value());
+            return tool_ok();
         }
 
-        Ok(ToolResult::success_with_data(
-            "话题列表",
-            serde_json::json!({ "topics": render_json(topic_section(&topics)) }),
-        )
-        .to_value())
+        tool_data(serde_json::json!({ "topics": render_json(topic_section(&topics)) }))
     }
 }
-
-// --- Search Topics Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct SearchTopicsArgs {
@@ -175,7 +166,7 @@ pub struct SearchTopicsArgs {
     input = SearchTopicsArgs,
 )]
 pub struct SearchTopics {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -189,19 +180,13 @@ impl ToolRuntime for SearchTopics {
             .topic
             .search_topics_by_query(typed_args.chat_id, &typed_args.query, limit)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
         let topic_entities: Vec<_> = topics.into_iter().map(|t| t.topic).collect();
 
         let section = topic_section(&topic_entities);
-        Ok(ToolResult::success_with_data(
-            "搜索结果",
-            serde_json::json!({ "topics": render_json(section), "query": typed_args.query }),
-        )
-        .to_value())
+        tool_data(serde_json::json!({ "topics": render_json(section), "query": typed_args.query }))
     }
 }
-
-// --- Update Topic Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct CorrectTopicArgs {
@@ -219,7 +204,7 @@ pub struct CorrectTopicArgs {
     input = CorrectTopicArgs,
 )]
 pub struct CorrectTopic {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -232,8 +217,8 @@ impl ToolRuntime for CorrectTopic {
                 .topic
                 .update_title(typed_args.topic_id, title)
                 .await
-                .map_err(toolcall_anyhow_err)?;
-            return Ok(ToolResult::success("标题已更新").to_value());
+                .into_tool_err()?;
+            return tool_ok();
         }
 
         if let Some(summary) = &typed_args.summary {
@@ -241,15 +226,13 @@ impl ToolRuntime for CorrectTopic {
                 .topic
                 .update_summary(typed_args.topic_id, summary)
                 .await
-                .map_err(toolcall_anyhow_err)?;
-            return Ok(ToolResult::success("摘要已更新").to_value());
+                .into_tool_err()?;
+            return tool_ok();
         }
 
-        Ok(ToolResult::success("无事发生").to_value())
+        tool_ok()
     }
 }
-
-// --- Push Topic Summary Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct PushTopicSummaryArgs {
@@ -265,7 +248,7 @@ pub struct PushTopicSummaryArgs {
     input = PushTopicSummaryArgs,
 )]
 pub struct PushTopicSummary {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -277,13 +260,11 @@ impl ToolRuntime for PushTopicSummary {
             .topic
             .push_summary(typed_args.topic_id, &typed_args.summary)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
-        Ok(ToolResult::success("摘要已追加").to_value())
+        tool_ok()
     }
 }
-
-// --- Finish Topic Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct FinishTopicArgs {
@@ -301,7 +282,7 @@ pub struct FinishTopicArgs {
     input = FinishTopicArgs,
 )]
 pub struct FinishTopic {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -314,19 +295,17 @@ impl ToolRuntime for FinishTopic {
                 .topic
                 .update_title(typed_args.topic_id, title)
                 .await
-                .map_err(toolcall_anyhow_err)?;
+                .into_tool_err()?;
         }
 
         self.services
             .topic
             .finish_topic(typed_args.topic_id, &typed_args.summary)
             .await
-            .map_err(toolcall_anyhow_err)?;
-        Ok(ToolResult::success("已结项").to_value())
+            .into_tool_err()?;
+        tool_ok()
     }
 }
-
-// --- Delete Topic Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct DeleteTopicArgs {
@@ -340,7 +319,7 @@ pub struct DeleteTopicArgs {
     input = DeleteTopicArgs,
 )]
 pub struct DeleteTopic {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -352,39 +331,36 @@ impl ToolRuntime for DeleteTopic {
             .topic
             .delete_topic(typed_args.topic_id)
             .await
-            .map_err(toolcall_anyhow_err)?;
-        Ok(
-            ToolResult::success_with_data("已删除", serde_json::json!({ "deleted_count": count }))
-                .to_value(),
-        )
+            .into_tool_err()?;
+        tool_data(serde_json::json!({ "deleted_count": count }))
     }
 }
 
-pub fn get_topic_tools(services: Arc<Services>) -> Vec<Arc<dyn ToolT>> {
+pub fn get_topic_tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(CreateTopic {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(AssignTopic {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(ListTopics {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(SearchTopics {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(CorrectTopic {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(PushTopicSummary {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(FinishTopic {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(DeleteTopic {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
     ]
 }

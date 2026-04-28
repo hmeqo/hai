@@ -42,7 +42,7 @@ impl Account {
 #[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
-    Telegram,
     System,
+    Telegram,
     Qq,
 }

@@ -1,38 +1,60 @@
 use std::path::PathBuf;
 
+use crate::config::{env, meta::PROJECT_NAME};
+
 pub struct PathResolver;
 
 impl PathResolver {
-    /// 解析配置文件路径（支持多路径回退）
-    pub fn config_file() -> PathBuf {
-        let local = PathBuf::from(".hai/config.toml");
-
-        if local.exists() {
-            return local;
-        }
-        if let Some(mut path) = dirs::config_dir() {
-            path.push("hai");
-            path.push("config.toml");
-            path
-        } else {
-            local
-        }
+    fn local_dir() -> PathBuf {
+        PathBuf::from(format!(".{PROJECT_NAME}"))
     }
 
-    /// 解析 skills 目录列表（按顺序加载，后者同名覆盖前者）
-    /// 优先级：XDG_CONFIG_HOME/hai/skills > .hai/skills > .agents/skills
-    pub fn skill_dirs() -> Vec<PathBuf> {
-        let mut dirs = Vec::new();
+    fn config_dir() -> PathBuf {
+        let local = Self::local_dir();
 
-        if let Some(mut path) = dirs::config_dir() {
-            path.push("hai");
-            path.push("skills");
-            dirs.push(path);
+        if local.exists() || env::local_mode() {
+            return local;
         }
 
-        dirs.push(PathBuf::from(".hai/skills"));
-        dirs.push(PathBuf::from(".agents/skills"));
+        dirs::config_dir()
+            .map(|p| p.join(PROJECT_NAME))
+            .unwrap_or(local)
+    }
 
-        dirs
+    /// 数据目录
+    fn data_dir() -> PathBuf {
+        let local = Self::local_dir();
+
+        if local.exists() || env::local_mode() {
+            return local;
+        }
+
+        dirs::data_dir()
+            .map(|p| p.join(PROJECT_NAME))
+            .unwrap_or(local)
+    }
+
+    /// 解析配置文件路径（支持多路径回退）
+    pub fn config_file() -> PathBuf {
+        let config_dir = Self::config_dir();
+        config_dir.join("config.toml")
+    }
+
+    /// 解析 skills 目录列表
+    pub fn skill_dirs() -> Vec<PathBuf> {
+        let dirs = vec![
+            Self::config_dir().join("skills"),
+            Self::local_dir().join("skills"),
+            PathBuf::from(".agents/skills"),
+        ];
+
+        dirs.into_iter().filter(|d| d.exists()).collect()
+    }
+
+    /// 附件缓存目录
+    pub fn file_cache_dir() -> PathBuf {
+        let mut path = Self::data_dir();
+        path.push("files");
+        path
     }
 }

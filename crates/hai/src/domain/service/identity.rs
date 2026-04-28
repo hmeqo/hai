@@ -1,13 +1,16 @@
-use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::{
-    entity::Identity,
-    repo::{AccountRepo, IdentityRepo},
+use crate::{
+    domain::{
+        entity::Identity,
+        repo::{AccountRepo, IdentityRepo},
+    },
+    error::Result,
 };
 
 /// 身份管理服务
+#[derive(Debug)]
 pub struct IdentityService {
     pool: PgPool,
 }

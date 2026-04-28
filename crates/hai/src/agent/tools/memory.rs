@@ -1,20 +1,25 @@
 use std::sync::Arc;
 
-use anyhow::Result;
-use autoagents::async_trait;
-use autoagents::core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT};
+use autoagents::{
+    async_trait,
+    core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
+};
 use autoagents_derive::{ToolInput, tool};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::components::related_memories_section;
-use crate::agent::render::render_json;
-use crate::agent::tools::util::{ToolResult, toolcall_anyhow_err, toolcall_err};
-use crate::domain::service::Services;
-use crate::domain::vo::MemoryInput;
-
-// --- Record Memory Category ---
+use crate::{
+    agent::{
+        context::related_memories_section,
+        tools::{
+            ToolContext,
+            util::{MapToolErr, tool_data, tool_err, tool_ok},
+        },
+    },
+    agentcore::render::render_json,
+    domain::{service::DbServices, vo::MemoryInput},
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,8 +29,6 @@ pub enum RecordMemoryCategory {
     Note,
     ChatRule,
 }
-
-// --- Record Memory Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct RecordMemoryArgs {
@@ -47,7 +50,7 @@ pub struct RecordMemoryArgs {
     input = RecordMemoryArgs,
 )]
 pub struct RecordMemory {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -63,8 +66,8 @@ impl ToolRuntime for RecordMemory {
         } = typed_args;
         let input = match typed_args.category {
             RecordMemoryCategory::UserFact => {
-                let account_id = account_id
-                    .ok_or_else(|| toolcall_err("account_id is required for 'user_fact'"))?;
+                let account_id =
+                    account_id.ok_or_else(|| tool_err("account_id is required for 'user_fact'"))?;
                 MemoryInput::CreateUserFact {
                     account_id,
                     chat_id,
@@ -84,13 +87,11 @@ impl ToolRuntime for RecordMemory {
             .memory
             .save_memory(input)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
-        Ok(ToolResult::success("记忆已保存").to_value())
+        tool_ok()
     }
 }
-
-// --- Update Memory Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct CorrectMemoryArgs {
@@ -112,7 +113,7 @@ pub struct CorrectMemoryArgs {
     input = CorrectMemoryArgs,
 )]
 pub struct CorrectMemory {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -144,8 +145,7 @@ impl ToolRuntime for CorrectMemory {
             },
             RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
                 chat_id,
-                content: content
-                    .ok_or_else(|| toolcall_err("content is required for 'chat_rule'"))?,
+                content: content.ok_or_else(|| tool_err("content is required for 'chat_rule'"))?,
             },
         };
 
@@ -153,13 +153,11 @@ impl ToolRuntime for CorrectMemory {
             .memory
             .save_memory(input)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
-        Ok(ToolResult::success("记忆已更新").to_value())
+        tool_ok()
     }
 }
-
-// --- Search Memory Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct SearchMemoryArgs {
@@ -177,7 +175,7 @@ pub struct SearchMemoryArgs {
     input = SearchMemoryArgs,
 )]
 pub struct SearchMemory {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -191,18 +189,12 @@ impl ToolRuntime for SearchMemory {
             .memory
             .search_knowledge(typed_args.chat_id, &typed_args.query, limit)
             .await
-            .map_err(toolcall_anyhow_err)?;
+            .into_tool_err()?;
 
         let section = related_memories_section(&memories, "memories");
-        Ok(ToolResult::success_with_data(
-            "记忆搜索成功",
-            serde_json::json!({ "memories": render_json(section) }),
-        )
-        .to_value())
+        tool_data(serde_json::json!({ "memories": render_json(section) }))
     }
 }
-
-// --- Delete Memory Tool ---
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct DeleteMemoryArgs {
@@ -216,7 +208,7 @@ pub struct DeleteMemoryArgs {
     input = DeleteMemoryArgs,
 )]
 pub struct DeleteMemory {
-    pub services: Arc<Services>,
+    pub services: DbServices,
 }
 
 #[async_trait]
@@ -228,28 +220,24 @@ impl ToolRuntime for DeleteMemory {
             .memory
             .delete(typed_args.id)
             .await
-            .map_err(toolcall_anyhow_err)?;
-        Ok(ToolResult::success_with_data(
-            "已删除记忆/笔记",
-            serde_json::json!({ "deleted_count": count }),
-        )
-        .to_value())
+            .into_tool_err()?;
+        tool_data(serde_json::json!({ "deleted_count": count }))
     }
 }
 
-pub fn tools(services: Arc<Services>) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(RecordMemory {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(CorrectMemory {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(SearchMemory {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
         Arc::new(DeleteMemory {
-            services: Arc::clone(&services),
+            services: ctx.services(),
         }),
     ]
 }

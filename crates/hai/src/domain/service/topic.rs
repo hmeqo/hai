@@ -1,27 +1,26 @@
-use std::sync::Arc;
-
-use anyhow::Result;
 use pgvector::Vector;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agent::multimodal::EmbeddingService,
+    agentcore::multimodal::MultimodalService,
     domain::{
         entity::{Topic, TopicStatus},
         repo::{MessageRepo, TopicRepo},
         vo::TopicSearchResult,
     },
+    error::{ErrorKind, Result},
 };
 
-/// 话题管理服务（对应 Agent A 工具集）
+/// 话题管理服务
+#[derive(Debug)]
 pub struct TopicService {
     pool: PgPool,
-    embedding: Arc<EmbeddingService>,
+    embedding: MultimodalService,
 }
 
 impl TopicService {
-    pub fn new(pool: PgPool, embedding: Arc<EmbeddingService>) -> Self {
+    pub fn new(pool: PgPool, embedding: MultimodalService) -> Self {
         Self { pool, embedding }
     }
 
@@ -62,7 +61,7 @@ impl TopicService {
         if let Some(topic) = &topic
             && topic.status() == TopicStatus::Closed
         {
-            anyhow::bail!("Cannot push summary to a closed topic");
+            return Err(ErrorKind::BadRequest.with_msg("Cannot push summary to a closed topic"));
         }
         let formatted = format!("\n---\n{}", new_summary);
         TopicRepo::append_summary(&self.pool, topic_id, &formatted).await
@@ -73,7 +72,7 @@ impl TopicService {
         if let Some(topic) = &topic
             && topic.status() == TopicStatus::Closed
         {
-            anyhow::bail!("Cannot update summary of a closed topic");
+            return Err(ErrorKind::BadRequest.with_msg("Cannot update summary of a closed topic"));
         }
         TopicRepo::update_summary(&self.pool, topic_id, new_summary).await
     }

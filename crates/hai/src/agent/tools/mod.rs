@@ -3,30 +3,51 @@ use std::sync::Arc;
 use autoagents::prelude::ToolT;
 use tokio::sync::mpsc;
 
-use crate::{agent::event::BotSignal, domain::service::Services};
+use crate::{
+    agent::{AttachmentService, event::BotSignal},
+    app::AppContext,
+    domain::service::DbServices,
+};
 
 pub mod account;
 pub mod memory;
 pub mod message;
+pub mod multimodal;
 pub mod scratchpad;
+pub mod skills;
 pub mod topic;
 pub mod util;
+pub mod voice;
 
-pub use util::ToolResult;
+pub struct ToolContext {
+    pub ctx: AppContext,
+    pub chat_id: i64,
+    pub signal_tx: mpsc::UnboundedSender<BotSignal>,
+}
 
-pub fn get_main_agent_tools(
-    services: Arc<Services>,
-    chat_id: i64,
-    signal_tx: mpsc::UnboundedSender<BotSignal>,
-) -> Vec<Arc<dyn ToolT>> {
-    [
-        account::tools(Arc::clone(&services)),
-        message::get_message_tools(Arc::clone(&services), chat_id, signal_tx),
-        topic::get_topic_tools(Arc::clone(&services)),
-        memory::tools(Arc::clone(&services)),
-        scratchpad::tools(Arc::clone(&services)),
+impl ToolContext {
+    pub fn services(&self) -> DbServices {
+        self.ctx.db.srv.clone()
+    }
+
+    pub fn attachment(&self) -> AttachmentService {
+        self.ctx.agent.attachment.clone()
+    }
+}
+
+pub fn get_main_agent_tools(ctx: ToolContext) -> Vec<Arc<dyn ToolT>> {
+    let tools: Vec<Arc<dyn ToolT>> = [
+        account::tools(&ctx),
+        message::get_message_tools(&ctx),
+        topic::get_topic_tools(&ctx),
+        memory::tools(&ctx),
+        scratchpad::tools(&ctx),
+        multimodal::multimodal_tools(&ctx),
+        voice::get_voice_tools(&ctx),
     ]
     .into_iter()
     .flatten()
-    .collect()
+    .collect();
+
+    tools
 }

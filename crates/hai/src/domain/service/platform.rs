@@ -1,13 +1,16 @@
-use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::{
-    entity::{Account, Chat, ChatType, Platform},
-    repo::{AccountRepo, ChatRepo},
+use crate::{
+    domain::{
+        entity::{Account, Chat, ChatType, Platform},
+        repo::{AccountRepo, ChatRepo},
+    },
+    error::Result,
 };
 
-/// 平台 ID 映射服务：将平台原始 ID 转换为内部 ID
+/// 平台服务
+#[derive(Debug)]
 pub struct PlatformService {
     pool: PgPool,
 }

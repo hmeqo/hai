@@ -69,7 +69,7 @@ impl TriggerCause {
         match self {
             Self::Private => "你收到了一条私信。".to_string(),
             Self::Mention => "你在群里被 @ 了。".to_string(),
-            Self::Random => "你闲着没事翻了一眼群消息。".to_string(),
+            Self::Random => "你随手翻了一眼群消息, 没有主要任务。".to_string(),
             Self::Cron(payload) => {
                 if let Some(id) = payload.task_id {
                     format!(
@@ -163,6 +163,16 @@ pub enum BotSignal {
     SendMessage {
         chat_id: i64,
         content: String,
+        topic_id: Option<Uuid>,
+        /// 内部消息 ID，用于平台侧回复特定消息
+        platform_reply_to_id: Option<i64>,
+    },
+    /// 发送语音消息
+    SendVoice {
+        chat_id: i64,
+        audio_bytes: Vec<u8>,
+        /// 语音内容（agent 在 send_voice 中填写的 prompt）
+        prompt: String,
         topic_id: Option<Uuid>,
         /// 内部消息 ID，用于平台侧回复特定消息
         platform_reply_to_id: Option<i64>,
