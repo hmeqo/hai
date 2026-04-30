@@ -2,7 +2,7 @@ use pgvector::Vector;
 use sqlx::PgPool;
 
 use crate::{
-    agentcore::multimodal::MultimodalService,
+    agent::node::MultimodalService,
     domain::{entity::Perception, repo::PerceptionRepo, vo::Source},
     error::Result,
 };

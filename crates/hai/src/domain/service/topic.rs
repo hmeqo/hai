@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agentcore::multimodal::MultimodalService,
+    agent::node::MultimodalService,
     domain::{
         entity::{Topic, TopicStatus},
         repo::{MessageRepo, TopicRepo},
@@ -61,7 +61,7 @@ impl TopicService {
         if let Some(topic) = &topic
             && topic.status() == TopicStatus::Closed
         {
-            return Err(ErrorKind::BadRequest.with_msg("Cannot push summary to a closed topic"));
+            return Err(ErrorKind::BadRequest.msg("Cannot push summary to a closed topic"));
         }
         let formatted = format!("\n---\n{}", new_summary);
         TopicRepo::append_summary(&self.pool, topic_id, &formatted).await
@@ -72,7 +72,7 @@ impl TopicService {
         if let Some(topic) = &topic
             && topic.status() == TopicStatus::Closed
         {
-            return Err(ErrorKind::BadRequest.with_msg("Cannot update summary of a closed topic"));
+            return Err(ErrorKind::BadRequest.msg("Cannot update summary of a closed topic"));
         }
         TopicRepo::update_summary(&self.pool, topic_id, new_summary).await
     }

@@ -14,7 +14,7 @@ use timeago::Formatter;
 use uuid::Uuid;
 
 use crate::{
-    bot::telegram::BotIdentity,
+    agent::link::BotProfile,
     domain::{
         entity::{Account, Chat, Message, Perception, Scratchpad, Topic},
         service::memory::RelatedMemory,
@@ -40,7 +40,7 @@ pub struct RenderContext {
 #[derive(Debug)]
 pub struct RenderContextData {
     // ── 身份与环境 ──────────────────────────────────────────────────────
-    pub bot: BotIdentity,
+    pub bot: BotProfile,
     pub chat: Chat,
     pub current_time: String,
 
@@ -127,7 +127,7 @@ impl RenderContext {
     /// 获取消息发送者的显示名称
     pub fn sender_name(&self, msg: &Message) -> String {
         let account_id = match msg.account_id {
-            Some(id) if id == self.bot.account_id() => return "You".to_string(),
+            Some(id) if id == self.bot.account_id => return "You".to_string(),
             Some(id) => id,
             None => {
                 return if msg.role == "assistant" {

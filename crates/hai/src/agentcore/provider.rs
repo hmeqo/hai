@@ -77,7 +77,7 @@ impl ProviderBackend {
                 builder
                     .build()
                     .map(|arc| arc as Arc<dyn LLMProvider>)
-                    .change_err(ErrorKind::Internal)
+                    .err_kind(ErrorKind::Internal)
             }};
         }
 
@@ -92,7 +92,7 @@ impl ProviderBackend {
             Self::Groq => build_provider!(autoagents::llm::backends::groq::Groq),
             Self::Ollama => build_provider!(autoagents::llm::backends::ollama::Ollama),
             Self::XAI => build_provider!(autoagents::llm::backends::xai::XAI),
-            other => Err(ErrorKind::InvalidParameter.with_msg(
+            other => Err(ErrorKind::InvalidParameter.msg(
                 format!("LLM provider '{other}' is not yet supported. Supported: openrouter, openai, anthropic, google, deepseek, groq, ollama, xai, requesty"),
             )),
         }

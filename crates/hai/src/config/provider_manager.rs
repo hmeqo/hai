@@ -20,7 +20,7 @@ impl ProviderManager {
         let mut providers = HashMap::new();
 
         for (name, provider_cfg) in &config.providers {
-            let backend = ProviderBackend::from_str(name).change_err_msg(
+            let backend = ProviderBackend::from_str(name).err_kind_msg(
                 ErrorKind::Config,
                 format!("Invalid provider type '{}'", name),
             )?;

@@ -12,10 +12,8 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::topic_section,
-        tools::{
-            ToolContext,
-            util::{MapToolErr, tool_data, tool_ok, tool_with},
-        },
+        round::RoundContext,
+        tools::util::{MapToolErr, tool_data, tool_ok, tool_with},
     },
     agentcore::render::render_json,
     domain::service::DbServices,
@@ -336,7 +334,7 @@ impl ToolRuntime for DeleteTopic {
     }
 }
 
-pub fn get_topic_tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
+pub fn get_topic_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(CreateTopic {
             services: ctx.services(),

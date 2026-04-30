@@ -38,7 +38,7 @@ pub fn build_context_section(ctx: &RenderContext, instruction: Section) -> Secti
     let accounts_section = section("accounts").add_children(
         ctx.accounts
             .iter()
-            .filter(|a| a.id != ctx.bot.account_id())
+            .filter(|a| a.id != ctx.bot.account_id)
             .map(account_element),
     );
 
@@ -87,7 +87,7 @@ fn build_env_section(ctx: &RenderContext) -> Section {
     let mut env = section("environment")
         .with_item(
             item("you_are")
-                .with_attr("id", ctx.bot.account_id())
+                .with_attr("id", ctx.bot.account_id)
                 .with_attr("username", &ctx.bot.username)
                 .with_attr("name", &ctx.bot.name),
         )

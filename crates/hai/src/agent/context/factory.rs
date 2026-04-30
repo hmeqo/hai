@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::render_context::{RenderContext, RenderContextData};
 use crate::{
-    bot::telegram::BotIdentity,
+    agent::link::BotProfile,
     config::AppConfig,
     domain::{
         entity::{Message, Perception},
@@ -31,7 +31,7 @@ impl ContextFactory {
 
     pub async fn build_context(
         &self,
-        bot: BotIdentity,
+        bot: BotProfile,
         chat_id: i64,
         limit: i64,
     ) -> Result<RenderContext> {

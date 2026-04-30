@@ -17,8 +17,8 @@ use struct_patch::Patch;
 use crate::config::{
     manager::Configurable,
     schema::{
-        AgentConfig, DatabaseConfig, GenerationModelConfig, LoggingConfig, McpConfig,
-        MultimodalConfig, ProviderConfig, SkillsConfig, TelegramConfig,
+        AgentConfig, BotConfigRaw, DatabaseConfig, GenerationModelConfig, LoggingConfig, McpConfig,
+        MultimodalConfig, ProviderConfig, SkillsConfig,
     },
 };
 
@@ -31,7 +31,7 @@ pub struct AppConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub multimodal: MultimodalConfig,
     pub model: HashMap<String, GenerationModelConfig>,
-    pub telegram: TelegramConfig,
+    pub bot: HashMap<String, BotConfigRaw>,
     pub mcp: HashMap<String, McpConfig>,
     pub skills: SkillsConfig,
     pub logging: LoggingConfig,

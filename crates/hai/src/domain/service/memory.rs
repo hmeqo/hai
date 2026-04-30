@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agentcore::multimodal::MultimodalService,
+    agent::node::MultimodalService,
     domain::{
         entity::{Memory, MemoryType},
         repo::MemoryRepo,
@@ -62,7 +62,7 @@ impl MemoryService {
                     .await?
                     .is_some()
                 {
-                    return Err(ErrorKind::AlreadyExists.with_msg(
+                    return Err(ErrorKind::AlreadyExists.msg(
                         "UserFact already exists for this account and chat with the same content",
                     ));
                 }
@@ -85,7 +85,7 @@ impl MemoryService {
                     .is_some()
                 {
                     return Err(ErrorKind::AlreadyExists
-                        .with_msg("AgentNote already exists for this chat with the same content"));
+                        .msg("AgentNote already exists for this chat with the same content"));
                 }
                 let mut memory = Memory::new(memory_type, content);
                 memory.chat_id = Some(chat_id);
@@ -98,7 +98,7 @@ impl MemoryService {
                     .is_some()
                 {
                     return Err(ErrorKind::AlreadyExists
-                        .with_msg("Knowledge already exists for this chat with the same content"));
+                        .msg("Knowledge already exists for this chat with the same content"));
                 }
                 let embedding = self
                     .compute_embedding_if_needed(memory_type, &content)

@@ -12,10 +12,8 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::related_memories_section,
-        tools::{
-            ToolContext,
-            util::{MapToolErr, tool_data, tool_err, tool_ok},
-        },
+        round::RoundContext,
+        tools::util::{MapToolErr, tool_data, tool_err, tool_ok},
     },
     agentcore::render::render_json,
     domain::{service::DbServices, vo::MemoryInput},
@@ -225,7 +223,7 @@ impl ToolRuntime for DeleteMemory {
     }
 }
 
-pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(RecordMemory {
             services: ctx.services(),

@@ -18,7 +18,7 @@ pub use scratchpad::ScratchpadService;
 use sqlx::PgPool;
 pub use topic::TopicService;
 
-use crate::agentcore::multimodal::MultimodalService;
+use crate::agent::node::MultimodalService;
 
 #[derive(Debug, Clone, Deref)]
 pub struct DbServices(Arc<DbServicesInner>);

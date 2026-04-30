@@ -2,30 +2,29 @@ use std::sync::Arc;
 
 use tap::Tap;
 use teloxide::{
-    Bot, dispatching::dialogue::InMemStorage, dptree, prelude::*, types::Me,
+    Bot,
+    dispatching::dialogue::InMemStorage,
+    dptree,
+    prelude::*,
+    types::{Me, Message},
     utils::command::BotCommands,
 };
-use tokio::sync::mpsc;
 
+use super::util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type};
 use crate::{
-    agent::event::{AgentEvent, TriggerCause, TriggerStatus},
+    agent::{
+        event::{AgentEvent, TriggerCause, TriggerStatus},
+        link::{BotId, BotLink},
+    },
     app::AppContext,
-    bot::telegram::util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type},
     domain::{
         entity::{Account, Chat, ChatType, Platform},
-        service::NewUserMessage,
         vo::{PlatformAccountMeta, TelegramAccountMeta},
     },
-    error::{AppResultExt, ErrorKind, Result},
+    error::{AppError, AppResultExt, ErrorKind, Result},
 };
 
 const MAJOR_HELP_TEXT: &str = r#""#;
-
-#[derive(Debug, Clone, Default)]
-pub enum State {
-    #[default]
-    Start,
-}
 
 #[derive(Debug, BotCommands, Clone)]
 #[command(rename_rule = "lowercase")]
@@ -40,63 +39,115 @@ pub enum Command {
     OrganizeMemory,
 }
 
-pub struct BotHandler {
-    ctx: AppContext,
-    agent_event_tx: mpsc::UnboundedSender<AgentEvent>,
+#[derive(Debug, Clone, Default)]
+pub enum State {
+    #[default]
+    Start,
 }
 
-impl BotHandler {
+/// Telegram 平台适配器
+///
+/// 负责接收 Telegram 更新并将事件转发给 agent。
+/// 发送消息由 `TelegramBotActor` 负责，platform 不再持有 signal channel。
+pub struct TelegramPlatform {
+    pub bot_id: BotId,
+    pub bot: Bot,
+    pub ctx: AppContext,
+    pub link: BotLink,
+    pub allowed_chat_ids: Vec<i64>,
+}
+
+impl TelegramPlatform {
     pub async fn new(
+        bot_id: BotId,
+        bot: Bot,
         ctx: AppContext,
-        agent_event_tx: mpsc::UnboundedSender<AgentEvent>,
+        link: BotLink,
+        allowed_chat_ids: Vec<i64>,
     ) -> Result<Self> {
-        ctx.bot.set_my_commands(Command::bot_commands()).await?;
+        bot.set_my_commands(Command::bot_commands()).await?;
         Ok(Self {
+            bot_id,
+            bot,
             ctx,
-            agent_event_tx,
+            link,
+            allowed_chat_ids,
         })
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<()> {
-        let handler = Update::filter_message()
+    pub async fn run(self) -> Result<()> {
+        Self::run_dispatcher(
+            self.bot_id,
+            self.bot,
+            self.ctx,
+            self.link.event_tx,
+            self.allowed_chat_ids,
+        )
+        .await
+    }
+
+    async fn run_dispatcher(
+        bot_id: BotId,
+        bot: Bot,
+        ctx: AppContext,
+        event_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+        allowed_chat_ids: Vec<i64>,
+    ) -> Result<()> {
+        let handler = Arc::new(DispatchCtx {
+            ctx,
+            event_tx,
+            allowed_chat_ids,
+        });
+
+        let dispatcher_handler = Update::filter_message()
             .branch(
                 dptree::entry()
-                    .filter(|msg: Message, bh: Arc<BotHandler>| {
-                        bh.is_allowed_chat(msg.chat.id).tap(|allowed| {
-                            if !allowed {
-                                tracing::warn!(
-                                    "Unauthorized message attempt from chat_id: {}, user: {:?}",
-                                    msg.chat.id,
-                                    msg.from.as_ref().map(|u| &u.username)
-                                );
-                            }
-                        })
+                    .filter(|msg: Message, h: Arc<DispatchCtx>| {
+                        if !h.is_allowed_chat(msg.chat.id) {
+                            tracing::warn!(
+                                "Unauthorized message attempt from chat_id: {}, user: {:?}",
+                                msg.chat.id,
+                                msg.from.as_ref().map(|u| &u.username)
+                            );
+                            return false;
+                        }
+                        true
                     })
                     .branch(dptree::entry().filter_command::<Command>().endpoint(
-                        |bot: Bot, msg: Message, cmd: Command, bh: Arc<BotHandler>| async {
-                            tokio::spawn(Self::handle_command(bot, msg, cmd, bh));
-                            Ok::<(), crate::error::AppError>(())
+                        |bot: Bot, msg: Message, cmd: Command, h: Arc<DispatchCtx>| async move {
+                            tokio::spawn(DispatchCtx::handle_command(bot, msg, cmd, h));
+                            Ok::<(), AppError>(())
                         },
                     ))
-                    .endpoint(|msg: Message, bh: Arc<BotHandler>, me: Me| async move {
-                        let _ = bh.handle_message(msg, me).await;
-                        Ok::<(), crate::error::AppError>(())
+                    .endpoint(|msg: Message, h: Arc<DispatchCtx>, me: Me| async move {
+                        let _ = h.handle_message(msg, me).await;
+                        Ok::<(), AppError>(())
                     }),
             )
             .branch(dptree::entry().enter_dialogue::<Message, InMemStorage<State>, State>())
-            .endpoint(|_: Bot, _: Message, _: Arc<BotHandler>| async { Ok(()) });
+            .endpoint(|_: Bot, _: Message, _: Arc<DispatchCtx>| async { Ok(()) });
 
-        Dispatcher::builder(self.ctx.bot.clone(), handler)
-            .dependencies(dptree::deps![self, InMemStorage::<State>::new()])
+        Dispatcher::builder(bot, dispatcher_handler)
+            .dependencies(dptree::deps![handler, InMemStorage::<State>::new()])
             .enable_ctrlc_handler()
             .build()
             .dispatch()
-            .tap(|_| tracing::info!("Started"))
+            .tap(|_| tracing::info!(bot_id = %bot_id, "Telegram dispatcher started"))
             .await;
 
         Ok(())
     }
+}
 
+// ─── 内部 dispatcher handler ──────────────────────────────────────────────────
+
+struct DispatchCtx {
+    ctx: AppContext,
+    event_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    allowed_chat_ids: Vec<i64>,
+}
+
+impl DispatchCtx {
     async fn handle_message(&self, msg: Message, me: Me) -> Result<()> {
         let Some(from) = msg.from.as_ref() else {
             return Ok(());
@@ -112,7 +163,7 @@ impl BotHandler {
 
     async fn get_internal_chat_id(&self, msg: &Message) -> Result<i64> {
         let Some(from) = msg.from.as_ref() else {
-            return Err(ErrorKind::BadRequest.with_msg("No sender"));
+            return Err(ErrorKind::BadRequest.msg("No sender"));
         };
         let (chat, _) = self
             .resolve_chat_and_account(msg, from, msg_chat_type(msg))
@@ -144,7 +195,7 @@ impl BotHandler {
                 Some(serde_json::to_value(account_meta)?),
             )
             .await
-            .change_err(ErrorKind::Internal)
+            .err_kind(ErrorKind::Internal)
     }
 
     async fn persist_user_message(
@@ -169,7 +220,7 @@ impl BotHandler {
             .db
             .srv
             .message
-            .save_user_message(NewUserMessage {
+            .save_user_message(crate::domain::service::NewUserMessage {
                 chat_id,
                 account_id,
                 content: serde_json::to_value(extracted.parts)?,
@@ -184,7 +235,7 @@ impl BotHandler {
 
     fn dispatch_agent_event(&self, chat_id: i64, chat_type: ChatType, msg: &Message, me: &Me) {
         if chat_type == ChatType::Private {
-            let _ = self.agent_event_tx.send(AgentEvent::Message {
+            let _ = self.event_tx.send(AgentEvent::Message {
                 chat_id,
                 cause: TriggerCause::Private,
             });
@@ -193,7 +244,7 @@ impl BotHandler {
 
         let is_mention = is_mentioning_user(msg, me.user.username.as_deref().unwrap_or(""));
         if let Some(reason) = self.ctx.agent.group_trigger.on_message(chat_id, is_mention)
-            && let Err(e) = self.agent_event_tx.send(AgentEvent::Message {
+            && let Err(e) = self.event_tx.send(AgentEvent::Message {
                 chat_id,
                 cause: reason,
             })
@@ -203,14 +254,14 @@ impl BotHandler {
     }
 
     fn is_allowed_chat(&self, chat_id: ChatId) -> bool {
-        self.ctx.cfg.telegram.allowed_chat_ids.contains(&chat_id.0)
+        self.allowed_chat_ids.contains(&chat_id.0)
     }
 
     async fn handle_command(
         bot: Bot,
         msg: Message,
         cmd: Command,
-        bh: Arc<BotHandler>,
+        h: Arc<DispatchCtx>,
     ) -> Result<()> {
         let chat_id = msg.chat.id;
         match cmd {
@@ -225,14 +276,14 @@ impl BotHandler {
                 .await?;
             }
             Command::Status => {
-                let inner_chat_id = bh.get_internal_chat_id(&msg).await?;
-                let s = bh.ctx.agent.group_trigger.status(inner_chat_id);
+                let inner_chat_id = h.get_internal_chat_id(&msg).await?;
+                let s = h.ctx.agent.group_trigger.status(inner_chat_id);
                 let text = format_trigger_status(&s);
                 bot.send_message(chat_id, text).await?;
             }
             Command::OrganizeMemory => {
-                let inner_chat_id = bh.get_internal_chat_id(&msg).await?;
-                bh.agent_event_tx
+                let inner_chat_id = h.get_internal_chat_id(&msg).await?;
+                h.event_tx
                     .send(AgentEvent::Message {
                         chat_id: inner_chat_id,
                         cause: TriggerCause::Command(
@@ -240,7 +291,7 @@ impl BotHandler {
                                 .into(),
                         ),
                     })
-                    .change_err(ErrorKind::Internal)?;
+                    .err_kind(ErrorKind::Internal)?;
             }
         }
         Ok(())

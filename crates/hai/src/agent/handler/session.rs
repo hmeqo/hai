@@ -5,20 +5,21 @@ use tokio::{
     time::{Duration, Instant, sleep_until},
 };
 
-use super::{AgentHandler, debounce::Debouncer, task::ActiveTask};
-use crate::agent::event::AgentEvent;
+use super::{AgentCtx, debounce::Debouncer, task::ActiveTask};
+use crate::agent::{event::AgentEvent, link::BotConn, round::RoundContext};
 
 /// 用于"挂起" sleep 的远期时间点，避免 Duration::MAX 溢出
 const FAR_FUTURE: Duration = Duration::from_secs(365 * 24 * 3600 * 30);
 
 /// 为指定 chat 启动独立的 session actor，返回其事件入口
-pub fn spawn_chat_session(
-    handler: Arc<AgentHandler>,
+pub(super) fn spawn_chat_session(
+    ctx: Arc<AgentCtx>,
     chat_id: i64,
+    conn: BotConn,
 ) -> mpsc::UnboundedSender<AgentEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let debounce_min = Duration::from_millis(handler.ctx.cfg.agent.trigger.debounce_ms);
-    tokio::spawn(ChatSession::new(handler, chat_id, rx, debounce_min).run());
+    let debounce_min = Duration::from_millis(ctx.app.cfg.agent.trigger.debounce_ms);
+    tokio::spawn(ChatSession::new(ctx, chat_id, conn, rx, debounce_min).run());
     tx
 }
 
@@ -36,8 +37,9 @@ pub fn spawn_chat_session(
 ///   · bypass（rapid）事件：跳过防抖等待（deadline = now），但仍受窗口期限制——
 ///     窗口期内可打断并立即触发，窗口期外不打断运行中的任务，等完成后立即触发
 struct ChatSession {
-    handler: Arc<AgentHandler>,
+    ctx: Arc<AgentCtx>,
     chat_id: i64,
+    conn: BotConn,
     rx: mpsc::UnboundedReceiver<AgentEvent>,
     debouncer: Debouncer,
     active: ActiveTask,
@@ -45,14 +47,16 @@ struct ChatSession {
 
 impl ChatSession {
     fn new(
-        handler: Arc<AgentHandler>,
+        ctx: Arc<AgentCtx>,
         chat_id: i64,
+        conn: BotConn,
         rx: mpsc::UnboundedReceiver<AgentEvent>,
         debounce_min: Duration,
     ) -> Self {
         Self {
-            handler,
+            ctx,
             chat_id,
+            conn,
             rx,
             debouncer: Debouncer::new(debounce_min),
             active: ActiveTask::idle(),
@@ -100,7 +104,13 @@ impl ChatSession {
                 {
                     let events = self.debouncer.flush();
                     tracing::debug!(chat_id, n = events.len(), "Debounce expired, spawning task.");
-                    self.active.spawn(Arc::clone(&self.handler), chat_id, events);
+                    let rc = RoundContext {
+                        ctx: self.ctx.app.clone(),
+                        chat_id,
+                        conn: self.conn.clone(),
+                        events,
+                    };
+                    self.active.spawn(Arc::clone(&self.ctx), rc);
                 },
             }
         }

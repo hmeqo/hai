@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumDiscriminants, EnumString, FromRepr, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr};
 use teloxide::types::FileId;
 use uuid::Uuid;
 
@@ -145,7 +145,7 @@ impl TelegramContentPart {
             TelegramContentPart::Document { file_name, .. } => {
                 let is_audio = file_name
                     .as_deref()
-                    .and_then(MediaCodec::from_ext)
+                    .and_then(MediaCodec::from_filename)
                     .is_some_and(MediaCodec::is_audio);
                 if is_audio {
                     Some(AttachmentParser::Audio)
@@ -171,7 +171,7 @@ impl TelegramContentPart {
             TelegramContentPart::Voice { .. } => Some(MediaCodec::Ogg),
             TelegramContentPart::Audio { .. } => Some(MediaCodec::Mp3),
             TelegramContentPart::Document { file_name, .. } => {
-                file_name.as_deref().and_then(MediaCodec::from_ext)
+                file_name.as_deref().and_then(MediaCodec::from_filename)
             }
             _ => None,
         }
@@ -212,7 +212,12 @@ pub struct VoiceMeta {
 
 /// 媒体编码格式，覆盖音频/视频，可从文件名扩展名推断。
 ///
-/// 扩展方式：新增变体 + 在 `from_extension` 中添加映射即可。
+/// # 职责划分
+/// - `ext()`：文件扩展名（如 `.ogg` 匹配用）
+/// - `api_format()`：传给 LLM API 的 format 字段（如 `"opus"`）
+/// - `from_ext()` / `from_filename()`：从文件名解析
+///
+/// 扩展方式：新增变体 + 在 `ext()` / `api_format()` / `is_audio()` / `is_video()` 中添加映射即可。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "lowercase")]
 pub enum MediaCodec {
@@ -237,13 +242,28 @@ impl MediaCodec {
         Self::Wav
     }
 
-    /// 文件扩展名，用于传给下游服务。
+    /// 文件扩展名（用于匹配文件名）。
     pub fn ext(self) -> &'static str {
         self.into()
     }
 
-    pub fn from_ext(name: &str) -> Option<Self> {
-        Self::from_str(name).ok()
+    /// LLM API format 字段（OpenAI 兼容：wav/mp3/ogg/mp4 等）。
+    pub fn api_format(self) -> &'static str {
+        self.ext()
+    }
+
+    /// 从纯扩展名解析（如 `"ogg"`）。
+    pub fn from_ext(ext: &str) -> Option<Self> {
+        Self::from_str(ext).ok()
+    }
+
+    /// 从完整文件名解析（自动提取扩展名，如 `"voice.ogg"`）。
+    pub fn from_filename(name: &str) -> Option<Self> {
+        let ext = std::path::Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or(name);
+        Self::from_ext(ext)
     }
 
     pub fn is_audio(self) -> bool {
@@ -253,7 +273,6 @@ impl MediaCodec {
         )
     }
 
-    /// 是否为视频编码。
     pub fn is_video(self) -> bool {
         matches!(
             self,

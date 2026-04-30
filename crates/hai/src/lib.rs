@@ -7,6 +7,7 @@ pub mod config;
 pub mod domain;
 pub mod error;
 pub mod infra;
+pub mod minimal;
 pub mod util;
 
 pub use app::App;

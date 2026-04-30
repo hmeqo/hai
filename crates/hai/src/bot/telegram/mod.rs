@@ -1,10 +1,9 @@
-pub mod bot;
-pub mod identity;
+pub mod actor;
+pub mod platform;
+pub mod sender;
 pub mod service;
-pub mod signalhandler;
 pub mod util;
 
-pub use bot::BotHandler;
-pub use identity::BotIdentity;
+pub use platform::TelegramPlatform;
+pub use sender::{TelegramSender, spawn_telegram_sender};
 pub use service::TelegramService;
-pub use signalhandler::BotSignalHandler;

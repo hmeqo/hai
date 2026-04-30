@@ -78,7 +78,7 @@ impl<T: Configurable> Config<T> {
         let content = match ext {
             // "toml" => toml::to_string_pretty(&*intent_guard)?,
             "json" => serde_json::to_string_pretty(&*intent_guard)?,
-            _ => return Err(ErrorKind::Config.with_msg(format!("不支持的文件格式: {}", ext))),
+            _ => return Err(ErrorKind::Config.msg(format!("不支持的文件格式: {}", ext))),
         };
 
         if let Some(parent) = path.parent() {

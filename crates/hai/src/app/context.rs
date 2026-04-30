@@ -7,11 +7,13 @@ use teloxide::Bot;
 
 use crate::{
     agent::{
-        attachment::AttachmentService, context::ContextFactory, event::GroupTrigger,
+        attachment::AttachmentService,
+        context::ContextFactory,
+        event::GroupTrigger,
+        node::{ModelService, MultimodalService},
         personality::PersonalityMgr,
     },
-    agentcore::multimodal::{ModelService, MultimodalService},
-    bot::telegram::{BotIdentity, TelegramService},
+    bot::telegram::TelegramService,
     config::{AppConfig, AppConfigManager, ProviderManager},
     domain::{db, service::DbServices},
     error::Result,
@@ -27,7 +29,7 @@ pub struct AppContextInner {
     pub cfg_mgr: AppConfigManager,
     pub cfg: Arc<AppConfig>,
     pub provider: ProviderContext,
-    pub bot: BotContext,
+    pub file_service: TelegramService,
     pub db: DbContext,
     pub agent: AgentContext,
 }
@@ -50,24 +52,17 @@ impl AppContext {
 
         let context_fty = ContextFactory::new(Arc::clone(&cfg), db_srv.clone());
 
-        let bot = Bot::new(&cfg.telegram.bot_token);
-        let bot_account = db_srv.platform.ensure_bot_account().await?;
-        let bot_identity = BotIdentity::new(bot_account, &bot).await?;
-        let tg_srv = TelegramService::new(bot.clone());
+        // 创建文件下载服务（取第一个 Telegram bot 的 token）
+        let file_service = create_telegram_service(&cfg);
 
         let file_cache = FileCache::new();
         let attachment = AttachmentService::new(
             file_cache,
-            tg_srv.clone(),
+            file_service.clone(),
             db_srv.clone(),
             multimodal.clone(),
         );
 
-        let bot_state = BotContext {
-            bot,
-            identity: bot_identity.clone(),
-            telegram: tg_srv,
-        };
         let provider = ProviderContext {
             provider: providers,
             multimodal,
@@ -86,12 +81,25 @@ impl AppContext {
                 cfg_mgr,
                 cfg,
                 provider,
+                file_service,
                 agent,
                 db,
-                bot: bot_state,
             }),
         })
     }
+}
+
+/// 从第一个配置的 Telegram bot 创建文件下载服务
+fn create_telegram_service(cfg: &AppConfig) -> TelegramService {
+    for (_, raw) in &cfg.bot {
+        if raw.bot_type.as_deref().unwrap_or("telegram") == "telegram"
+            && raw.bot_token.as_deref().is_some_and(|t| !t.is_empty())
+        {
+            return TelegramService::new(Bot::new(raw.bot_token.as_deref().unwrap_or("")));
+        }
+    }
+    tracing::warn!("No telegram bot configured — file download unavailable");
+    TelegramService::new(Bot::new(""))
 }
 
 pub struct DbContext {
@@ -122,19 +130,5 @@ impl AgentContext {
 
     pub fn set_current_model(&self, model: String) {
         self.current_model.store(Arc::new(model));
-    }
-}
-
-#[derive(Deref)]
-pub struct BotContext {
-    #[deref]
-    pub bot: Bot,
-    pub identity: BotIdentity,
-    pub telegram: TelegramService,
-}
-
-impl BotContext {
-    pub fn account_id(&self) -> i64 {
-        self.identity.account_id()
     }
 }

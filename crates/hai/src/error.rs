@@ -1,12 +1,7 @@
-use std::{
-    fmt::{Debug, Display},
-    net::AddrParseError,
-};
+use std::fmt::{Debug, Display};
 
-use reqwest::Error as ReqwestError;
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr};
-use teloxide::RequestError;
 use thiserror::Error;
 
 type DynError = dyn std::error::Error + Send + Sync + 'static;
@@ -87,23 +82,23 @@ impl ErrorKind {
         AppError::new(self)
     }
 
-    pub fn with_msg(self, msg: impl Into<String>) -> AppError {
+    pub fn msg(self, msg: impl Into<String>) -> AppError {
         AppError::new(self).with_msg(msg)
     }
 
     /// Wraps any error into an AppError of this kind
-    pub fn with_err<E>(self, err: E) -> AppError
+    pub fn err<E>(self, err: E) -> AppError
     where
         E: std::error::Error + Send + Sync + 'static,
     {
         AppError::new(self).with_err(err)
     }
 
-    pub fn with_dyn_err(self, err: BoxedDynError) -> AppError {
+    pub fn dyn_err(self, err: BoxedDynError) -> AppError {
         AppError::new(self).with_dyn_err(err)
     }
 
-    pub fn with_err_msg<E>(self, err: E, msg: impl Into<String>) -> AppError
+    pub fn err_msg<E>(self, err: E, msg: impl Into<String>) -> AppError
     where
         E: std::error::Error + Send + Sync + 'static,
     {
@@ -114,7 +109,7 @@ impl ErrorKind {
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        Self::Internal.with_err(err)
+        Self::Internal.err(err)
     }
 }
 
@@ -226,27 +221,27 @@ impl<T> OptionAppExt<T> for Option<T> {
     }
 
     fn ok_or_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T> {
-        self.ok_or_else(|| kind.with_msg(msg))
+        self.ok_or_else(|| kind.msg(msg))
     }
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
 pub trait AppResultExt<T> {
-    fn change_err(self, kind: ErrorKind) -> Result<T>;
-    fn change_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T>;
+    fn err_kind(self, kind: ErrorKind) -> Result<T>;
+    fn err_kind_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T>;
 }
 
 impl<T, E> AppResultExt<T> for std::result::Result<T, E>
 where
     E: std::error::Error + Send + Sync + 'static,
 {
-    fn change_err(self, kind: ErrorKind) -> Result<T> {
-        self.map_err(|e| kind.with_err(e))
+    fn err_kind(self, kind: ErrorKind) -> Result<T> {
+        self.map_err(|e| kind.err(e))
     }
 
-    fn change_err_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T> {
-        self.map_err(|e| kind.with_err_msg(e, msg))
+    fn err_kind_msg(self, kind: ErrorKind, msg: impl Into<String>) -> Result<T> {
+        self.map_err(|e| kind.err_msg(e, msg))
     }
 }
 
@@ -261,12 +256,12 @@ macro_rules! register_errors {
         $(
             impl From<$err_type> for AppError {
                 fn from(e: $err_type) -> Self {
-                    let err = $kind;
+                    let kind = $kind;
                     $(
-                        return err.with_err_msg(e, $msg);
+                        return kind.err_msg(e, $msg);
                     )?
                     #[allow(unreachable_code)]
-                    err.with_err(e)
+                    kind.err(e)
                 }
             }
         )*
@@ -278,11 +273,11 @@ register_errors! {
     std::io::Error                  => ErrorKind::Internal;
     serde_json::Error               => ErrorKind::DataParse;
     config::ConfigError             => ErrorKind::Config;
-    AddrParseError                  => ErrorKind::InvalidParameter, "Invalid address format";
-    RequestError                    => ErrorKind::Internal;
-    ReqwestError                    => ErrorKind::BadRequest, "HTTP request failed";
+    std::net::AddrParseError        => ErrorKind::InvalidParameter, "Invalid address format";
+    teloxide::RequestError          => ErrorKind::Internal;
+    reqwest::Error                  => ErrorKind::BadRequest, "HTTP request failed";
     sqlx::Error                     => ErrorKind::Internal;
-    sqlx::migrate::MigrateError      => ErrorKind::Internal;
+    sqlx::migrate::MigrateError     => ErrorKind::Internal;
     std::num::ParseIntError         => ErrorKind::DataParse, "Failed to parse integer";
     std::time::SystemTimeError      => ErrorKind::Internal;
     jiff::Error                     => ErrorKind::Internal;

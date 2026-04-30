@@ -156,27 +156,3 @@ impl AgentEvents for [&AgentEvent] {
         self.causes().any(|c| matches!(c, TriggerCause::Private))
     }
 }
-
-/// Agent → Bot 的信号
-#[derive(Debug)]
-pub enum BotSignal {
-    SendMessage {
-        chat_id: i64,
-        content: String,
-        topic_id: Option<Uuid>,
-        /// 内部消息 ID，用于平台侧回复特定消息
-        platform_reply_to_id: Option<i64>,
-    },
-    /// 发送语音消息
-    SendVoice {
-        chat_id: i64,
-        audio_bytes: Vec<u8>,
-        /// 语音内容（agent 在 send_voice 中填写的 prompt）
-        prompt: String,
-        topic_id: Option<Uuid>,
-        /// 内部消息 ID，用于平台侧回复特定消息
-        platform_reply_to_id: Option<i64>,
-    },
-    /// 发送"正在输入"状态提示
-    Typing { chat_id: i64 },
-}

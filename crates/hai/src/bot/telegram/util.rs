@@ -152,7 +152,7 @@ pub async fn download_file(bot: &Bot, file_id: &str) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     bot.download_file(&file.path, &mut data)
         .await
-        .change_err_msg(ErrorKind::BadRequest, "Failed to download file")?;
+        .err_kind_msg(ErrorKind::BadRequest, "Failed to download file")?;
     Ok(data)
 }
 

@@ -9,15 +9,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{
-    agent::{
-        event::BotSignal,
-        tools::{
-            ToolContext,
-            util::{MapToolErr, tool_ok},
-        },
-    },
-    agentcore::multimodal::MultimodalService,
+use crate::agent::{
+    link::{BotConn, SendVoiceReq},
+    node::MultimodalService,
+    round::RoundContext,
+    tools::util::{MapToolErr, tool_ok},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
@@ -39,7 +35,7 @@ pub struct SendVoiceArgs {
 )]
 pub struct SendVoice {
     pub chat_id: i64,
-    pub signal_tx: tokio::sync::mpsc::UnboundedSender<BotSignal>,
+    pub conn: BotConn,
     pub multimodal: MultimodalService,
 }
 
@@ -54,18 +50,22 @@ impl ToolRuntime for SendVoice {
             .await
             .into_tool_err()?;
 
-        let _ = self.signal_tx.send(BotSignal::SendVoice {
-            chat_id: self.chat_id,
-            audio_bytes,
-            prompt: typed_args.prompt,
-            topic_id: typed_args.topic_id,
-            platform_reply_to_id: typed_args.platform_reply_to_id,
-        });
+        self.conn
+            .send_voice(SendVoiceReq {
+                chat_id: self.chat_id,
+                audio_bytes,
+                prompt: typed_args.prompt,
+                topic_id: typed_args.topic_id,
+                platform_reply_to_id: typed_args.platform_reply_to_id,
+            })
+            .await
+            .into_tool_err()?;
+
         tool_ok()
     }
 }
 
-pub fn get_voice_tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
+pub fn get_voice_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     let tts_cfg = &ctx.ctx.cfg.multimodal.tts;
     if !tts_cfg.enabled() {
         return vec![];
@@ -73,7 +73,7 @@ pub fn get_voice_tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
 
     vec![Arc::new(SendVoice {
         chat_id: ctx.chat_id,
-        signal_tx: ctx.signal_tx.clone(),
+        conn: ctx.conn.clone(),
         multimodal: ctx.ctx.provider.multimodal.clone(),
     })]
 }

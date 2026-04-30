@@ -9,16 +9,17 @@ use std::{
 
 use autoagents::{core::agent::DirectAgentHandle, llm::LLMProvider, prelude::*};
 use autoagents_toolkit::mcp::{McpConfig, McpServerConfig, McpTools};
-pub use session::spawn_chat_session;
 use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     agent::{
         MainAgent,
         context::render_main_context,
-        event::{AgentEvent, AgentEvents, BotSignal},
+        event::{AgentEvent, AgentEvents},
+        link::{AgentLink, BotConn, BotId},
         prompts::{TOOL_MANUAL, personality_context},
-        tools::{ToolContext, get_main_agent_tools, skills::load_skill_tool},
+        round::RoundContext,
+        tools::{get_main_agent_tools, skills::load_skill_tool},
     },
     agentcore::{
         provider::LlmBuildConfig,
@@ -31,35 +32,27 @@ use crate::{
     error::{AppResultExt, ErrorKind, Result},
 };
 
-/// 核心 Agent 处理器
+// ─── Agent 执行上下文 ─────────────────────────────────────────────────────
+
+/// Agent 执行上下文（可在 Arc 内共享）
 ///
-/// 持有 `AppContext`（所有共享依赖）+ 运行时独有状态：
-/// - `signal_tx`：向 TelegramSender 发送信号
-/// - `llm`：支持运行时切换的 LLM provider
-/// - `mcp_tools` / `skill_manager`：启动时加载，生命周期与 handler 绑定
-///
-/// 供 `TelegramSender` 记录消息时读取，无需循环依赖。
-///
-/// 并发调度策略委托给 `session` 模块。
-pub struct AgentHandler {
-    pub ctx: AppContext,
-    pub signal_tx: mpsc::UnboundedSender<BotSignal>,
-    /// LLM 提供商（支持运行时切换）
+/// 负责 LLM 管理、Agent 组装、任务执行。不关心事件路由和连接管理。
+pub struct AgentCtx {
+    pub app: AppContext,
     llm: RwLock<Arc<dyn LLMProvider>>,
     pub mcp_tools: McpTools,
     pub skill_manager: Arc<SkillManager>,
 }
 
-impl AgentHandler {
-    pub async fn new(ctx: AppContext, signal_tx: mpsc::UnboundedSender<BotSignal>) -> Result<Self> {
-        let config = Arc::clone(&ctx.cfg);
+impl AgentCtx {
+    pub async fn new(app: AppContext) -> Result<Self> {
+        let config = Arc::clone(&app.cfg);
         let mcp_tools = Self::load_mcp_tools(&config).await?;
         let skill_manager = Arc::new(SkillManager::load(&config.skills.dirs).await?);
-        let llm = Self::build_llm(&ctx)?;
+        let llm = Self::build_llm(&app)?;
 
         Ok(Self {
-            ctx,
-            signal_tx,
+            app,
             llm: RwLock::new(llm),
             mcp_tools,
             skill_manager,
@@ -67,95 +60,16 @@ impl AgentHandler {
     }
 
     // -------------------------------------------------------------------------
-    // 事件路由
-    // -------------------------------------------------------------------------
-
-    /// 事件路由：不同 chat 并行，同一 chat 串行
-    pub async fn run(
-        self: Arc<Self>,
-        mut event_rx: mpsc::UnboundedReceiver<AgentEvent>,
-    ) -> Result<()> {
-        let mut sessions: HashMap<i64, mpsc::UnboundedSender<AgentEvent>> = HashMap::new();
-
-        while let Some(event) = event_rx.recv().await {
-            let chat_id = event.chat_id();
-
-            // 若 session 已退出则重建
-            if sessions.get(&chat_id).is_none_or(|tx| tx.is_closed()) {
-                sessions.insert(chat_id, spawn_chat_session(Arc::clone(&self), chat_id));
-            }
-
-            if let Err(e) = sessions[&chat_id].send(event) {
-                tracing::error!(chat_id, "Failed to send event to chat session: {e}");
-            }
-        }
-        Ok(())
-    }
-
-    // -------------------------------------------------------------------------
-    // 执行
-    // -------------------------------------------------------------------------
-
-    /// 构建任务消息并运行 Agent
-    pub async fn execute(&self, chat_id: i64, events: &[AgentEvent]) -> Result<()> {
-        let events = preprocess_events(events);
-        let causes: Vec<&str> = events.causes().map(|c| c.label()).collect();
-        tracing::info!(chat_id, triggers = ?causes, "Agent woke up");
-
-        self.notify_typing(chat_id);
-
-        let ctx = self
-            .ctx
-            .agent
-            .context_fty
-            .build_context(
-                self.ctx.bot.identity.clone(),
-                chat_id,
-                self.ctx.cfg.agent.context.message_history_limit,
-            )
-            .await?;
-
-        let message_ids: Vec<i64> = ctx.message_ids.clone();
-        let task_message = render_main_context(&ctx, build_trigger_section(events));
-        tracing::info!(chat_id, "Agent task message:\n{task_message}");
-
-        let response: String = self
-            .main_agent_handle(chat_id, ctx.chat.chat_type())
-            .await?
-            .agent
-            .run(Task::new(task_message))
-            .await
-            .change_err_msg(ErrorKind::Internal, "Agent execution failed")?;
-
-        if !message_ids.is_empty() {
-            if let Err(e) = self.ctx.db.srv.message.mark_unread_seen(&message_ids).await {
-                tracing::warn!(chat_id, "Failed to mark messages seen: {e}");
-            } else {
-                tracing::debug!(n = message_ids.len(), "Marked messages seen");
-            }
-        }
-
-        tracing::info!(chat_id, response, "Agent done");
-        Ok(())
-    }
-
-    /// 通知平台显示"正在输入"状态
-    fn notify_typing(&self, chat_id: i64) {
-        let _ = self.signal_tx.send(BotSignal::Typing { chat_id });
-    }
-
-    // -------------------------------------------------------------------------
     // LLM
     // -------------------------------------------------------------------------
 
-    /// 获取当前 LLM（用于 Agent 构建）
     pub async fn main_llm(&self) -> Arc<dyn LLMProvider> {
         self.llm.read().await.clone()
     }
 
-    fn build_llm(ctx: &AppContext) -> Result<Arc<dyn LLMProvider>> {
-        let provider = ctx.provider.get_checked(&ctx.cfg.agent.provider)?;
-        let agent_config = &ctx.cfg.agent;
+    fn build_llm(app: &AppContext) -> Result<Arc<dyn LLMProvider>> {
+        let provider = app.provider.get_checked(&app.cfg.agent.provider)?;
+        let agent_config = &app.cfg.agent;
         let effort = agent_config.reasoning_effort()?;
 
         let build_cfg = LlmBuildConfig {
@@ -177,14 +91,10 @@ impl AgentHandler {
 
     pub async fn main_agent_handle(
         &self,
-        chat_id: i64,
+        rc: &RoundContext,
         chat_type: ChatType,
     ) -> Result<DirectAgentHandle<ReActAgent<MainAgent>>> {
-        let mut tools = get_main_agent_tools(ToolContext {
-            ctx: self.ctx.clone(),
-            chat_id,
-            signal_tx: self.signal_tx.clone(),
-        });
+        let mut tools = get_main_agent_tools(rc);
         tools.extend(self.mcp_tools.get_tools().await);
         tools.extend(load_skill_tool(Arc::clone(&self.skill_manager)));
 
@@ -194,27 +104,71 @@ impl AgentHandler {
         }))
         .llm(self.main_llm().await)
         .memory(Box::new(SlidingWindowMemory::new(
-            self.ctx.cfg.agent.context.sliding_window_size,
+            self.app.cfg.agent.context.sliding_window_size,
         )))
         .build()
         .await
-        .change_err_msg(ErrorKind::Internal, "Agent builder failed")
+        .err_kind_msg(ErrorKind::Internal, "Agent builder failed")
     }
 
-    /// System Prompt = 人格画像 + 场景 + 工具手册 + 用户自定义 + Skills
-    ///
-    /// 组装顺序的设计意图：
-    /// 1. 人格画像放最前面——先让 LLM 建立"我是谁"的认知
-    /// 2. 场景紧跟人格——形成完整的角色认知（我是谁 + 我在什么环境）
-    /// 3. 工具手册——知道自己的角色后再看能用什么工具
-    /// 4. 用户自定义 / Skills——叠加层
+    // -------------------------------------------------------------------------
+    // 执行
+    // -------------------------------------------------------------------------
+
+    /// 构建任务消息并运行 Agent
+    pub async fn execute(&self, rc: RoundContext) -> Result<()> {
+        let chat_id = rc.chat_id;
+        let events = preprocess_events(&rc.events);
+        let causes: Vec<&str> = events.causes().map(|c| c.label()).collect();
+        tracing::info!(chat_id, triggers = ?causes, "Agent woke up");
+
+        rc.conn.send_typing(chat_id);
+
+        let ctx = self
+            .app
+            .agent
+            .context_fty
+            .build_context(
+                rc.conn.profile.clone(),
+                chat_id,
+                self.app.cfg.agent.context.message_history_limit,
+            )
+            .await?;
+
+        let message_ids: Vec<i64> = ctx.message_ids.clone();
+        let task_message = render_main_context(&ctx, build_trigger_section(events));
+        tracing::info!(chat_id, "Agent task message:\n{task_message}");
+
+        let response: String = self
+            .main_agent_handle(&rc, ctx.chat.chat_type())
+            .await?
+            .agent
+            .run(Task::new(task_message))
+            .await
+            .err_kind_msg(ErrorKind::Internal, "Agent execution failed")?;
+
+        if !message_ids.is_empty() {
+            if let Err(e) = self.app.db.srv.message.mark_unread_seen(&message_ids).await {
+                tracing::warn!(chat_id, "Failed to mark messages seen: {e}");
+            } else {
+                tracing::debug!(n = message_ids.len(), "Marked messages seen");
+            }
+        }
+
+        tracing::info!(chat_id, response, "Agent done");
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // System Prompt
+    // -------------------------------------------------------------------------
+
     pub fn build_system_prompt(&self, chat_type: ChatType) -> String {
-        let config = &self.ctx.cfg;
-        let personality_prompt = personality_context(&self.ctx.agent.personality);
+        let config = &self.app.cfg;
+        let personality_prompt = personality_context(&self.app.agent.personality);
         let scene = match chat_type {
             ChatType::Private => &config.agent.context.private_prompt,
             ChatType::Group | ChatType::Supergroup => &config.agent.context.group_prompt,
-            // TODO
             ChatType::Channel => "",
         };
 
@@ -262,7 +216,73 @@ impl AgentHandler {
                 .collect(),
         })
         .await
-        .change_err_msg(ErrorKind::Internal, "Failed to load MCP tools")
+        .err_kind_msg(ErrorKind::Internal, "Failed to load MCP tools")
+    }
+}
+
+// ─── Agent 事件路由 ─────────────────────────────────────────────────────
+
+/// Agent 事件网关
+///
+/// 负责连接管理（`add_connection`）和事件分发（`run`）。
+/// 执行委托给 `AgentCtx`（`Arc` 共享），不直接持有。
+pub struct AgentGateway {
+    ctx: Arc<AgentCtx>,
+    conns: HashMap<BotId, BotConn>,
+    links: HashMap<BotId, AgentLink>,
+}
+
+impl AgentGateway {
+    pub fn new(ctx: Arc<AgentCtx>) -> Self {
+        Self {
+            ctx,
+            conns: HashMap::new(),
+            links: HashMap::new(),
+        }
+    }
+
+    /// 注册一个 bot 连接
+    pub fn add_connection(&mut self, bot_id: BotId, conn: BotConn, link: AgentLink) {
+        self.conns.insert(bot_id.clone(), conn);
+        self.links.insert(bot_id, link);
+    }
+
+    /// 事件路由：不同 chat 并行，同一 chat 串行
+    pub async fn run(mut self) -> Result<()> {
+        let (merged_tx, mut merged_rx) = mpsc::unbounded_channel();
+
+        for (bot_id, mut link) in self.links.drain() {
+            let tx = merged_tx.clone();
+            tokio::spawn(async move {
+                while let Some(event) = link.event_rx.recv().await {
+                    let _ = tx.send((bot_id.clone(), event));
+                }
+            });
+        }
+        drop(merged_tx);
+
+        let mut sessions: HashMap<i64, mpsc::UnboundedSender<AgentEvent>> = HashMap::new();
+
+        while let Some((bot_id, event)) = merged_rx.recv().await {
+            let chat_id = event.chat_id();
+
+            if sessions.get(&chat_id).is_none_or(|tx| tx.is_closed()) {
+                let conn = self
+                    .conns
+                    .get(&bot_id)
+                    .cloned()
+                    .expect("BotConn must exist for connected bot");
+                sessions.insert(
+                    chat_id,
+                    session::spawn_chat_session(Arc::clone(&self.ctx), chat_id, conn),
+                );
+            }
+
+            if let Err(e) = sessions[&chat_id].send(event) {
+                tracing::error!(chat_id, "Failed to send event to chat session: {e}");
+            }
+        }
+        Ok(())
     }
 }
 

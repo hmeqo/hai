@@ -89,9 +89,7 @@ impl RawClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(
-                ErrorKind::Internal.with_msg(format!("request failed (HTTP {status}): {body}"))
-            );
+            return Err(ErrorKind::Internal.msg(format!("request failed (HTTP {status}): {body}")));
         }
 
         let content_type = resp
@@ -182,7 +180,7 @@ impl RawAgent {
             .client
             .request_bytes_with_type("/audio/speech", &body)
             .await
-            .change_err_msg(ErrorKind::Internal, "TTS synthesis failed")?;
+            .err_kind_msg(ErrorKind::Internal, "TTS synthesis failed")?;
 
         // PCM → WAV（Telegram sendVoice 不接受裸 PCM）
         if content_type.contains("pcm") || content_type.contains("L8") {

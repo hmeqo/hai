@@ -175,13 +175,57 @@ impl ResolvedProvider {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Patch)]
-#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
-#[patch(attribute(skip_serializing_none))]
-#[serde(default, rename_all = "kebab-case")]
-pub struct TelegramConfig {
+/// Bot 平台原始配置（反序列化用，需后续解析为 BotConfig）
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct BotConfigRaw {
+    #[serde(rename = "type")]
+    pub bot_type: Option<String>,
+    pub bot_token: Option<String>,
+    pub allowed_chat_ids: Option<Vec<i64>>,
+}
+
+/// 解析后的 bot 配置
+#[derive(Debug, Clone)]
+pub struct BotConfig {
+    pub key: String,
+    pub platform: BotPlatform,
     pub bot_token: String,
     pub allowed_chat_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BotPlatform {
+    Telegram,
+}
+
+impl BotConfig {
+    /// 从 key + raw 解析出配置，未指定 type 时根据 key 名推断
+    pub fn resolve(key: &str, raw: &BotConfigRaw) -> Result<Self> {
+        let platform = Self::resolve_platform(key, raw.bot_type.as_deref())?;
+        Ok(Self {
+            key: key.to_string(),
+            platform,
+            bot_token: raw.bot_token.clone().unwrap_or_default(),
+            allowed_chat_ids: raw.allowed_chat_ids.clone().unwrap_or_default(),
+        })
+    }
+
+    fn resolve_platform(key: &str, type_hint: Option<&str>) -> Result<BotPlatform> {
+        match type_hint.or_else(|| {
+            if key == "telegram" {
+                Some("telegram")
+            } else {
+                None
+            }
+        }) {
+            Some("telegram") => Ok(BotPlatform::Telegram),
+            other => Err(ErrorKind::Config.msg(format!(
+                "Unknown bot type '{:?}' for key '{key}' (supported: telegram)",
+                other
+            ))),
+        }
+    }
 }
 
 /// Skills 配置
@@ -401,7 +445,7 @@ impl AgentConfig {
             "low" => Ok(ReasoningEffort::Low),
             "medium" => Ok(ReasoningEffort::Medium),
             "high" => Ok(ReasoningEffort::High),
-            _ => Err(ErrorKind::InvalidParameter.with_msg(format!(
+            _ => Err(ErrorKind::InvalidParameter.msg(format!(
                 "Invalid reasoning effort: {}",
                 self.reasoning_effort
             ))),

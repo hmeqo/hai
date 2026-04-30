@@ -12,10 +12,8 @@ use uuid::Uuid;
 use crate::{
     agent::{
         AttachmentService,
-        tools::{
-            ToolContext,
-            util::{MapToolErr, tool_data, tool_err},
-        },
+        round::RoundContext,
+        tools::util::{MapToolErr, tool_data, tool_err},
     },
     domain::vo::AttachmentParser,
 };
@@ -127,7 +125,7 @@ impl ToolRuntime for AnalyzeAttachment {
 //     }
 // }
 
-pub fn multimodal_tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
+pub fn multimodal_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     let mut enabled_parsers = Vec::new();
     if ctx.ctx.cfg.multimodal.input.audio.enabled() {
         enabled_parsers.push(AttachmentParser::Audio.name());

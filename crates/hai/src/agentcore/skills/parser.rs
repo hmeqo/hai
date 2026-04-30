@@ -28,12 +28,12 @@ pub struct Skill {
 
 impl Skill {
     pub fn parse(content: &str, base_dir: PathBuf) -> Result<Self> {
-        let (frontmatter, body) = extract_frontmatter(content).change_err_msg(
+        let (frontmatter, body) = extract_frontmatter(content).err_kind_msg(
             ErrorKind::DataParse,
             "Failed to extract SKILL.md frontmatter",
         )?;
 
-        let fm: SkillFrontmatter = serde_yml::from_str(frontmatter).change_err_msg(
+        let fm: SkillFrontmatter = serde_yml::from_str(frontmatter).err_kind_msg(
             ErrorKind::DataParse,
             "Failed to parse SKILL.md frontmatter YAML",
         )?;
@@ -61,8 +61,9 @@ impl Skill {
 fn extract_frontmatter(content: &str) -> Result<(&str, &str)> {
     let content = content.trim_start();
     if !content.starts_with("---") {
-        return Err(ErrorKind::InvalidParameter
-            .with_msg("SKILL.md must start with '---' frontmatter delimiter"));
+        return Err(
+            ErrorKind::InvalidParameter.msg("SKILL.md must start with '---' frontmatter delimiter")
+        );
     }
 
     let rest = &content[3..];

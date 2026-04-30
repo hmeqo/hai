@@ -1,10 +1,8 @@
 use clap::Parser;
-use hai::cli::Cli;
+use hai::{cli::Cli, error::Result};
 
 #[tokio::main]
-async fn main() {
-    if let Err(err) = Cli::parse().execute().await {
-        eprintln!("{err}");
-        std::process::exit(1);
-    }
+async fn main() -> Result<()> {
+    // hai::minimal::run().await
+    Cli::parse().execute().await
 }

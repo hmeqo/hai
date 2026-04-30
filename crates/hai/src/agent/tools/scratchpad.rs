@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    agent::tools::{
-        ToolContext,
-        util::{MapToolErr, tool_ok},
+    agent::{
+        round::RoundContext,
+        tools::util::{MapToolErr, tool_ok},
     },
     domain::service::DbServices,
 };
@@ -48,7 +48,7 @@ impl ToolRuntime for UpdateScratchpad {
     }
 }
 
-pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(UpdateScratchpad {
         services: ctx.services(),
     })]
