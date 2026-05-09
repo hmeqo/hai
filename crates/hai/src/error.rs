@@ -282,4 +282,5 @@ register_errors! {
     std::time::SystemTimeError      => ErrorKind::Internal;
     jiff::Error                     => ErrorKind::Internal;
     toml::ser::Error                => ErrorKind::DataParse;
+    tokio::task::JoinError          => ErrorKind::Internal;
 }

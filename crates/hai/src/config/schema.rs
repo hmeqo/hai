@@ -12,20 +12,7 @@ use crate::{
 };
 
 // =============================================================================
-// 场景提示词默认值（供 ContextConfig 和 agent::prompts 共同使用）
-// =============================================================================
-
-/// 群聊场景层
-pub const GROUP_SCENE_PROMPT: &str = r#"## 群聊场景
-你在这个群潜水很久了。你打开群看了眼消息，做该做的后台整理，没什么事就走了。
-你大多数时候都不说话——这就是你的日常。"#;
-
-/// 私聊场景层
-pub const PRIVATE_SCENE_PROMPT: &str = r#"## 私聊场景
-- 积极响应用户的每条消息
-"#;
-
-/// 人格配置
+// 配置结构体
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct PersonalityConfig {
@@ -54,13 +41,13 @@ impl Default for PersonalityConfig {
             name: AGENT_NAME.into(),
             sociability: 0.05,
             verbosity: 0.35,
-            honesty: 0.65,
+            honesty: 0.60,
             humor: 0.70,
-            rationality: 0.75,
+            rationality: 0.35,
             mood: 0.1,
             interests: vec![],
-            tone: "你是一个友善的人".into(),
-            communication_style: "口语化，网络聊天风格".into(),
+            tone: "你是一个有自己的主见的人, 你很友善很聪明, 你不会太过刻意的表达自己的意见或一味附和别人".into(),
+            communication_style: "口语化，像正常人网上聊天一样。你不会尾随句号, 网络交流尾随句号会很别扭, 两段话可以分两次发送".into(),
         }
     }
 }
@@ -115,8 +102,8 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
-            group_prompt: GROUP_SCENE_PROMPT.into(),
-            private_prompt: PRIVATE_SCENE_PROMPT.into(),
+            group_prompt: String::new(),
+            private_prompt: String::new(),
             message_history_limit: 10,
             sliding_window_size: 10,
             related_memory_limit: 5,
@@ -131,18 +118,18 @@ impl Default for ContextConfig {
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct TriggerConfig {
-    /// 群聊触发器的最小热度（基础响应概率）
-    pub min_heat: f64,
-    /// 最小热度上限（由 sociability 决定的 min_heat 不能超过这个值，防止过于频繁）
-    pub min_heat_cap: f64,
+    /// 基础注意力（agent idle 时关注 chat 的最低概率）
+    pub base_attention: f64,
+    /// 基础注意力上限（sociability 能推到的最大值，防止过于频繁）
+    pub base_attention_cap: f64,
     pub debounce_ms: u64,
 }
 
 impl Default for TriggerConfig {
     fn default() -> Self {
         Self {
-            min_heat: 0.02,
-            min_heat_cap: 0.33,
+            base_attention: 0.02,
+            base_attention_cap: 0.33,
             debounce_ms: 1000,
         }
     }

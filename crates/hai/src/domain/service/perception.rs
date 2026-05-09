@@ -60,7 +60,7 @@ impl PerceptionService {
             .await
             .map(Vector::from)
         {
-            let _ = PerceptionRepo::set_embedding(&self.pool, perception.id, &vec).await;
+            PerceptionRepo::set_embedding(&self.pool, perception.id, &vec).await?;
         }
 
         Ok(perception)

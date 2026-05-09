@@ -7,15 +7,15 @@ use crate::{
 };
 
 /// 构建单个话题元素（完整上下文，含时间信息）
-/// `is_idle` 为 true 时添加 `idle` 属性标记
-pub fn topic_element(topic: &Topic, is_idle: bool) -> Item {
+/// `need_close` 为 true 时添加 `need-close` 属性
+pub fn topic_element(topic: &Topic, need_close: bool) -> Item {
     let started_at = format_relative_time(topic.started_at());
     let last_active = format_relative_time(topic.last_active_at());
 
     let mut el = item("topic");
 
-    if is_idle {
-        el = el.with_attr("idle", true);
+    if need_close {
+        el = el.with_attr("need-close", true);
     }
 
     el.with_attr("id", topic.id)

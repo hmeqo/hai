@@ -32,7 +32,7 @@ pub enum RecordMemoryCategory {
 pub struct RecordMemoryArgs {
     #[input(description = "chat_id")]
     pub chat_id: i64,
-    #[input(description = "分类")]
+    #[input(description = "分类", choice = ["user_fact", "knowledge", "note", "chat_rule"])]
     pub category: RecordMemoryCategory,
     #[input(description = "内容")]
     pub content: String,
@@ -97,7 +97,7 @@ pub struct CorrectMemoryArgs {
     pub chat_id: i64,
     #[input(description = "记忆 ID")]
     pub id: Uuid,
-    #[input(description = "分类")]
+    #[input(description = "分类", choice = ["user_fact", "knowledge", "note", "chat_rule"])]
     pub category: RecordMemoryCategory,
     #[input(description = "内容")]
     pub content: Option<String>,
@@ -213,13 +213,13 @@ pub struct DeleteMemory {
 impl ToolRuntime for DeleteMemory {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: DeleteMemoryArgs = serde_json::from_value(args)?;
-        let count = self
-            .services
+        self.services
             .memory
             .delete(typed_args.id)
             .await
             .into_tool_err()?;
-        tool_data(serde_json::json!({ "deleted_count": count }))
+
+        tool_ok()
     }
 }
 

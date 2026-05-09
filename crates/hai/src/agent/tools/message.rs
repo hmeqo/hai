@@ -6,13 +6,13 @@ use autoagents::{
 };
 use autoagents_derive::{ToolInput, tool};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
     agent::{
         link::{BotConn, SendMessageReq},
         round::RoundContext,
-        tools::util::{MapToolErr, tool_ok},
+        tools::util::{MapToolErr, deserialize_option_lenient_i64_vec, tool_data},
     },
     domain::service::DbServices,
 };
@@ -25,13 +25,14 @@ pub struct SendMessageArgs {
     pub topic_id: Option<uuid::Uuid>,
     #[input(description = "用于平台侧回复功能，指向某条具体消息的 ID")]
     pub platform_reply_to_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_option_lenient_i64_vec")]
     #[input(description = "同时标记回复(逻辑上)的消息 ID")]
     pub replied_message_ids: Option<Vec<i64>>,
 }
 
 #[tool(
     name = "send_message",
-    description = "只在你想发言时考虑使用。",
+    description = "发消息。",
     input = SendMessageArgs,
 )]
 pub struct SendMessage {
@@ -53,7 +54,8 @@ impl ToolRuntime for SendMessage {
                 .into_tool_err()?;
         }
 
-        self.conn
+        let meta = self
+            .conn
             .send_message(SendMessageReq {
                 chat_id: self.chat_id,
                 content: typed_args.content,
@@ -63,7 +65,9 @@ impl ToolRuntime for SendMessage {
             .await
             .into_tool_err()?;
 
-        tool_ok()
+        tool_data(json!({
+            "message_id": meta.external_id
+        }))
     }
 }
 

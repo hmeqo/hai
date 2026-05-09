@@ -6,9 +6,9 @@ use crate::{
         link::{BotConn, BotId, BotProfile, open_link},
     },
     app::AppContext,
-    bot::telegram::{TelegramPlatform, spawn_telegram_sender},
     config::schema::{BotConfig, BotPlatform},
     error::Result,
+    platform::telegram::{TelegramDispather, spawn_telegram_handler},
 };
 
 /// 从配置启动所有 bot 实例，注册到 gateway
@@ -32,12 +32,12 @@ pub async fn spawn_bots(ctx: &AppContext, gateway: &mut AgentGateway) -> Result<
                     name: my_name.name,
                 };
 
-                let sender = spawn_telegram_sender(bot.clone(), bot_account.id, ctx.clone());
-                let conn = BotConn::new(bot_id.clone(), profile, sender);
+                let handler = spawn_telegram_handler(bot.clone(), bot_account.id, ctx.clone());
+                let conn = BotConn::new(bot_id.clone(), profile, handler);
 
                 gateway.add_connection(bot_id.clone(), conn, agent_link);
 
-                let platform = TelegramPlatform::new(
+                let dispatcher = TelegramDispather::new(
                     bot_id.clone(),
                     bot,
                     ctx.clone(),
@@ -46,11 +46,7 @@ pub async fn spawn_bots(ctx: &AppContext, gateway: &mut AgentGateway) -> Result<
                 )
                 .await?;
 
-                tokio::spawn(async move {
-                    if let Err(e) = platform.run().await {
-                        tracing::error!(bot_id = %bot_id, "Platform error: {e}");
-                    }
-                });
+                tokio::spawn(async move { dispatcher.run().await });
             }
         }
     }

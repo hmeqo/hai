@@ -109,26 +109,26 @@ fn build_env_section(ctx: &RenderContext) -> Section {
     env
 }
 
-/// 话题闲置阈值：超过此时间的话题标记为 idle
+/// 话题闲置阈值：超过此时间的话题标记为 need-close
 const TOPIC_IDLE_HOURS: i64 = 3;
 
-/// 将话题合并为 current_topics，有闲置话题时加 idle 属性
+/// 将话题合并为 current_topics，有闲置话题时加 need-close 属性
 fn build_topics_section(ctx: &RenderContext) -> Option<Section> {
     let cutoff = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(TOPIC_IDLE_HOURS);
 
-    let (active, idle): (Vec<_>, Vec<_>) = ctx
+    let (active, stale): (Vec<_>, Vec<_>) = ctx
         .topics
         .iter()
         .partition(|t| t.last_active_at() >= cutoff);
 
-    if active.is_empty() && idle.is_empty() {
+    if active.is_empty() && stale.is_empty() {
         return None;
     }
 
     Some(
         section("current_topics")
             .add_children(active.iter().map(|t| topic_element(t, false)))
-            .add_children(idle.iter().map(|t| topic_element(t, true))),
+            .add_children(stale.iter().map(|t| topic_element(t, true))),
     )
 }
 

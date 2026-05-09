@@ -12,7 +12,10 @@ use teloxide::{
 use uuid::Uuid;
 
 use crate::{
-    agent::link::{SendMessageReq, SendVoiceReq, SentMessageMeta},
+    agent::{
+        event::AttentionEvent,
+        link::{SendMessageReq, SendVoiceReq, SentMessageMeta},
+    },
     app::AppContext,
     domain::{
         service::NewAgentMessage,
@@ -26,7 +29,7 @@ use crate::{
 /// Telegram bot 的发送 actor
 ///
 /// 每个 bot 实例对应一个，负责执行实际的 Telegram API 调用和消息入库。
-/// 外部通过 `TelegramSender`（见 sender.rs）与之通信。
+/// 外部通过 `TelegramPlatformHandler` 与之通信。
 pub(crate) struct TelegramBotActor {
     bot: Bot,
     account_id: i64,
@@ -103,7 +106,7 @@ impl TelegramBotActor {
             })
             .await?;
 
-        self.ctx.agent.group_trigger.on_agent_replied(chat_id);
+        self.ctx.agent.attention.on_event(chat_id, AttentionEvent::Participation);
         Ok(())
     }
 }
@@ -217,10 +220,13 @@ impl Message<TypingMsg> for TelegramBotActor {
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         if let Ok(platform_chat_id) = self.resolve_platform_chat_id(msg.chat_id).await {
-            let _ = self
+            if let Err(err) = self
                 .bot
                 .send_chat_action(ChatId(platform_chat_id), ChatAction::Typing)
-                .await;
+                .await
+            {
+                tracing::error!("Failed to send typing message: {}", err);
+            }
         }
     }
 }

@@ -157,7 +157,7 @@ impl MessageService {
     /// 扫描 content JSONB 数组，找到含有指定 attachment_id 的 part。
     /// 返回 `(message, matched_part)`，找不到返回 `None`。
     /// 通过 attachment_id 查找对应的消息及匹配的内容部分。
-    pub async fn find_by_attachment_id(
+    pub async fn find_attachment(
         &self,
         attachment_id: Uuid,
     ) -> Result<Option<(Message, TelegramContentPart)>> {

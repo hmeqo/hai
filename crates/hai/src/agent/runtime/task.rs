@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::task::{JoinError, JoinSet};
 
 use super::{AgentCtx, debounce::Debouncer};
-use crate::agent::{event::AgentEvents, round::RoundContext};
+use crate::agent::round::RoundContext;
 
 pub struct ActiveTask {
     tasks: JoinSet<()>,
@@ -23,11 +23,11 @@ impl ActiveTask {
     }
 
     pub fn spawn(&mut self, ctx: Arc<AgentCtx>, rc: RoundContext) {
-        self.interruptible = rc.events.all_interruptible();
+        self.interruptible = rc.events.iter().all(|e| e.reason.is_interruptible());
         self.tasks.spawn(async move {
             let chat_id = rc.chat_id;
-            if let Err(e) = ctx.execute(rc).await {
-                tracing::error!(chat_id, "Agent task failed: {e}");
+            if let Err(err) = ctx.execute(rc).await {
+                tracing::error!(chat_id, "Agent task failed: {err}");
             }
         });
     }

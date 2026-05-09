@@ -1,7 +1,4 @@
-//! 人格 → Prompt 生成器
-//!
-//! 将人格参数以"数值+含义"的方式传递给 agent，
-//! 由 agent 自行判断在具体情境下应如何表现，而非硬编码行为规则。
+pub mod render;
 
 use std::sync::Arc;
 
@@ -28,14 +25,15 @@ impl PersonalityMgr {
         self.config.agent.personality.sociability
     }
 
-    pub fn min_heat(&self, trigger_cfg: &TriggerConfig) -> f64 {
+    pub fn base_attention(&self, trigger_cfg: &TriggerConfig) -> f64 {
         let t = self.sociability();
-        let cap = trigger_cfg.min_heat_cap;
-        let min_heat = curve(t) * cap;
-        min_heat.max(trigger_cfg.min_heat)
+        let cap = trigger_cfg.base_attention_cap;
+        let base = curve(t) * cap;
+        base.max(trigger_cfg.base_attention)
     }
 
-    pub fn conversation_window_secs(&self) -> f64 {
+    /// 注意力窗口时长（秒）：agent 主动参与后保持高注意力的时长
+    pub fn attention_window_secs(&self) -> f64 {
         let t = self.sociability();
         5.0 + curve(t) * 55.0
     }

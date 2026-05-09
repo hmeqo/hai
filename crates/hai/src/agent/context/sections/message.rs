@@ -36,16 +36,16 @@ pub fn message_element(msg: &Message, ctx: &RenderContext) -> RenderElement {
         );
         truncate_text_nodes(&mut elements, 50);
 
-        let mut reply = item("reply")
+        let mut reference = item("reference")
             .with_attr("id", reply_id)
             .with_attr("role", &replied_msg.role)
             .with_attr("sender", replied_sender.as_str())
             .with_attr("sent_at", replied_sent_at.as_str())
             .with_attr("replied", replied_is_replied);
 
-        reply = reply.add_children(elements);
+        reference = reference.add_children(elements);
 
-        builder = builder.add_child(reply);
+        builder = builder.add_child(reference);
     }
 
     let content_elements = content::render_content(

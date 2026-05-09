@@ -6,7 +6,7 @@ use tokio::{
 };
 
 use super::{AgentCtx, debounce::Debouncer, task::ActiveTask};
-use crate::agent::{event::AgentEvent, link::BotConn, round::RoundContext};
+use crate::agent::{event::WakeEvent, link::BotConn, round::RoundContext};
 
 /// 用于"挂起" sleep 的远期时间点，避免 Duration::MAX 溢出
 const FAR_FUTURE: Duration = Duration::from_secs(365 * 24 * 3600 * 30);
@@ -16,7 +16,7 @@ pub(super) fn spawn_chat_session(
     ctx: Arc<AgentCtx>,
     chat_id: i64,
     conn: BotConn,
-) -> mpsc::UnboundedSender<AgentEvent> {
+) -> mpsc::UnboundedSender<WakeEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
     let debounce_min = Duration::from_millis(ctx.app.cfg.agent.trigger.debounce_ms);
     tokio::spawn(ChatSession::new(ctx, chat_id, conn, rx, debounce_min).run());
@@ -40,7 +40,7 @@ struct ChatSession {
     ctx: Arc<AgentCtx>,
     chat_id: i64,
     conn: BotConn,
-    rx: mpsc::UnboundedReceiver<AgentEvent>,
+    rx: mpsc::UnboundedReceiver<WakeEvent>,
     debouncer: Debouncer,
     active: ActiveTask,
 }
@@ -50,7 +50,7 @@ impl ChatSession {
         ctx: Arc<AgentCtx>,
         chat_id: i64,
         conn: BotConn,
-        rx: mpsc::UnboundedReceiver<AgentEvent>,
+        rx: mpsc::UnboundedReceiver<WakeEvent>,
         debounce_min: Duration,
     ) -> Self {
         Self {

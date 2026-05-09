@@ -1,6 +1,6 @@
 use tokio::time::{Duration, Instant};
 
-use crate::agent::event::AgentEvent;
+use crate::agent::event::WakeEvent;
 
 /// 防抖窗口期上限：从第一个事件入队起，最多滚动此长度后强制触发。
 /// 同时也是普通事件可打断正在运行任务的时间边界——窗口期外不再打断。
@@ -14,7 +14,7 @@ pub const DEBOUNCE_MAX: Duration = Duration::from_secs(5);
 ///     上限为窗口期截止时间（first_at + DEBOUNCE_MAX）
 ///   · 队列中含 bypass 事件时，后续普通事件也沿用立即触发
 pub struct Debouncer {
-    events: Vec<AgentEvent>,
+    events: Vec<WakeEvent>,
     has_rapid: bool,
     /// 首个事件的入队时刻，窗口期基准
     first_at: Instant,
@@ -40,18 +40,18 @@ impl Debouncer {
         !self.events.is_empty() && self.first_at.elapsed() < DEBOUNCE_MAX
     }
 
-    pub fn push(&mut self, event: AgentEvent) {
+    pub fn push(&mut self, event: WakeEvent) {
         if self.events.is_empty() {
             self.first_at = Instant::now();
         }
-        if event.cause().is_rapid() {
+        if event.reason.is_rapid() {
             self.has_rapid = true;
         }
         self.events.push(event);
     }
 
     /// 取出全部积压事件并重置状态
-    pub fn flush(&mut self) -> Vec<AgentEvent> {
+    pub fn flush(&mut self) -> Vec<WakeEvent> {
         self.has_rapid = false;
         std::mem::take(&mut self.events)
     }

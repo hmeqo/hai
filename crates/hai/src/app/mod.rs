@@ -5,10 +5,10 @@ use std::sync::Arc;
 pub use context::AppContext;
 
 use crate::{
-    agent::{AgentGateway, handler::AgentCtx},
-    bot::manager::spawn_bots,
+    agent::{AgentGateway, runtime::AgentCtx},
     config::AppConfigManager,
     error::Result,
+    platform::manager::spawn_bots,
 };
 
 pub struct App {
@@ -38,10 +38,13 @@ impl App {
         spawn_bots(&ctx, &mut gateway).await?;
 
         let agent_handle = tokio::spawn(async move {
-            let _ = gateway.run().await;
+            if let Err(err) = gateway.run().await {
+                tracing::error!("Agent gateway failed: {err}");
+            }
         });
 
-        let _ = agent_handle.await;
+        agent_handle.await?;
+
         Ok(())
     }
 }

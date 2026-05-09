@@ -1,5 +1,5 @@
 use crate::{
-    agent::{AttachmentService, event::AgentEvent, link::BotConn},
+    agent::{event::WakeEvent, link::BotConn},
     app::AppContext,
     domain::service::DbServices,
 };
@@ -9,15 +9,11 @@ pub struct RoundContext {
     pub ctx: AppContext,
     pub chat_id: i64,
     pub conn: BotConn,
-    pub events: Vec<AgentEvent>,
+    pub events: Vec<WakeEvent>,
 }
 
 impl RoundContext {
     pub fn services(&self) -> DbServices {
         self.ctx.db.srv.clone()
-    }
-
-    pub fn attachment(&self) -> AttachmentService {
-        self.ctx.agent.attachment.clone()
     }
 }

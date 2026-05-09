@@ -5,11 +5,11 @@ use uuid::Uuid;
 use crate::{
     agent::node::MultimodalService,
     domain::{
-        entity::{Topic, TopicStatus},
+        entity::Topic,
         repo::{MessageRepo, TopicRepo},
         vo::TopicSearchResult,
     },
-    error::{ErrorKind, Result},
+    error::Result,
 };
 
 /// 话题管理服务
@@ -50,35 +50,40 @@ impl TopicService {
         MessageRepo::mark_replied(&self.pool, message_ids).await
     }
 
-    /// 更新话题标题
-    pub async fn update_title(&self, topic_id: Uuid, new_title: &str) -> Result<Option<Topic>> {
-        TopicRepo::update_title(&self.pool, topic_id, new_title).await
-    }
-
     /// 追加话题摘要（保留原有内容，追加新内容）
     pub async fn push_summary(&self, topic_id: Uuid, new_summary: &str) -> Result<Option<Topic>> {
         let topic = TopicRepo::find_by_id(&self.pool, topic_id).await?;
-        if let Some(topic) = &topic
-            && topic.status() == TopicStatus::Closed
-        {
-            return Err(ErrorKind::BadRequest.msg("Cannot push summary to a closed topic"));
+        if let Some(topic) = &topic {
+            topic.ensure_not_closed()?;
         }
         let formatted = format!("\n---\n{}", new_summary);
         TopicRepo::append_summary(&self.pool, topic_id, &formatted).await
     }
 
-    pub async fn update_summary(&self, topic_id: Uuid, new_summary: &str) -> Result<Option<Topic>> {
-        let topic = TopicRepo::find_by_id(&self.pool, topic_id).await?;
-        if let Some(topic) = &topic
-            && topic.status() == TopicStatus::Closed
-        {
-            return Err(ErrorKind::BadRequest.msg("Cannot update summary of a closed topic"));
+    /// 修正话题：同时或单独更新标题/摘要，只加载一次 topic
+    pub async fn update_topic(
+        &self,
+        topic_id: Uuid,
+        title: Option<&str>,
+        summary: Option<&str>,
+    ) -> Result<Option<Topic>> {
+        if title.is_none() && summary.is_none() {
+            return Ok(None);
         }
-        TopicRepo::update_summary(&self.pool, topic_id, new_summary).await
+        if let Some(title) = title {
+            TopicRepo::update_title(&self.pool, topic_id, title).await?;
+        }
+        if let Some(summary) = summary {
+            TopicRepo::update_summary(&self.pool, topic_id, summary).await?;
+        }
+        TopicRepo::find_by_id(&self.pool, topic_id).await
     }
 
-    /// 完结话题：写入最终摘要、关闭话题
-    pub async fn finish_topic(&self, topic_id: Uuid, summary: &str) -> Result<Option<Topic>> {
+    /// 关闭话题：写入最终摘要、标记 closed
+    pub async fn close_topic(&self, topic_id: Uuid, summary: &str) -> Result<Option<Topic>> {
+        if let Some(topic) = TopicRepo::find_by_id(&self.pool, topic_id).await? {
+            topic.ensure_not_closed()?;
+        }
         let embedding = self.embedding.generate_embedding(summary).await?;
         TopicRepo::close_with_summary(
             &self.pool,

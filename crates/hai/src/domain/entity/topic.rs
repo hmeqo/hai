@@ -5,6 +5,8 @@ use sqlx::FromRow;
 use strum::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
+use crate::error::{ErrorKind, Result};
+
 /// 话题流 (Topic)
 #[derive(Debug, Clone, FromRow)]
 pub struct Topic {
@@ -48,6 +50,13 @@ impl Topic {
 
     pub fn updated_at(&self) -> Timestamp {
         self.updated_at.to_jiff()
+    }
+
+    pub fn ensure_not_closed(&self) -> Result<()> {
+        if self.status() == TopicStatus::Closed {
+            return Err(ErrorKind::BadRequest.msg("Cannot modify a closed topic"));
+        }
+        Ok(())
     }
 }
 

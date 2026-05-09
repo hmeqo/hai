@@ -13,7 +13,10 @@ use crate::{
     agent::{
         context::topic_section,
         round::RoundContext,
-        tools::util::{MapToolErr, tool_data, tool_ok, tool_with},
+        tools::util::{
+            MapToolErr, deserialize_lenient_i64_vec, deserialize_option_lenient_i64_vec, tool_data,
+            tool_ok,
+        },
     },
     agentcore::render::render_json,
     domain::service::DbServices,
@@ -27,6 +30,7 @@ pub struct CreateTopicArgs {
     pub title: String,
     #[input(description = "初始摘要")]
     pub summary: String,
+    #[serde(default, deserialize_with = "deserialize_option_lenient_i64_vec")]
     #[input(description = "关联消息 ID")]
     pub message_ids: Option<Vec<i64>>,
 }
@@ -68,6 +72,7 @@ pub struct AssignTopicArgs {
     pub chat_id: i64,
     #[input(description = "话题 ID")]
     pub topic_id: Uuid,
+    #[serde(deserialize_with = "deserialize_lenient_i64_vec")]
     #[input(description = "消息 ID")]
     pub message_ids: Vec<i64>,
 }
@@ -86,17 +91,13 @@ impl ToolRuntime for AssignTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: AssignTopicArgs = serde_json::from_value(args)?;
 
-        let count = self
-            .services
+        self.services
             .topic
             .assign_topic(&typed_args.message_ids, typed_args.topic_id)
             .await
             .into_tool_err()?;
 
-        tool_with(
-            format!("已归类 {count} 条消息"),
-            serde_json::json!({ "topic_id": typed_args.topic_id.to_string(), "count": count }),
-        )
+        tool_ok()
     }
 }
 
@@ -182,7 +183,7 @@ impl ToolRuntime for SearchTopics {
         let topic_entities: Vec<_> = topics.into_iter().map(|t| t.topic).collect();
 
         let section = topic_section(&topic_entities);
-        tool_data(serde_json::json!({ "topics": render_json(section), "query": typed_args.query }))
+        tool_data(serde_json::json!({ "topics": render_json(section) }))
     }
 }
 
@@ -198,7 +199,7 @@ pub struct CorrectTopicArgs {
 
 #[tool(
     name = "correct_topic",
-    description = "修正话题",
+    description = "修正话题信息",
     input = CorrectTopicArgs,
 )]
 pub struct CorrectTopic {
@@ -210,23 +211,15 @@ impl ToolRuntime for CorrectTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: CorrectTopicArgs = serde_json::from_value(args)?;
 
-        if let Some(title) = &typed_args.title {
-            self.services
-                .topic
-                .update_title(typed_args.topic_id, title)
-                .await
-                .into_tool_err()?;
-            return tool_ok();
-        }
-
-        if let Some(summary) = &typed_args.summary {
-            self.services
-                .topic
-                .update_summary(typed_args.topic_id, summary)
-                .await
-                .into_tool_err()?;
-            return tool_ok();
-        }
+        self.services
+            .topic
+            .update_topic(
+                typed_args.topic_id,
+                typed_args.title.as_deref(),
+                typed_args.summary.as_deref(),
+            )
+            .await
+            .into_tool_err()?;
 
         tool_ok()
     }
@@ -242,7 +235,7 @@ pub struct PushTopicSummaryArgs {
 
 #[tool(
     name = "push_topic_summary",
-    description = "追加话题摘要（不覆盖已有内容）",
+    description = "向活跃话题追加话题摘要",
     input = PushTopicSummaryArgs,
 )]
 pub struct PushTopicSummary {
@@ -265,7 +258,7 @@ impl ToolRuntime for PushTopicSummary {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
-pub struct FinishTopicArgs {
+pub struct CloseTopicArgs {
     #[input(description = "话题 ID")]
     pub topic_id: Uuid,
     #[input(description = "新标题（可选）")]
@@ -275,30 +268,32 @@ pub struct FinishTopicArgs {
 }
 
 #[tool(
-    name = "finish_topic",
-    description = "结项话题并写最终摘要",
-    input = FinishTopicArgs,
+    name = "close_topic",
+    description = "关闭话题",
+    input = CloseTopicArgs,
 )]
-pub struct FinishTopic {
+pub struct CloseTopic {
     pub services: DbServices,
 }
 
 #[async_trait]
-impl ToolRuntime for FinishTopic {
+impl ToolRuntime for CloseTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
-        let typed_args: FinishTopicArgs = serde_json::from_value(args)?;
-
-        if let Some(title) = &typed_args.title {
-            self.services
-                .topic
-                .update_title(typed_args.topic_id, title)
-                .await
-                .into_tool_err()?;
-        }
+        let typed_args: CloseTopicArgs = serde_json::from_value(args)?;
 
         self.services
             .topic
-            .finish_topic(typed_args.topic_id, &typed_args.summary)
+            .update_topic(
+                typed_args.topic_id,
+                typed_args.title.as_deref(),
+                None,
+            )
+            .await
+            .into_tool_err()?;
+
+        self.services
+            .topic
+            .close_topic(typed_args.topic_id, &typed_args.summary)
             .await
             .into_tool_err()?;
         tool_ok()
@@ -324,13 +319,13 @@ pub struct DeleteTopic {
 impl ToolRuntime for DeleteTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: DeleteTopicArgs = serde_json::from_value(args)?;
-        let count = self
-            .services
+        self.services
             .topic
             .delete_topic(typed_args.topic_id)
             .await
             .into_tool_err()?;
-        tool_data(serde_json::json!({ "deleted_count": count }))
+
+        tool_ok()
     }
 }
 
@@ -354,7 +349,7 @@ pub fn get_topic_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
         Arc::new(PushTopicSummary {
             services: ctx.services(),
         }),
-        Arc::new(FinishTopic {
+        Arc::new(CloseTopic {
             services: ctx.services(),
         }),
         Arc::new(DeleteTopic {
