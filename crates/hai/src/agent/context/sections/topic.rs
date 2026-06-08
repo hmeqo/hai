@@ -1,38 +1,38 @@
-//! 话题组件 - 构建 RenderElement
+//! 话题组件 - 构建 XML 节点
 
 use crate::{
-    agent::context::render_context::{format_relative_time, format_time_dyn},
-    agentcore::render::elements::{Item, item},
+    agent::context::fmt::{format_relative_time, format_time_dyn},
+    agentcore::render::elements::Node,
     domain::entity::Topic,
 };
 
 /// 构建单个话题元素（完整上下文，含时间信息）
 /// `need_close` 为 true 时添加 `need-close` 属性
-pub fn topic_element(topic: &Topic, need_close: bool) -> Item {
+pub fn topic_element(topic: &Topic, need_close: bool) -> Node {
     let started_at = format_relative_time(topic.started_at());
     let last_active = format_relative_time(topic.last_active_at());
 
-    let mut el = item("topic");
+    let mut el = Node::tag("topic");
 
     if need_close {
-        el = el.with_attr("need-close", true);
+        el = el.attr("need-close", true);
     }
 
-    el.with_attr("id", topic.id)
-        .with_attr("started_at", started_at)
-        .with_attr("last_active", last_active)
-        .with_attr("title", topic.title.as_deref().unwrap_or("No Title"))
-        .with_content(topic.summary.as_deref().unwrap_or("No Summary"))
+    el.attr("id", topic.id)
+        .attr("started_at", started_at)
+        .attr("last_active", last_active)
+        .attr("title", topic.title.as_deref().unwrap_or("No Title"))
+        .child(Node::text(topic.summary.as_deref().unwrap_or("No Summary")))
 }
 
 /// 构建单个话题元素（无 RenderContext，用于 tool 响应等场景）
 /// 使用独立的格式化函数，不依赖 ctx。
-pub fn topic_element_static(topic: &Topic) -> Item {
+pub fn topic_element_static(topic: &Topic) -> Node {
     let started_at = format_time_dyn(topic.started_at());
 
-    item("topic")
-        .with_attr("id", topic.id)
-        .with_attr("started_at", started_at)
-        .with_attr("title", topic.title.as_deref().unwrap_or("No Title"))
-        .with_content(topic.summary.as_deref().unwrap_or("No Summary"))
+    Node::tag("topic")
+        .attr("id", topic.id)
+        .attr("started_at", started_at)
+        .attr("title", topic.title.as_deref().unwrap_or("No Title"))
+        .child(Node::text(topic.summary.as_deref().unwrap_or("No Summary")))
 }

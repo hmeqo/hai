@@ -4,11 +4,13 @@ use sqlx::FromRow;
 use strum::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
+use crate::domain::vo::ChatId;
+
 /// 消息流 (Message)
 #[derive(Debug, Clone, FromRow)]
 pub struct Message {
     pub id: i64,
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub account_id: Option<i64>,
     pub role: String,
     pub content: serde_json::Value,
@@ -56,7 +58,13 @@ impl Message {
 #[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum MessageStatus {
-    Pending,
+    Unread,
     Replied,
     Seen,
+}
+
+impl MessageStatus {
+    pub fn as_str(&self) -> &'static str {
+        self.into()
+    }
 }

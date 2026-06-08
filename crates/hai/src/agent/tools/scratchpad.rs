@@ -10,25 +10,26 @@ use serde_json::Value;
 
 use crate::{
     agent::{
-        round::RoundContext,
+        runtime::ctx::RoundCtx,
         tools::util::{MapToolErr, tool_ok},
     },
-    domain::service::DbServices,
+    domain::{service::DbServices, vo::ChatId},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct UpdateScratchpadArgs {
+    #[input(description = "chat_id")]
+    pub chat_id: i64,
     #[input(description = "新的内容")]
     pub content: String,
 }
 
 #[tool(
     name = "update_scratchpad",
-    description = "更新草稿板。结束时调用一次就行，把值得延续到下一轮的信息写进去。",
+    description = "更新你的主观工作记忆（草稿板），用于跨轮次延续思考进度。每次处理消息时先回顾再更新，已完成的及时清理。",
     input = UpdateScratchpadArgs,
 )]
 pub struct UpdateScratchpad {
-    pub chat_id: i64,
     pub services: DbServices,
 }
 
@@ -39,7 +40,7 @@ impl ToolRuntime for UpdateScratchpad {
 
         self.services
             .scratchpad
-            .save(self.chat_id, &args.content)
+            .save(ChatId::from(args.chat_id), &args.content)
             .await
             .into_tool_err()?;
 
@@ -47,9 +48,8 @@ impl ToolRuntime for UpdateScratchpad {
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(UpdateScratchpad {
-        chat_id: ctx.chat_id,
         services: ctx.services(),
     })]
 }

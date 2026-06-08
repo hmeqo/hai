@@ -4,7 +4,7 @@ Telegram 群聊机器人，拥有独立性格和长期记忆的数字生命。
 
 ## 核心特性
 
-- **人格系统**：6 维性格参数（社恐/话痨、话量、坦诚度、幽默感、共情、情绪稳定性），可灵活配置
+- **人格系统**：6 维性格参数（社恐/话痨、话量、坦诚度、幽默感、理性/感性、情绪稳定性），可灵活配置
 - **智能话题管理**：自动识别、归类、总结群聊话题
 - **长期记忆**：记住群友特征、爱好、群规，支持向量检索
 - **多模态**：图片生成、语音分析
@@ -13,7 +13,7 @@ Telegram 群聊机器人，拥有独立性格和长期记忆的数字生命。
 
 ### 1. 环境准备
 
-- Rust 1.75+
+- Rust nightly (edition 2024)
 - PostgreSQL + pgvector 扩展
 - Telegram Bot Token
 - LLM API Key（OpenRouter / OpenAI / Anthropic 等）
@@ -23,28 +23,36 @@ Telegram 群聊机器人，拥有独立性格和长期记忆的数字生命。
 创建 `.hai/config.toml`：
 
 ```toml
+[logging]
+level = "info"
+
 [database]
 url = "postgres://user:password@localhost:5433/hai"
 
-[telegram]
-bot_token = "your-bot-token"
-allowed_chat_ids = [123456789]  # 可留空允许所有
+[bot.main]
+type = "telegram"
+bot-token = "your-bot-token"
+allowed-chat-ids = [123456789]
+
+[providers.openrouter]
+api_key = "your-api-key"
 
 [agent]
 provider = "openrouter"
-default_model = "anthropic/claude-3.5-sonnet"
+model = "anthropic/claude-3.5-sonnet"
 
 [agent.personality]
 name = "hai"
 sociability = 0.05
 verbosity = 0.35
-honesty = 0.65
+honesty = 0.60
 humor = 0.70
-empathy = 0.75
-mood = 0.30
+rationality = 0.35
+mood = 0.1
 
-[providers.openrouter]
-api_key = "your-api-key"
+[multimodal.embedding]
+provider = "openrouter"
+model = "openai/text-embedding-3-small"
 ```
 
 ### 3. 运行
@@ -54,7 +62,7 @@ api_key = "your-api-key"
 cargo sqlx prepare --workspace
 
 # 启动
-cargo run --bin hai -- run
+cargo run --bin hai
 ```
 
 ### 4. 查看配置
@@ -71,7 +79,7 @@ cargo run --bin hai -- config --format toml
 SQLX_OFFLINE=true cargo check
 
 # 运行
-cargo run --bin hai -- run
+cargo run --bin hai
 
 # 查看配置
 cargo run --bin hai -- config
@@ -86,19 +94,23 @@ cargo run --bin hai -- config
   - [ ] 计划任务
 - [x] 人格系统
   - [x] 基础人格系统
-- [ ] 接收消息
+- [x] 接收消息
   - [x] 接收并存入数据库
-  - [ ] 多模态分析
+  - [x] 多模态分析
     - [x] 图片
-    - [ ] 视频
-    - [ ] 语音
-- [ ] 发送消息
+    - [x] 视频
+    - [x] 语音
+- [x] 发送消息
   - [x] 发送文本
   - [ ] 发送和管理 sticky
-  - [ ] 多模态
-- [ ] 增强功能
+  - [x] 多模态
+    - [ ] 图片
+    - [ ] 视频
+    - [x] 语音
+- [x] 增强功能
   - [x] MCP
-  - [ ] Skills
-- [ ] 多平台支持
+  - [x] Skills
+- [x] 多平台支持
   - [x] Telegram
+  - [ ] Cli
   - [ ] Qq

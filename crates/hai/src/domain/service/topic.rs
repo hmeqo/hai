@@ -7,7 +7,7 @@ use crate::{
     domain::{
         entity::Topic,
         repo::{MessageRepo, TopicRepo},
-        vo::TopicSearchResult,
+        vo::{ChatId, TopicSearchResult},
     },
     error::Result,
 };
@@ -27,7 +27,7 @@ impl TopicService {
     /// 创建新话题，将指定消息关联到该话题并标记为已处理
     pub async fn create_topic(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         title: &str,
         summary: &str,
         message_ids: &[i64],
@@ -99,7 +99,7 @@ impl TopicService {
     /// 通过向量语义检索相关话题
     pub async fn search_related_topics(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         query_embedding: &Vector,
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
@@ -107,14 +107,14 @@ impl TopicService {
     }
 
     /// 获取活跃话题
-    pub async fn get_active_topics(&self, chat_id: i64) -> Result<Vec<Topic>> {
+    pub async fn get_active_topics(&self, chat_id: ChatId) -> Result<Vec<Topic>> {
         TopicRepo::list_active(&self.pool, chat_id).await
     }
 
     /// 语义搜索话题
     pub async fn search_topics_by_query(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         query: &str,
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
@@ -126,7 +126,7 @@ impl TopicService {
     /// 分页获取话题列表
     pub async fn list_topics(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         status: Option<&str>,
         limit: i64,
         offset: i64,

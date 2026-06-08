@@ -1,10 +1,18 @@
 use std::{fmt::Debug, sync::Arc};
 
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::event::WakeEvent;
-use crate::error::Result;
+pub use crate::agent::context::ContentParser;
+use crate::{domain::vo::ChatId, error::Result};
+
+/// 平台构建好的上下文，供 agent 直接使用
+#[derive(Debug)]
+pub struct BuiltContext {
+    /// 渲染好的 prompt 字符串
+    pub rendered_prompt: String,
+    /// 需要标记为已读的消息 ID 列表
+    pub message_ids: Vec<i64>,
+}
 
 /// 唯一标识一个 bot 实例
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
@@ -16,7 +24,7 @@ impl BotId {
     }
 }
 
-/// Bot 身份信息（平台无关，仅供 agent 上下文渲染使用）
+/// Bot 身份信息（仅供 agent 上下文渲染使用）
 #[derive(Debug, Clone)]
 pub struct BotProfile {
     pub account_id: i64,
@@ -28,7 +36,7 @@ pub struct BotProfile {
 
 #[derive(Debug)]
 pub struct SendMessageReq {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub content: String,
     pub topic_id: Option<Uuid>,
     pub platform_reply_to_id: Option<i64>,
@@ -36,7 +44,7 @@ pub struct SendMessageReq {
 
 #[derive(Debug)]
 pub struct SendVoiceReq {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub audio_bytes: Vec<u8>,
     pub prompt: String,
     pub topic_id: Option<Uuid>,
@@ -50,12 +58,9 @@ pub struct SentMessageMeta {
     pub external_id: String,
 }
 
-// ─── PlatformHandler ──────────────────────────────────────────────────────────
+// ─── PlatformHandler ─────────────────────────────────────────────────────────
 
 /// 平台无关的 bot 能力抽象，由各平台实现。
-///
-/// 涵盖消息发送、输入指示、以及附件文件获取。
-/// agent 层只依赖此 trait，不感知具体平台。
 #[async_trait::async_trait]
 pub trait PlatformHandler: Debug + Send + Sync + 'static {
     /// 发送文本消息
@@ -63,7 +68,7 @@ pub trait PlatformHandler: Debug + Send + Sync + 'static {
     /// 发送语音消息
     async fn send_voice(&self, req: SendVoiceReq) -> Result<SentMessageMeta>;
     /// 发送"正在输入"指示（fire-and-forget）
-    async fn send_typing(&self, chat_id: i64);
+    async fn send_typing(&self, chat_id: ChatId);
     /// 下载文件内容（用于附件分析）
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>>;
     /// 获取文件的可公开访问 URL（用于多模态分析，避免下载大文件）
@@ -74,19 +79,21 @@ pub trait PlatformHandler: Debug + Send + Sync + 'static {
         attachment_uuid: Uuid,
         prompt: Option<&str>,
     ) -> Result<String>;
+    /// 平台消息解析器
+    fn content_parser(&self) -> &'static dyn ContentParser;
 }
 
-// ─── BotConn ─────────────────────────────────────────────────────────────────
+// ─── BotHandle ─────────────────────────────────────────────────────────────────
 
-/// Agent 侧持有的 bot 连接（封装身份 + 平台处理器）
+/// Agent 侧持有的 bot 操作句柄
 #[derive(Clone)]
-pub struct BotConn {
+pub struct BotHandle {
     pub bot_id: BotId,
     pub profile: BotProfile,
     pub handler: Arc<dyn PlatformHandler>,
 }
 
-impl BotConn {
+impl BotHandle {
     pub fn new(bot_id: BotId, profile: BotProfile, handler: Arc<dyn PlatformHandler>) -> Self {
         Self {
             bot_id,
@@ -103,43 +110,15 @@ impl BotConn {
         self.handler.send_voice(req).await
     }
 
-    pub async fn send_typing(&self, chat_id: i64) {
+    pub async fn send_typing(&self, chat_id: ChatId) {
         self.handler.send_typing(chat_id).await;
     }
 
-    /// 获取文件内容（委托给平台 handler）
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>> {
         self.handler.download_file(file_id).await
     }
 
-    /// 获取文件 URL（委托给平台 handler）
     pub async fn get_file_url(&self, file_id: &str) -> Result<String> {
         self.handler.get_file_url(file_id).await
     }
-}
-
-// ─── Link ────────────────────────────────────────────────────────────────────
-
-/// Bot 侧的连接半体，持有向 agent 发事件的 sender
-pub struct BotLink {
-    pub bot_id: BotId,
-    pub event_tx: mpsc::UnboundedSender<WakeEvent>,
-}
-
-/// Agent 侧的连接半体，持有接收 bot 事件的 receiver
-pub struct AgentLink {
-    pub bot_id: BotId,
-    pub event_rx: mpsc::UnboundedReceiver<WakeEvent>,
-}
-
-/// 建立一对 (BotLink, AgentLink)
-pub fn open_link(bot_id: BotId) -> (BotLink, AgentLink) {
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
-    (
-        BotLink {
-            bot_id: bot_id.clone(),
-            event_tx,
-        },
-        AgentLink { bot_id, event_rx },
-    )
 }

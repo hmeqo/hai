@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                account_id,\n                chat_id,\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM memory\n            WHERE type = 'agent_note' AND chat_id = $1 AND content = $2\n            LIMIT 1\n            ",
+  "query": "\n            SELECT\n                id,\n                account_id,\n                chat_id as \"chat_id: ChatId\",\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM memory\n            WHERE type = $1 AND chat_id = $2\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,7 @@
       },
       {
         "ordinal": 2,
-        "name": "chat_id",
+        "name": "chat_id: ChatId",
         "type_info": "Int8"
       },
       {
@@ -76,8 +76,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Text"
+        "Text",
+        "Int8"
       ]
     },
     "nullable": [
@@ -96,5 +96,5 @@
       true
     ]
   },
-  "hash": "d31459718622cb7b47e94d64469e2462c4249d6d8eafed753dac027ec83b2a1b"
+  "hash": "1552d877f075bfce761caeca8309a80f169d8304f8d8574c53b9003ef8bdb581"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id as \"id: Uuid\",\n                chat_id,\n                title,\n                summary,\n                embedding as \"embedding: Vector\",\n                status as \"status!\",\n                parent_topic_id as \"parent_topic_id: Uuid\",\n                token_count as \"token_count!\",\n                message_count as \"message_count!\",\n                meta,\n                started_at as \"started_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\",\n                closed_at as \"closed_at: jiff_sqlx::Timestamp\",\n                last_active_at as \"last_active_at!: jiff_sqlx::Timestamp\",\n                (embedding <=> $2) as \"distance!: f64\"\n            FROM topic\n            WHERE chat_id = $1 AND embedding IS NOT NULL\n            ORDER BY embedding <=> $2\n            LIMIT $3\n            ",
+  "query": "\n            SELECT\n                id as \"id: Uuid\",\n                chat_id as \"chat_id: ChatId\",\n                title,\n                summary,\n                embedding as \"embedding: Vector\",\n                status as \"status!\",\n                parent_topic_id as \"parent_topic_id: Uuid\",\n                token_count as \"token_count!\",\n                message_count as \"message_count!\",\n                meta,\n                started_at as \"started_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\",\n                closed_at as \"closed_at: jiff_sqlx::Timestamp\",\n                last_active_at as \"last_active_at!: jiff_sqlx::Timestamp\",\n                (embedding <=> $2) as \"distance!: f64\"\n            FROM topic\n            WHERE chat_id = $1 AND embedding IS NOT NULL\n            ORDER BY embedding <=> $2\n            LIMIT $3\n            ",
   "describe": {
     "columns": [
       {
@@ -10,7 +10,7 @@
       },
       {
         "ordinal": 1,
-        "name": "chat_id",
+        "name": "chat_id: ChatId",
         "type_info": "Int8"
       },
       {
@@ -120,5 +120,5 @@
       null
     ]
   },
-  "hash": "3964831906eb82c06c6e5e8c2c4d1f773187032cf5f959ec0e83014653358721"
+  "hash": "e8f8cfe4f23f80981a138094bb30fd12ac3c1d2e95fdb39b5e8692519c16d333"
 }

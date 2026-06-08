@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::config::{
     AppConfig,
-    schema::{PersonalityConfig, TriggerConfig},
+    schema::{AttentionConfig, PersonalityConfig},
 };
 
 fn curve(t: f64) -> f64 {
@@ -25,11 +25,11 @@ impl PersonalityMgr {
         self.config.agent.personality.sociability
     }
 
-    pub fn base_attention(&self, trigger_cfg: &TriggerConfig) -> f64 {
+    pub fn base_attention(&self, cfg: &AttentionConfig) -> f64 {
         let t = self.sociability();
-        let cap = trigger_cfg.base_attention_cap;
+        let cap = cfg.base_attention_cap;
         let base = curve(t) * cap;
-        base.max(trigger_cfg.base_attention)
+        base.max(cfg.base_attention)
     }
 
     /// 注意力窗口时长（秒）：agent 主动参与后保持高注意力的时长

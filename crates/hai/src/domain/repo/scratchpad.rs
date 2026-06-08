@@ -1,12 +1,15 @@
 use sqlx::PgPool;
 
-use crate::{domain::entity::Scratchpad, error::Result};
+use crate::{
+    domain::{entity::Scratchpad, vo::ChatId},
+    error::Result,
+};
 
 pub struct ScratchpadRepo;
 
 impl ScratchpadRepo {
     /// 获取 chat 的 scratchpad，不存在则返回 None
-    pub async fn find(pool: &PgPool, chat_id: i64) -> Result<Option<Scratchpad>> {
+    pub async fn find(pool: &PgPool, chat_id: ChatId) -> Result<Option<Scratchpad>> {
         let row = sqlx::query_as!(
             Scratchpad,
             r#"
@@ -18,7 +21,7 @@ impl ScratchpadRepo {
             FROM scratchpad
             WHERE chat_id = $1
             "#,
-            chat_id,
+            chat_id.0,
         )
         .fetch_optional(pool)
         .await?;
@@ -28,7 +31,7 @@ impl ScratchpadRepo {
     /// 写入或更新 scratchpad 内容
     pub async fn upsert(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         content: &str,
         token_count: i32,
     ) -> Result<Scratchpad> {
@@ -47,7 +50,7 @@ impl ScratchpadRepo {
                 token_count,
                 updated_at as "updated_at!: jiff_sqlx::Timestamp"
             "#,
-            chat_id,
+            chat_id.0,
             content,
             token_count,
         )

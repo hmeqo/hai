@@ -5,95 +5,140 @@ graph TB
   TG["Telegram API"]
 
   subgraph Platform["Platform Layer"]
-    TP["TelegramPlatform<br/>dispatcher + signal handler"]
-    BM["spawn_bots()<br/>配置 → BotLink + 注册"]
+    DP["TelegramDispather<br/>事件入口 + 聊天/用户解析"]
+    BM["spawn_bots()<br/>→ BotHandle + ActorRef<TelegramBotActor>"]
   end
 
-  subgraph Core["Core"]
-    AH["AgentGateway<br/>连接管理 + 事件路由"]
-    ACS["ChatSession × N<br/>防抖 + 任务调度"]
-    AC["AgentCtx<br/>LLM + Agent组装 + 执行"]
-    CF["ContextFactory"]
-    AGENT["MainAgent<br/>ReActAgent"]
-    TOOLS["Tools<br/>RoundContext(conn + events)"]
-  end
-
-  subgraph Identity["Agent Link Layer"]
-    BL["BotLink"]
-    AL["AgentLink"]
-    BC["BotConn<br/>signal_tx + BotProfile"]
-    BP["BotProfile<br/>platform-neutral"]
+  subgraph Agent["Agent Layer"]
+    SM["SessionManager<br/>get_or_create(ChatId)"]
+    CS["ChatSession (kameo actor)<br/>EventScheduler + 事件驱动"]
+    EN["AgentEngine<br/>LLM 管理 + Agent 组装"]
+    RT["RoundTask<br/>engine.run() → tokio::spawn"]
+    CTX["ContextBuilder<br/>prompt 渲染"]
+    AG["MainAgentOutput { notes }<br/>结构化输出"]
+    SEND["send_message / send_voice<br/>tool → BotHandle → PlatformHandler"]
   end
 
   subgraph App["AppContext (DI)"]
     CFG["Config"]
-    MULTI["Multimodal"]
-    DB_SVC["DbServices"]
-    AGT_SVC["Agent Services"]
+    MCP["MCP Tools"]
+    DB["DbServices"]
+  end
+
+  subgraph Actors["kameo actors"]
+    BA["TelegramBotActor<br/>消息发送 API + 消息入库"]
   end
 
   PG[("PostgreSQL")]
 
-  TG --> TP
-  TP --> BL --> AL --> AH
-  AH --> ACS
-  ACS --> AC --> CF --> AGENT
-  AGENT --> TOOLS
-  TOOLS -- BotConn.send_* --> TP
+  TG --> DP
+  DP --> SM --> CS
+  CS --> EN --> RT
+  RT --> CTX --> AG
+  AG --> SEND
+  SEND -.-> BA
 
-  App -.-> TP
-  App -.-> AC
-  App -.-> CF
-  App -.-> TOOLS
+  CS -- tell(RoundResult) --> CS
 
-  CF --> DB_SVC
-  CF --> MULTI
-  TOOLS --> DB_SVC
-  DB_SVC --> PG
+  DP -- "/status → ask(GetStatus)" --> SM
+
+  App -.-> DP
+  App -.-> EN
+  App -.-> CTX
+
+  CTX --> DB
+  SEND --> DB
+  DB --> PG
+  BA --> DB
 
   classDef infra fill:#f5f5f5
-  classDef core fill:#e3f2fd
-  classDef link fill:#e8f5e9
+  classDef platform fill:#e3f2fd
+  classDef agent fill:#e8f5e9
   classDef app fill:#fff3e0
   classDef store fill:#fce4ec
 
-  class TP,BM infra
-  class AH,ACS,AC,CF,AGENT,TOOLS core
-  class BL,AL,BC,BP link
-  class CFG,MULTI,DB_SVC,AGT_SVC app
+  class DP,BM platform
+  class SM,CS,EN,RT,CTX,AG,SEND agent
+  class CFG,MCP,DB app
   class PG store
+  class BA infra
 ```
+
+## 核心抽象
+
+| 类型 | 职责 | 通信方式 |
+|------|------|---------|
+| `ChatSession` | 单 chat 事件调度 + round 生命周期 | kameo actor: `tell(WakeEvent)`, `ask(GetStatus)`, `tell(RoundResult)` |
+| `TelegramBotActor` | 消息发送 + 入库 | kameo actor: `ask(SendMessageReq)`, `tell(TypingMsg)` |
+| `AgentEngine` | LLM 管理 + Agent 组装 + `SessionManager` | `Arc` 共享 |
+| `BotHandle` | 包装 `Arc<dyn PlatformHandler>`，工具通过它调平台 | 直接 `async fn` |
+| `SessionManager` | 集中管理 ChatSession，`get_or_create(ChatId, spawn_fn)` | 内部 `RwLock<HashMap<ChatId, ActorRef>>` |
+| `RoundTask` | 一轮 LLM 执行，完成后 `tell(RoundResult)` | `tokio::spawn` |
+| `EventScheduler` | batch + heat + window | ChatSession 内部状态机 |
+| `MainAgentOutput` | 结构化输出 `{ notes: Option<String> }` | autoagents `#[derive(AgentOutput)]` |
 
 ## 信号流
 
 ```
-Telegram → TelegramPlatform → BotLink.event_tx → AgentGateway → ChatSession
-  → AgentCtx.execute(RoundContext) → ContextFactory → MainAgent → RoundContext
-  → BotConn.send_message() → TelegramPlatform.handle_signal() → Telegram API
+Telegram → TelegramDispather
+  → engine.sessions.get_or_create(chat_id)
+  → ChatSession.tell(WakeEvent)
+  → scheduler.push() + try_consume()
+  → RoundTask::spawn()
+  → engine.run() → MainAgentOutput { notes }
+  → tell(RoundResult) → ChatSession (下轮 context 用)
 ```
 
-路由由连接隐式承载：`BotConn` 的 `signal_tx` 只发回创建它时的那个 `BotLink`。
+```
+agent 工具调用:
+  send_message tool → BotHandle.send_message()
+  → TelegramPlatformHandler → bot_actor.ask(SendMessageReq)
+  → resolve_platform_chat_id() → teloxide bot.send_message()
+```
 
-## 核心抽象
+```
+内部命令（/help /status /start）:
+  dispatcher → self.bot.send_message()
+  不经 actor，不经过 agent 系统
+```
 
-| 层 | 类型 | 职责 |
-|----|------|------|
-| 连接 | `BotLink` / `AgentLink` | 一对 channel，bot ↔ agent 通信 |
-| 连接 | `BotConn` | 封装 signal_tx + BotProfile，工具通过它发信号 |
-| 连接 | `BotProfile` | 平台无关的身份信息 |
-| 路由 | `AgentGateway` | 多 bot 连接注册、事件合并 → session |
-| 执行 | `AgentCtx` | LLM / Agent 组装 / 任务执行（Arc 共享） |
-| 会话 | `ChatSession` | 单 chat 防抖 + 任务调度 |
-| 轮次 | `RoundContext` | 单次 agent 触发上下文（chat_id + conn + events） |
-| 平台 | `TelegramPlatform` | Telegram 适配器（持有自己的 Bot + BotLink） |
+## 调度策略
+
+`scheduler.rs` 中的 `impl WakeReason` 块：
+
+| 策略 | 条件 | 效果 |
+|------|------|------|
+| `is_addressed` | `Direct` / `Mention` | 刷新注意力窗口 + 热量重置 |
+| `is_rapid` | `Scheduled` / `Command` | 绕过 batch deadline |
+| `is_mergeable` | `Observe` / `Mention` / `Direct` | 同类事件可合并 |
+
+## ChatId 边界
+
+`domain/vo/chat_id.rs` 定义 `ChatId(pub i64)`，和平台侧 chat ID 类型不同：
+
+- agent 层内部传递全用 `ChatId`
+- DB 层（repo/service）保持 `i64`，边界处 `.0` 取出
+- dispatcher 入口处 `msg.chat.id.0` 不能直接传（编译不通过），强迫显式转换
 
 ## Context 渲染顺序
 
-`<situation>` → `<environment>` → `<chat>` → `<accounts>` → `<related_memories>` → `<related_topics>` → `<current_topics>` → `<scratchpad>` → `<perceptions>` → `<conversation>`
+首轮（`build_first_round_prompt`）：
+```
+<situation> → <environment> → <chat> → <accounts>
+→ <related_memories> → <related_topics> → <current_topics>
+→ <scratchpad> → <perceptions> → <conversation>
+```
+
+后续轮次（`build_next_round_prompt`）：
+```
+<update>
+  <last-round> → <toolcalls> → <internal><notes>
+  <current_time> → <situation> → <messages>
+```
 
 ## System Prompt 叠加
 
-`personality_context()` → scene → `TOOL_MANUAL` → user `system_prompt` → Skills
+`SYSTEM_PROMPT`（自包含，含工具手册）→ `personality_context()` → config `system_prompt` → `private_prompt`/`group_prompt` → skills
 
 ## Bot 配置
 
@@ -108,8 +153,6 @@ bot-token = "yyy"        # 省略 type，从 key 名推断
 allowed-chat-ids = []
 ```
 
-未指定 `type` 时从 key 名推断（`telegram` / `tg` → Telegram）。
-
 ## 层次依赖
 
-`entity → vo → repo → service → agent → app`，`infra` 不依赖上层。`bot` 依赖 `app`，不依赖 `agent`。
+`entity → vo → repo → service → agent → app`，`infra` 不依赖上层。`platform` 依赖 `app`，不依赖 `agent`。

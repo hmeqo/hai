@@ -1,13 +1,9 @@
 pub mod context;
 
-use std::sync::Arc;
-
 pub use context::AppContext;
 
 use crate::{
-    agent::{AgentGateway, runtime::AgentCtx},
-    config::AppConfigManager,
-    error::Result,
+    agent::runtime::AgentEngine, config::AppConfigManager, error::Result,
     platform::manager::spawn_bots,
 };
 
@@ -32,19 +28,13 @@ impl App {
 
     pub async fn run(self) -> Result<()> {
         let ctx = AppContext::new(self.config_mgr).await?;
-        let agent_ctx = Arc::new(AgentCtx::new(ctx.clone()).await?);
-        let mut gateway = AgentGateway::new(agent_ctx);
+        let engine = AgentEngine::new(ctx.clone()).await?;
 
-        spawn_bots(&ctx, &mut gateway).await?;
+        spawn_bots(&ctx, &engine).await?;
 
-        let agent_handle = tokio::spawn(async move {
-            if let Err(err) = gateway.run().await {
-                tracing::error!("Agent gateway failed: {err}");
-            }
-        });
-
-        agent_handle.await?;
-
+        // 主线程保持运行
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("Shutting down...");
         Ok(())
     }
 }

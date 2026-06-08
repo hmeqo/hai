@@ -6,14 +6,12 @@ use sqlx::PgPool;
 
 use crate::{
     agent::{
-        context::ContextFactory,
-        event::AttentionManager,
         node::{ModelService, MultimodalService},
+        personality::PersonalityMgr,
     },
     config::{AppConfig, AppConfigManager, ProviderManager},
     domain::{db, service::DbServices},
     error::Result,
-    personality::PersonalityMgr,
 };
 
 #[derive(Clone, Deref)]
@@ -36,16 +34,9 @@ impl AppContext {
         let providers = ProviderManager::new(&cfg)?;
         let multimodal = MultimodalService::from_config(&cfg, &providers);
         let personality = PersonalityMgr::new(Arc::clone(&cfg));
-        let attention = Arc::new(
-            AttentionManager::new()
-                .with_base_attention(personality.base_attention(&cfg.agent.trigger))
-                .with_attention_window_secs(personality.attention_window_secs()),
-        );
 
         let pool = db::init_pool(&cfg.database).await?;
         let db_srv = DbServices::new(pool.clone(), multimodal.clone());
-
-        let context_fty = ContextFactory::new(Arc::clone(&cfg), db_srv.clone());
 
         let provider = ProviderContext {
             provider: providers,
@@ -54,8 +45,6 @@ impl AppContext {
         };
         let agent = AgentContext {
             personality,
-            context_fty,
-            attention,
             current_model: ArcSwap::from_pointee(cfg.agent.model.clone()),
         };
         let db = DbContext { pool, srv: db_srv };
@@ -86,8 +75,6 @@ pub struct ProviderContext {
 
 pub struct AgentContext {
     pub personality: PersonalityMgr,
-    pub context_fty: ContextFactory,
-    pub attention: Arc<AttentionManager>,
     pub current_model: ArcSwap<String>,
 }
 

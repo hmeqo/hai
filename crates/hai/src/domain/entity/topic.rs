@@ -5,13 +5,16 @@ use sqlx::FromRow;
 use strum::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-use crate::error::{ErrorKind, Result};
+use crate::{
+    domain::vo::ChatId,
+    error::{ErrorKind, Result},
+};
 
 /// 话题流 (Topic)
 #[derive(Debug, Clone, FromRow)]
 pub struct Topic {
     pub id: Uuid,
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub embedding: Option<Vector>,

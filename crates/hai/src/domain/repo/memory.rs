@@ -3,7 +3,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    domain::{entity::Memory, vo::MemorySearchResult},
+    domain::{
+        entity::Memory,
+        vo::{ChatId, MemorySearchResult},
+    },
     error::Result,
 };
 
@@ -23,7 +26,7 @@ impl MemoryRepo {
             RETURNING
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -37,7 +40,7 @@ impl MemoryRepo {
             "#,
             memory.id,
             memory.account_id,
-            memory.chat_id,
+            memory.chat_id.map(ChatId::as_i64),
             memory.type_,
             memory.content,
             memory.embedding as Option<Vector>,
@@ -54,7 +57,7 @@ impl MemoryRepo {
     /// 通过类型和会话查找记忆
     pub async fn search(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         embedding: &Vector,
         limit: i64,
     ) -> Result<Vec<MemorySearchResult>> {
@@ -80,7 +83,7 @@ impl MemoryRepo {
             ORDER BY embedding <=> $2
             LIMIT $3
             "#,
-            chat_id,
+            chat_id.0,
             embedding as &Vector,
             limit,
         )
@@ -94,7 +97,7 @@ impl MemoryRepo {
                 memory: Memory {
                     id: r.id,
                     account_id: r.account_id,
-                    chat_id: r.chat_id,
+                    chat_id: r.chat_id.map(ChatId),
                     type_: r.type_,
                     content: r.content,
                     embedding: r.embedding,
@@ -115,7 +118,7 @@ impl MemoryRepo {
     pub async fn find_by_type_and_chat(
         pool: &PgPool,
         type_: &str,
-        chat_id: i64,
+        chat_id: ChatId,
     ) -> Result<Option<Memory>> {
         let row = sqlx::query_as!(
             Memory,
@@ -123,7 +126,7 @@ impl MemoryRepo {
             SELECT
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -139,7 +142,7 @@ impl MemoryRepo {
             LIMIT 1
             "#,
             type_,
-            chat_id,
+            chat_id.0,
         )
         .fetch_optional(pool)
         .await?;
@@ -170,7 +173,7 @@ impl MemoryRepo {
             RETURNING
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -206,7 +209,7 @@ impl MemoryRepo {
     pub async fn find_user_fact(
         pool: &PgPool,
         account_id: i64,
-        chat_id: i64,
+        chat_id: ChatId,
         content: &str,
     ) -> Result<Option<Memory>> {
         let row = sqlx::query_as!(
@@ -215,7 +218,7 @@ impl MemoryRepo {
             SELECT
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -231,7 +234,7 @@ impl MemoryRepo {
             LIMIT 1
             "#,
             account_id,
-            chat_id,
+            chat_id.0,
             content,
         )
         .fetch_optional(pool)
@@ -242,7 +245,7 @@ impl MemoryRepo {
     /// 通过唯一键查找 Knowledge（chat_id + content 完全匹配）
     pub async fn find_knowledge(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         content: &str,
     ) -> Result<Option<Memory>> {
         let row = sqlx::query_as!(
@@ -251,7 +254,7 @@ impl MemoryRepo {
             SELECT
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -266,7 +269,7 @@ impl MemoryRepo {
             WHERE type = 'knowledge' AND chat_id = $1 AND content = $2
             LIMIT 1
             "#,
-            chat_id,
+            chat_id.0,
             content,
         )
         .fetch_optional(pool)
@@ -277,7 +280,7 @@ impl MemoryRepo {
     /// 通过唯一键查找 AgentNote（chat_id + content 完全匹配）
     pub async fn find_agent_note(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         content: &str,
     ) -> Result<Option<Memory>> {
         let row = sqlx::query_as!(
@@ -286,7 +289,7 @@ impl MemoryRepo {
             SELECT
                 id,
                 account_id,
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 type as "type_!",
                 content as "content!",
                 embedding as "embedding: Vector",
@@ -301,7 +304,7 @@ impl MemoryRepo {
             WHERE type = 'agent_note' AND chat_id = $1 AND content = $2
             LIMIT 1
             "#,
-            chat_id,
+            chat_id.0,
             content,
         )
         .fetch_optional(pool)

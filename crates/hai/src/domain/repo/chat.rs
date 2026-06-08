@@ -1,6 +1,9 @@
 use sqlx::PgPool;
 
-use crate::{domain::entity::Chat, error::Result};
+use crate::{
+    domain::{entity::Chat, vo::ChatId},
+    error::Result,
+};
 
 pub struct ChatRepo;
 
@@ -44,7 +47,7 @@ impl ChatRepo {
                     created_at as "created_at!: jiff_sqlx::Timestamp",
                     updated_at as "updated_at!: jiff_sqlx::Timestamp"
                 "#,
-                chat.id,
+                chat.id.0,
                 name,
                 meta,
             )
@@ -79,7 +82,7 @@ impl ChatRepo {
     }
 
     /// 通过内部 ID 查询会话
-    pub async fn find_by_id(pool: &PgPool, id: i64) -> Result<Option<Chat>> {
+    pub async fn find_by_id(pool: &PgPool, id: ChatId) -> Result<Option<Chat>> {
         let chat = sqlx::query_as!(
             Chat,
             r#"
@@ -96,7 +99,7 @@ impl ChatRepo {
             FROM chat
             WHERE id = $1
             "#,
-            id,
+            id.0,
         )
         .fetch_optional(pool)
         .await?;

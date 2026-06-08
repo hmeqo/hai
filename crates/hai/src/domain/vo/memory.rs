@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::entity::{Memory, MemoryType, Topic};
+use crate::domain::{
+    entity::{Memory, MemoryType, Topic},
+    vo::ChatId,
+};
 
 /// 统一记忆输入参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,7 +14,7 @@ pub enum MemoryInput {
     /// 作用范围: 特定用户 (account_id) 在特定群聊 (chat_id) 中的信息
     CreateUserFact {
         account_id: i64,
-        chat_id: i64,
+        chat_id: ChatId,
         content: String,
     },
     /// 更新关于用户的客观事实
@@ -23,7 +26,7 @@ pub enum MemoryInput {
     /// 记录 Agent 的笔记
     /// 作用范围: 特定群聊 (chat_id) 下，可选关联话题或消息
     CreateAgentNote {
-        chat_id: i64,
+        chat_id: ChatId,
         references: Option<serde_json::Value>,
         content: String,
     },
@@ -35,7 +38,7 @@ pub enum MemoryInput {
     },
     /// 记录通用知识
     /// 作用范围: 特定群聊 (chat_id) 内共享的知识
-    CreateKnowledge { chat_id: i64, content: String },
+    CreateKnowledge { chat_id: ChatId, content: String },
     /// 更新通用知识
     UpdateKnowledge {
         id: Uuid,
@@ -44,7 +47,7 @@ pub enum MemoryInput {
     },
     /// 更新群聊固定上下文（规则/人设）
     /// 作用范围: 特定群聊 (chat_id)，每个群聊仅存一份，重复调用会覆盖
-    UpsertChatRule { chat_id: i64, content: String },
+    UpsertChatRule { chat_id: ChatId, content: String },
 }
 
 impl MemoryInput {

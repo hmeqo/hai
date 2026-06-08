@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use autoagents::{
-    llm::{LLMProvider, chat::ReasoningEffort},
+    llm::{LLMProvider, backends, chat::ReasoningEffort},
     prelude::LLMBuilder,
 };
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
@@ -32,7 +32,7 @@ pub struct LlmBuildConfig {
     pub reasoning: bool,
     pub reasoning_effort: ReasoningEffort,
     pub temperature: f32,
-    pub max_tokens: u32,
+    pub max_tokens: Option<u32>,
 }
 
 impl ProviderBackend {
@@ -46,7 +46,7 @@ impl ProviderBackend {
             Self::OpenAI => "https://api.openai.com/v1",
             Self::Anthropic => "https://api.anthropic.com",
             Self::Google => "https://generativelanguage.googleapis.com",
-            Self::DeepSeek => "https://api.deepseek.com",
+            Self::DeepSeek => "https://api.deepseek.com/v1",
             Self::Groq => "https://api.groq.com/openai/v1",
             Self::Ollama => "http://localhost:11434/v1",
             Self::XAI => "https://api.x.ai/v1",
@@ -66,14 +66,16 @@ impl ProviderBackend {
     pub fn build(self, cfg: LlmBuildConfig) -> Result<Arc<dyn LLMProvider>> {
         macro_rules! build_provider {
             ($ty:ty) => {{
-                let builder: LLMBuilder<$ty> = LLMBuilder::new()
+                let mut builder: LLMBuilder<$ty> = LLMBuilder::new()
                     .api_key(&cfg.api_key)
                     .base_url(&cfg.base_url)
                     .model(&cfg.model)
                     .reasoning(cfg.reasoning)
                     .reasoning_effort(cfg.reasoning_effort)
-                    .temperature(cfg.temperature)
-                    .max_tokens(cfg.max_tokens);
+                    .temperature(cfg.temperature);
+                if let Some(v) = cfg.max_tokens {
+                    builder = builder.max_tokens(v);
+                }
                 builder
                     .build()
                     .map(|arc| arc as Arc<dyn LLMProvider>)
@@ -82,19 +84,20 @@ impl ProviderBackend {
         }
 
         match self {
-            Self::OpenRouter => build_provider!(autoagents::llm::backends::openrouter::OpenRouter),
+            Self::OpenRouter => build_provider!(backends::openrouter::OpenRouter),
             Self::OpenAI | Self::Requesty => {
-                build_provider!(autoagents::llm::backends::openai::OpenAI)
+                build_provider!(backends::openai::OpenAI)
             }
-            Self::Anthropic => build_provider!(autoagents::llm::backends::anthropic::Anthropic),
-            Self::Google => build_provider!(autoagents::llm::backends::google::Google),
-            Self::DeepSeek => build_provider!(autoagents::llm::backends::deepseek::DeepSeek),
-            Self::Groq => build_provider!(autoagents::llm::backends::groq::Groq),
-            Self::Ollama => build_provider!(autoagents::llm::backends::ollama::Ollama),
-            Self::XAI => build_provider!(autoagents::llm::backends::xai::XAI),
-            other => Err(ErrorKind::InvalidParameter.msg(
-                format!("LLM provider '{other}' is not yet supported. Supported: openrouter, openai, anthropic, google, deepseek, groq, ollama, xai, requesty"),
-            )),
+            Self::Anthropic => build_provider!(backends::anthropic::Anthropic),
+            Self::Google => build_provider!(backends::google::Google),
+            Self::DeepSeek => build_provider!(backends::deepseek::DeepSeek),
+            Self::Groq => build_provider!(backends::groq::Groq),
+            Self::Ollama => build_provider!(backends::ollama::Ollama),
+            Self::XAI => build_provider!(backends::xai::XAI),
+            other => Err(ErrorKind::InvalidParameter.msg(format!(
+                "LLM provider '{other}' is not yet supported. Supported: {}",
+                Self::supported_types().join(", ")
+            ))),
         }
     }
 }

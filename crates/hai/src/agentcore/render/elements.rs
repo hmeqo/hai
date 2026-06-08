@@ -1,9 +1,9 @@
 use std::fmt::{Display, Formatter};
 
 use indexmap::IndexMap;
-use jiff::Timestamp;
 use serde::Serialize;
-use uuid::Uuid;
+
+// ─── AttrValue ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum AttrValue {
@@ -49,13 +49,13 @@ impl From<String> for AttrValue {
 
 impl From<&String> for AttrValue {
     fn from(s: &String) -> Self {
-        AttrValue::String(s.into())
+        AttrValue::String(s.clone())
     }
 }
 
 impl From<&str> for AttrValue {
     fn from(s: &str) -> Self {
-        AttrValue::String(s.into())
+        AttrValue::String(s.to_string())
     }
 }
 
@@ -77,40 +77,27 @@ impl From<f64> for AttrValue {
     }
 }
 
-impl From<f32> for AttrValue {
-    fn from(f: f32) -> Self {
-        AttrValue::Float(f as f64)
-    }
-}
-
 impl From<bool> for AttrValue {
     fn from(b: bool) -> Self {
         AttrValue::Bool(b)
     }
 }
 
-impl From<Timestamp> for AttrValue {
-    fn from(ts: Timestamp) -> Self {
-        AttrValue::String(ts.to_string())
+impl From<uuid::Uuid> for AttrValue {
+    fn from(u: uuid::Uuid) -> Self {
+        AttrValue::String(u.to_string())
     }
 }
 
-impl From<Uuid> for AttrValue {
-    fn from(id: Uuid) -> Self {
-        AttrValue::String(id.to_string())
+impl From<jiff::Timestamp> for AttrValue {
+    fn from(t: jiff::Timestamp) -> Self {
+        AttrValue::String(t.to_string())
     }
 }
 
-impl<T: Into<AttrValue>> From<Option<T>> for AttrValue {
-    fn from(opt: Option<T>) -> Self {
-        match opt {
-            Some(v) => v.into(),
-            None => AttrValue::Null,
-        }
-    }
-}
+// ─── Format ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Format {
     #[default]
     Xml,
@@ -118,287 +105,137 @@ pub enum Format {
     Md,
 }
 
+// ─── Node ──────────────────────────────────────────────────────────────────────
+
+/// 渲染节点。Elem 有标签、属性、子节点；Text 是纯文本。
 #[derive(Debug, Clone)]
-pub enum RenderElement {
-    Section(Section),
-    Item(Item),
-    Text(Text),
-    KeyValue(KeyValue),
-    Empty,
+pub enum Node {
+    Elem {
+        tag: String,
+        attrs: IndexMap<String, AttrValue>,
+        children: Vec<Node>,
+    },
+    Text(String),
 }
 
-impl<K, V> From<(K, V)> for KeyValue
-where
-    K: Into<String>,
-    V: Into<String>,
-{
-    fn from((key, value): (K, V)) -> Self {
-        KeyValue::new(key, value)
+impl Node {
+    pub fn tag(name: impl Into<String>) -> Self {
+        Node::Elem {
+            tag: name.into(),
+            attrs: IndexMap::new(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn text(content: impl Into<String>) -> Self {
+        Node::Text(content.into())
+    }
+
+    pub fn attr(mut self, key: impl Into<String>, value: impl Into<AttrValue>) -> Self {
+        if let Node::Elem { ref mut attrs, .. } = self {
+            attrs.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    pub fn child(mut self, child: impl Into<Node>) -> Self {
+        if let Node::Elem {
+            ref mut children, ..
+        } = self
+        {
+            children.push(child.into());
+        }
+        self
+    }
+
+    pub fn children(self, items: Vec<Node>) -> Self {
+        match self {
+            Node::Elem {
+                tag,
+                attrs,
+                mut children,
+            } => {
+                children.extend(items);
+                Node::Elem {
+                    tag,
+                    attrs,
+                    children,
+                }
+            }
+            Node::Text(_) => self,
+        }
+    }
+
+    pub fn push_child(&mut self, child: impl Into<Node>) {
+        if let Node::Elem { children, .. } = self {
+            children.push(child.into());
+        }
+    }
+
+    pub fn children_mut(&mut self) -> Option<&mut Vec<Node>> {
+        match self {
+            Node::Elem { children, .. } => Some(children),
+            Node::Text(_) => None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Node::Elem { children, .. } => children.is_empty(),
+            Node::Text(_) => false,
+        }
+    }
+
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        if let Node::Elem {
+            ref mut children, ..
+        } = self
+        {
+            children.push(Node::Text(text.into()));
+        }
+        self
     }
 }
 
-impl<K, V> From<(K, V)> for RenderElement
-where
-    K: Into<String>,
-    V: Into<String>,
-{
-    fn from((key, value): (K, V)) -> Self {
-        RenderElement::KeyValue(KeyValue::new(key, value))
-    }
-}
-
-impl From<String> for RenderElement {
+impl From<String> for Node {
     fn from(s: String) -> Self {
-        RenderElement::Text(Text::new(s))
+        Node::Text(s)
     }
 }
 
-impl From<&str> for RenderElement {
+impl From<&str> for Node {
     fn from(s: &str) -> Self {
-        RenderElement::Text(Text::new(s))
+        Node::Text(s.to_string())
     }
 }
 
-impl<T: Into<String>> From<T> for Text {
-    fn from(s: T) -> Self {
-        Text::new(s)
-    }
-}
+// ─── Node → serde_json::Value ─────────────────────────────────────────────────
 
-impl<T: Into<String>> From<T> for Item {
-    fn from(tag: T) -> Self {
-        Item::new(tag)
-    }
-}
-
-impl<T: Into<String>> From<T> for Section {
-    fn from(tag: T) -> Self {
-        Section::new(tag)
-    }
-}
-
-impl From<Section> for RenderElement {
-    fn from(s: Section) -> Self {
-        RenderElement::Section(s)
-    }
-}
-
-impl From<Item> for RenderElement {
-    fn from(i: Item) -> Self {
-        RenderElement::Item(i)
-    }
-}
-
-impl From<Text> for RenderElement {
-    fn from(t: Text) -> Self {
-        RenderElement::Text(t)
-    }
-}
-
-impl From<KeyValue> for RenderElement {
-    fn from(kv: KeyValue) -> Self {
-        RenderElement::KeyValue(kv)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Section {
-    pub tag: String,
-    pub attrs: IndexMap<String, AttrValue>,
-    pub children: Vec<RenderElement>,
-}
-
-impl Section {
-    pub fn is_empty(&self) -> bool {
-        self.children.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.children.len()
-    }
-}
-
-impl Section {
-    pub fn new(tag: impl Into<String>) -> Self {
-        Self {
-            tag: tag.into(),
-            attrs: IndexMap::new(),
-            children: Vec::new(),
+impl Node {
+    /// 转换为 serde_json::Value（Item 风格的表示：`_tag` + attrs + children）
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            Node::Text(t) => serde_json::Value::String(t.clone()),
+            Node::Elem {
+                tag,
+                attrs,
+                children,
+            } => {
+                let mut map = serde_json::Map::new();
+                map.insert("_tag".to_string(), serde_json::Value::String(tag.clone()));
+                for (k, v) in attrs {
+                    map.insert(k.clone(), serde_json::to_value(v).unwrap_or_default());
+                }
+                if !children.is_empty() {
+                    map.insert(
+                        "children".to_string(),
+                        serde_json::Value::Array(
+                            children.iter().map(|c| c.to_json_value()).collect(),
+                        ),
+                    );
+                }
+                serde_json::Value::Object(map)
+            }
         }
     }
-
-    pub fn with_attr<K, V>(mut self, key: K, value: V) -> Self
-    where
-        K: Into<String>,
-        V: Into<AttrValue>,
-    {
-        self.attrs.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn maybe_with_attr<K, V>(self, key: K, value: Option<V>) -> Self
-    where
-        K: Into<String>,
-        V: Into<AttrValue>,
-    {
-        if let Some(v) = value {
-            self.with_attr(key, v)
-        } else {
-            self
-        }
-    }
-
-    pub fn add_child(mut self, child: impl Into<RenderElement>) -> Self {
-        self.children.push(child.into());
-        self
-    }
-
-    pub fn push_child(&mut self, child: impl Into<RenderElement>) {
-        self.children.push(child.into());
-    }
-
-    pub fn children_mut(&mut self) -> &mut Vec<RenderElement> {
-        &mut self.children
-    }
-
-    pub fn add_children(
-        mut self,
-        children: impl IntoIterator<Item = impl Into<RenderElement>>,
-    ) -> Self {
-        self.children.extend(children.into_iter().map(|c| c.into()));
-        self
-    }
-
-    pub fn with_text<T: Into<String>>(mut self, text: T) -> Self {
-        self.children.push(RenderElement::Text(Text::new(text)));
-        self
-    }
-
-    pub fn with_item(mut self, item: impl Into<Item>) -> Self {
-        self.children.push(RenderElement::Item(item.into()));
-        self
-    }
-
-    pub fn with_section(mut self, section: impl Into<Section>) -> Self {
-        self.children.push(RenderElement::Section(section.into()));
-        self
-    }
-
-    pub fn into_element(self) -> RenderElement {
-        RenderElement::Section(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Item {
-    pub tag: String,
-    pub attrs: IndexMap<String, AttrValue>,
-    pub content: Option<String>,
-    pub children: Vec<RenderElement>,
-}
-
-impl Item {
-    pub fn new(tag: impl Into<String>) -> Self {
-        Self {
-            tag: tag.into(),
-            attrs: IndexMap::new(),
-            content: None,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn with_attr<K, V>(mut self, key: K, value: V) -> Self
-    where
-        K: Into<String>,
-        V: Into<AttrValue>,
-    {
-        self.attrs.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn with_content<T: Into<String>>(mut self, content: T) -> Self {
-        self.content = Some(content.into());
-        self
-    }
-
-    pub fn add_child(mut self, child: impl Into<RenderElement>) -> Self {
-        self.children.push(child.into());
-        self
-    }
-
-    pub fn push_child(&mut self, child: impl Into<RenderElement>) {
-        self.children.push(child.into());
-    }
-
-    pub fn add_children(
-        mut self,
-        children: impl IntoIterator<Item = impl Into<RenderElement>>,
-    ) -> Self {
-        self.children.extend(children.into_iter().map(|c| c.into()));
-        self
-    }
-
-    pub fn into_element(self) -> RenderElement {
-        RenderElement::Item(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Text {
-    pub content: String,
-}
-
-impl Text {
-    pub fn new(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.content.is_empty()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct KeyValue {
-    pub key: String,
-    pub value: String,
-}
-
-impl KeyValue {
-    pub fn new<K, V>(key: K, value: V) -> Self
-    where
-        K: Into<String>,
-        V: Into<String>,
-    {
-        Self {
-            key: key.into(),
-            value: value.into(),
-        }
-    }
-}
-
-pub fn section<T: Into<String>>(tag: T) -> Section {
-    Section::new(tag)
-}
-
-pub fn item<T: Into<String>>(tag: T) -> Item {
-    Item::new(tag)
-}
-
-pub fn text<T: Into<String>>(content: T) -> RenderElement {
-    RenderElement::Text(Text::new(content))
-}
-
-pub fn kv<K, V>(key: K, value: V) -> RenderElement
-where
-    K: Into<String>,
-    V: Into<String>,
-{
-    RenderElement::KeyValue(KeyValue::new(key, value))
-}
-
-pub fn empty() -> RenderElement {
-    RenderElement::Empty
 }

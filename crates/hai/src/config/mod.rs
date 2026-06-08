@@ -18,7 +18,7 @@ use crate::config::{
     manager::Configurable,
     schema::{
         AgentConfig, BotConfigRaw, DatabaseConfig, GenerationModelConfig, LoggingConfig, McpConfig,
-        MultimodalConfig, ProviderConfig, SkillsConfig,
+        MultimodalConfig, ProviderConfig, SandboxConfig, SkillsConfig,
     },
 };
 
@@ -33,6 +33,7 @@ pub struct AppConfig {
     pub model: HashMap<String, GenerationModelConfig>,
     pub bot: HashMap<String, BotConfigRaw>,
     pub mcp: HashMap<String, McpConfig>,
+    pub sandbox: SandboxConfig,
     pub skills: SkillsConfig,
     pub logging: LoggingConfig,
     pub database: DatabaseConfig,

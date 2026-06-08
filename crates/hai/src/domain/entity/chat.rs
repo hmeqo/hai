@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use strum::{Display, EnumString, IntoStaticStr};
 
+use crate::domain::vo::ChatId;
+
 /// 场所 (Chat)
 #[derive(Debug, Clone, FromRow)]
 pub struct Chat {
-    pub id: i64,
+    pub id: ChatId,
     pub platform: String,
     pub external_id: String,
     pub chat_type: String,

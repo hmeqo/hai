@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                account_id,\n                chat_id,\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM memory\n            WHERE type = 'knowledge' AND chat_id = $1 AND content = $2\n            LIMIT 1\n            ",
+  "query": "\n            UPDATE memory\n            SET content = COALESCE($1, content),\n                importance = COALESCE($2, importance),\n                meta = COALESCE($3, meta),\n                embedding = COALESCE($4, embedding),\n                \"references\" = COALESCE($5, \"references\"),\n                updated_at = CURRENT_TIMESTAMP\n            WHERE id = $6\n            RETURNING\n                id,\n                account_id,\n                chat_id as \"chat_id: ChatId\",\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            ",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,7 @@
       },
       {
         "ordinal": 2,
-        "name": "chat_id",
+        "name": "chat_id: ChatId",
         "type_info": "Int8"
       },
       {
@@ -76,8 +76,17 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Text"
+        "Text",
+        "Int4",
+        "Jsonb",
+        {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        },
+        "Jsonb",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -96,5 +105,5 @@
       true
     ]
   },
-  "hash": "404e26d3842067e720c8e4c5ff08d91925ec52a3b5999f52f379ca3625b7e76c"
+  "hash": "3a07ce52b14ce4ae0e4c2c5cdc20ff3359453857d1c78e08fc6768fe9d9d1c71"
 }

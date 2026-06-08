@@ -2,7 +2,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    domain::entity::{Message, MessageStatus},
+    domain::{
+        entity::{Message, MessageStatus},
+        vo::ChatId,
+    },
     error::Result,
 };
 
@@ -10,7 +13,7 @@ pub struct MessageRepo;
 
 /// 创建消息所需的参数
 pub struct CreateMessage<'a> {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub account_id: Option<i64>,
     pub role: &'a str,
     pub content: serde_json::Value,
@@ -41,7 +44,7 @@ impl MessageRepo {
                 FROM message
                 WHERE chat_id = $1 AND external_id = $2
                 "#,
-                msg.chat_id,
+                msg.chat_id.0,
                 ext_id,
             )
             .fetch_optional(pool)
@@ -96,7 +99,7 @@ impl MessageRepo {
                 created_at as "created_at!: jiff_sqlx::Timestamp",
                 updated_at as "updated_at!: jiff_sqlx::Timestamp"
             "#,
-            msg.chat_id,
+            msg.chat_id.0,
             msg.account_id,
             msg.role,
             msg.content,
@@ -176,7 +179,7 @@ impl MessageRepo {
                         updated_at as "updated_at!: jiff_sqlx::Timestamp"
                     FROM (
                         SELECT * FROM message
-                        WHERE chat_id = $1 AND interaction_status = 'pending'
+                        WHERE chat_id = $1 AND interaction_status = 'unread'
                         ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
                         LIMIT $2
                     ) AS sub
@@ -201,7 +204,7 @@ impl MessageRepo {
                         updated_at as "updated_at!: jiff_sqlx::Timestamp"
                     FROM (
                         SELECT * FROM message
-                        WHERE chat_id = $1 AND interaction_status != 'pending'
+                        WHERE chat_id = $1 AND interaction_status != 'unread'
                         ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
                         LIMIT $2
                     ) AS sub
@@ -223,23 +226,24 @@ impl MessageRepo {
     /// - messages: 已处理历史 + 全量 pending，按时间正序排列
     /// - total_pending: 该 chat 全部 pending 条数（用于提示 agent 还有多少未读）
     ///
-    /// 策略：先取全部 pending（不受 limit 截断），再用剩余配额补充已处理消息
-    pub async fn get_messages_for_context(
+    /// 获取消息：优先返回所有未读消息，不够 min_count 时用已读消息补充。
+    /// 返回 (messages, last_seen_id)。
+    pub async fn get_messages(
         pool: &PgPool,
         chat_id: i64,
-        limit: i64,
-    ) -> Result<(Vec<Message>, i64)> {
+        min_count: i64,
+    ) -> Result<(Vec<Message>, Option<i64>)> {
         let all_pending =
             Self::list_messages_ordered(pool, chat_id, i64::MAX, Some("pending")).await?;
 
-        let total_pending = all_pending.len() as i64;
-        let history_limit = (limit - total_pending).max(0);
+        let history_limit = (min_count - all_pending.len() as i64).max(0);
 
         let mut history =
             Self::list_messages_ordered(pool, chat_id, history_limit, Some("!pending")).await?;
 
         history.extend(all_pending);
-        Ok((history, total_pending))
+        let last_seen_id = history.last().map(|m| m.id);
+        Ok((history, last_seen_id))
     }
 
     /// 批量更新消息的 topic_id，并同步更新话题的起始时间
@@ -304,12 +308,12 @@ impl MessageRepo {
             return Ok(0);
         }
         let status: &'static str = MessageStatus::Seen.into();
-        let pending: &'static str = MessageStatus::Pending.into();
+        let unread: &'static str = MessageStatus::Unread.into();
         let result = sqlx::query!(
             "UPDATE message SET interaction_status = $1 WHERE id = ANY($2) AND interaction_status = $3",
             status,
             message_ids,
-            pending,
+            unread,
         )
         .execute(pool)
         .await?;
@@ -363,6 +367,17 @@ impl MessageRepo {
             external_id,
         )
         .fetch_optional(pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// 统计 chat 中未读消息数
+    pub async fn count_unread_by_chat(pool: &PgPool, chat_id: i64) -> Result<i64> {
+        let row = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) as "count!" FROM message WHERE chat_id = $1 AND interaction_status = 'unread'"#,
+            chat_id,
+        )
+        .fetch_one(pool)
         .await?;
         Ok(row)
     }

@@ -1,7 +1,6 @@
-use teloxide::{Bot, types::FileId};
+use teloxide::{Bot, net::Download, prelude::Requester, types::FileId};
 
-use super::util;
-use crate::error::Result;
+use crate::error::{AppResultExt, ErrorKind, Result};
 
 #[derive(Debug, Clone)]
 pub struct TelegramService {
@@ -14,10 +13,21 @@ impl TelegramService {
     }
 
     pub async fn download(&self, file_id: &str) -> Result<Vec<u8>> {
-        util::download_file(&self.bot, file_id).await
+        let file = self.bot.get_file(FileId(file_id.to_string())).await?;
+        let mut data = Vec::new();
+        self.bot
+            .download_file(&file.path, &mut data)
+            .await
+            .err_kind_msg(ErrorKind::BadRequest, "Failed to download file")?;
+        Ok(data)
     }
 
     pub async fn get_file_url(&self, file_id: &str) -> Result<String> {
-        util::get_file_url(&self.bot, FileId(file_id.to_string())).await
+        let file = self.bot.get_file(FileId(file_id.to_string())).await?;
+        Ok(format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            self.bot.token(),
+            file.path
+        ))
     }
 }

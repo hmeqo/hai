@@ -3,7 +3,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    domain::{entity::Topic, vo::TopicSearchResult},
+    domain::{
+        entity::Topic,
+        vo::{ChatId, TopicSearchResult},
+    },
     error::Result,
 };
 
@@ -13,7 +16,7 @@ impl TopicRepo {
     /// 创建一个新话题
     pub async fn create(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         title: &str,
         summary: &str,
         meta: Option<serde_json::Value>,
@@ -40,7 +43,7 @@ impl TopicRepo {
                 closed_at as "closed_at: jiff_sqlx::Timestamp",
                 last_active_at as "last_active_at!: jiff_sqlx::Timestamp"
             "#,
-            chat_id,
+            chat_id.0,
             title,
             summary,
             meta,
@@ -51,7 +54,7 @@ impl TopicRepo {
     }
 
     /// 查询指定会话的所有活跃话题
-    pub async fn list_active(pool: &PgPool, chat_id: i64) -> Result<Vec<Topic>> {
+    pub async fn list_active(pool: &PgPool, chat_id: ChatId) -> Result<Vec<Topic>> {
         let rows = sqlx::query_as!(
             Topic,
             r#"
@@ -75,7 +78,7 @@ impl TopicRepo {
             WHERE chat_id = $1 AND status = 'active'
             ORDER BY last_active_at DESC
             "#,
-            chat_id,
+            chat_id.0,
         )
         .fetch_all(pool)
         .await?;
@@ -85,7 +88,7 @@ impl TopicRepo {
     /// 分页查询话题列表，支持按状态筛选
     pub async fn list_paged(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         status: Option<&str>,
         limit: i64,
         offset: i64,
@@ -114,7 +117,7 @@ impl TopicRepo {
             ORDER BY last_active_at DESC
             LIMIT $3 OFFSET $4
             "#,
-            chat_id,
+            chat_id.0,
             status,
             limit,
             offset,
@@ -326,7 +329,7 @@ impl TopicRepo {
     /// 向量相似度检索
     pub async fn search_by_embedding(
         pool: &PgPool,
-        chat_id: i64,
+        chat_id: ChatId,
         embedding: &Vector,
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
@@ -334,7 +337,7 @@ impl TopicRepo {
             r#"
             SELECT
                 id as "id: Uuid",
-                chat_id,
+                chat_id as "chat_id: ChatId",
                 title,
                 summary,
                 embedding as "embedding: Vector",
@@ -354,7 +357,7 @@ impl TopicRepo {
             ORDER BY embedding <=> $2
             LIMIT $3
             "#,
-            chat_id,
+            chat_id.0,
             embedding as &Vector,
             limit,
         )

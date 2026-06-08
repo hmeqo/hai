@@ -4,71 +4,93 @@
 
 use super::{
     account::account_element, chat::render_chat_info, memory::related_memories_section,
-    message::conversation_element, topic::topic_element,
+    message::conversation_element, perception::perception_item, topic::topic_element,
 };
 use crate::{
     agent::{
         context::{RenderContext, topic_element_static},
-        render::content::perception_item,
+        event::WakeEvent,
     },
-    agentcore::render::{Format, Section, item, render_pretty, section},
-    domain::vo::Source,
+    agentcore::render::{Format, Node, render_pretty},
+    domain::{entity::MessageStatus, vo::Source},
 };
 
 /// 将 CommonContext 渲染为最终的 XML prompt 字符串
-pub fn render_main_context(ctx: &RenderContext, instruction: Section) -> String {
+pub fn render_main_context(ctx: &RenderContext, instruction: Node) -> String {
     render_pretty(build_context_section(ctx, instruction), Format::Xml)
 }
 
-/// 将通用上下文组装为顶层 Section
+/// 构建 `<situation>` section（描述唤醒原因）
+pub fn build_situation_section(events: &[WakeEvent]) -> Node {
+    let items: Vec<Node> = events
+        .iter()
+        .filter_map(|event| {
+            let desc = event.reason.describe();
+            if desc.is_empty() {
+                None
+            } else {
+                Some(Node::tag("context").child(Node::text(desc)))
+            }
+        })
+        .collect();
+
+    if items.is_empty() {
+        Node::tag("situation")
+    } else if items.len() == 1 {
+        Node::tag("situation").child(items.into_iter().next().unwrap())
+    } else {
+        Node::tag("situation").children(items)
+    }
+}
+
+/// 将通用上下文组装为顶层 Context 节点
 ///
 /// 阅读顺序：越静态、越宏观的记忆在上；越动态、越具体的最新消息在下。
 ///
 /// 1. instruction  — 为什么被唤醒
 /// 2. environment  — 身份与场景背景
-/// 3. related_memories — 最静态的背景知识
-/// 4. related_topics — 过往上下文
-/// 5. current_topics — 当前话题（含 idle 属性）
-/// 6. scratchpad   — 上次的思路延续（先回顾自己）
-/// 7. perceptions  — 附件分析结果（帮助理解下文消息）
-/// 8. conversation — 最动态的最新消息
-pub fn build_context_section(ctx: &RenderContext, instruction: Section) -> Section {
+/// 3. chat         — 聊天信息
+/// 4. accounts     — 参与者列表
+/// 5. related_memories — 最静态的背景知识
+/// 6. related_topics — 过往上下文
+/// 7. current_topics — 当前话题（含 idle 属性）
+/// 8. scratchpad   — 上次的思路延续
+/// 9. perceptions  — 附件分析结果
+/// 10. conversation — 最动态的最新消息
+pub fn build_context_section(ctx: &RenderContext, instruction: Node) -> Node {
     let env_section = build_env_section(ctx);
     let chat_section = render_chat_info(&ctx.chat);
-    let accounts_section = section("accounts").add_children(
+    let accounts_section = Node::tag("accounts").children(
         ctx.accounts
             .iter()
             .filter(|a| a.id != ctx.bot.account_id)
-            .map(account_element),
+            .map(account_element)
+            .collect::<Vec<_>>(),
     );
 
     let related_memories_sec = related_memories_section(&ctx.related_memories, "related_memories");
-    let related_topics_sec = {
-        let els = ctx.related_topics.iter().map(|r| {
-            topic_element_static(&r.topic).with_attr("relevance", format!("{:.4}", r.distance))
-        });
-        section("related_topics").add_children(els)
-    };
+    let related_topics_sec = Node::tag("related_topics").children(
+        ctx.related_topics
+            .iter()
+            .map(|r| topic_element_static(&r.topic).attr("relevance", format!("{:.4}", r.distance)))
+            .collect::<Vec<_>>(),
+    );
 
     let topics_sec = build_topics_section(ctx);
 
-    let scratchpad_sec = ctx
-        .scratchpad
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .map(|s| section("scratchpad").add_child(item("content").with_content(&s.content)));
-
     let conversation_sec = {
         let msg_refs: Vec<&_> = ctx.messages.iter().collect();
-        match conversation_element(&msg_refs, ctx) {
-            crate::agentcore::render::elements::RenderElement::Section(s) => s,
-            other => section("conversation").add_child(other),
-        }
+        conversation_element(&msg_refs, ctx)
     };
 
     let perceptions_sec = build_perceptions_section(ctx);
 
-    let mut children: Vec<Section> = vec![instruction, env_section, chat_section];
+    let scratchpad_sec = ctx
+        .scratchpad
+        .as_ref()
+        .map(|note| Node::tag("scratchpad").with_text(note));
+
+    let mut children: Vec<Node> = vec![instruction, env_section, chat_section];
     push_non_empty(&mut children, accounts_section);
     push_non_empty(&mut children, related_memories_sec);
     push_non_empty(&mut children, related_topics_sec);
@@ -80,41 +102,48 @@ pub fn build_context_section(ctx: &RenderContext, instruction: Section) -> Secti
     }
     push_non_empty(&mut children, perceptions_sec);
     children.push(conversation_sec);
-    section("context").add_children(children)
+    Node::tag("context").children(children)
 }
 
-fn build_env_section(ctx: &RenderContext) -> Section {
-    let mut env = section("environment")
-        .with_item(
-            item("you_are")
-                .with_attr("id", ctx.bot.account_id)
-                .with_attr("username", &ctx.bot.username)
-                .with_attr("name", &ctx.bot.name),
+fn build_env_section(ctx: &RenderContext) -> Node {
+    let mut env = Node::tag("environment")
+        .child(
+            Node::tag("you_are")
+                .attr("id", ctx.bot.account_id)
+                .attr("username", &ctx.bot.username)
+                .attr("name", &ctx.bot.name),
         )
-        .with_item(item("current_time").with_content(&ctx.current_time));
+        .child(Node::tag("current_time").child(Node::text(&ctx.current_time)));
 
     let shown_unread = ctx
         .messages
         .iter()
-        .filter(|m| m.interaction_status == "pending")
+        .filter(|m| m.interaction_status == MessageStatus::Unread.as_str())
         .count() as i64;
     let remaining = ctx.total_unread - shown_unread;
     if remaining > 0 {
-        env = env.with_item(item("unread").with_content(format!(
+        env = env.child(Node::tag("unread").child(Node::text(format!(
             "{shown_unread} in window ({} total unread)",
             ctx.total_unread
-        )));
+        ))));
+    }
+
+    if let Some(sandbox) = &ctx.sandbox_info
+        && sandbox.enabled
+    {
+        env = env.child(
+            Node::tag("sandbox")
+                .attr("enabled", "true")
+                .attr("runtime", &sandbox.runtime)
+                .attr("image", &sandbox.image),
+        );
     }
 
     env
 }
 
-/// 话题闲置阈值：超过此时间的话题标记为 need-close
-const TOPIC_IDLE_HOURS: i64 = 3;
-
-/// 将话题合并为 current_topics，有闲置话题时加 need-close 属性
-fn build_topics_section(ctx: &RenderContext) -> Option<Section> {
-    let cutoff = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(TOPIC_IDLE_HOURS);
+fn build_topics_section(ctx: &RenderContext) -> Option<Node> {
+    let cutoff = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(ctx.topic_idle_hours);
 
     let (active, stale): (Vec<_>, Vec<_>) = ctx
         .topics
@@ -126,13 +155,23 @@ fn build_topics_section(ctx: &RenderContext) -> Option<Section> {
     }
 
     Some(
-        section("current_topics")
-            .add_children(active.iter().map(|t| topic_element(t, false)))
-            .add_children(stale.iter().map(|t| topic_element(t, true))),
+        Node::tag("current_topics")
+            .children(
+                active
+                    .iter()
+                    .map(|t| topic_element(t, false))
+                    .collect::<Vec<_>>(),
+            )
+            .children(
+                stale
+                    .iter()
+                    .map(|t| topic_element(t, true))
+                    .collect::<Vec<_>>(),
+            ),
     )
 }
 
-fn build_perceptions_section(ctx: &RenderContext) -> Section {
+fn build_perceptions_section(ctx: &RenderContext) -> Node {
     // Resource 来源的 perception 已嵌入 attachment，这里只展示 URL 来源的
     let url_perceptions: Vec<_> = ctx
         .perceptions()
@@ -140,11 +179,16 @@ fn build_perceptions_section(ctx: &RenderContext) -> Section {
         .filter(|p| matches!(p.source(), Some(Source::Url { .. })))
         .collect();
 
-    section("perceptions").add_children(url_perceptions.iter().map(|p| perception_item(p)))
+    Node::tag("perceptions").children(
+        url_perceptions
+            .iter()
+            .map(|p| perception_item(p))
+            .collect::<Vec<_>>(),
+    )
 }
 
-fn push_non_empty(children: &mut Vec<Section>, section: Section) {
-    if !section.is_empty() {
-        children.push(section);
+fn push_non_empty(children: &mut Vec<Node>, node: Node) {
+    if !node.is_empty() {
+        children.push(node);
     }
 }

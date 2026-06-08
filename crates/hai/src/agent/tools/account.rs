@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::{
     agent::{
         context::account_element,
-        round::RoundContext,
+        runtime::ctx::RoundCtx,
         tools::util::{MapToolErr, tool_data, tool_err},
     },
     agentcore::render::render_json,
@@ -49,7 +49,7 @@ impl ToolRuntime for GetAccountInfo {
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(GetAccountInfo {
         services: ctx.services(),
     })]

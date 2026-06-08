@@ -1,22 +1,23 @@
+use std::sync::Arc;
+
 use teloxide::{Bot, prelude::Requester};
 
 use crate::{
     agent::{
-        AgentGateway,
-        link::{BotConn, BotId, BotProfile, open_link},
+        link::{BotHandle, BotId, BotProfile},
+        runtime::{AgentEngine, registry::ChatActorManager},
     },
     app::AppContext,
     config::schema::{BotConfig, BotPlatform},
     error::Result,
-    platform::telegram::{TelegramDispather, spawn_telegram_handler},
+    platform::telegram::{TelegramDispather, TelegramPlatformHandler},
 };
 
-/// 从配置启动所有 bot 实例，注册到 gateway
-pub async fn spawn_bots(ctx: &AppContext, gateway: &mut AgentGateway) -> Result<()> {
+/// 从配置启动所有 bot 实例
+pub async fn spawn_bots(ctx: &AppContext, engine: &AgentEngine) -> Result<()> {
     for (key, raw_cfg) in &ctx.cfg.bot {
         let resolved = BotConfig::resolve(key, raw_cfg)?;
         let bot_id = BotId::new(key.clone());
-        let (link, agent_link) = open_link(bot_id.clone());
 
         match resolved.platform {
             BotPlatform::Telegram => {
@@ -32,16 +33,16 @@ pub async fn spawn_bots(ctx: &AppContext, gateway: &mut AgentGateway) -> Result<
                     name: my_name.name,
                 };
 
-                let handler = spawn_telegram_handler(bot.clone(), bot_account.id, ctx.clone());
-                let conn = BotConn::new(bot_id.clone(), profile, handler);
-
-                gateway.add_connection(bot_id.clone(), conn, agent_link);
+                let handler =
+                    TelegramPlatformHandler::new(bot.clone(), bot_account.id, ctx.clone());
+                let handle = BotHandle::new(bot_id.clone(), profile, Arc::new(handler));
 
                 let dispatcher = TelegramDispather::new(
                     bot_id.clone(),
                     bot,
                     ctx.clone(),
-                    link,
+                    ChatActorManager::new(handle.clone(), engine.clone()),
+                    handle,
                     resolved.allowed_chat_ids,
                 )
                 .await?;

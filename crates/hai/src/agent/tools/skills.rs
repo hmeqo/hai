@@ -23,7 +23,7 @@ pub struct LoadSkillArgs {
     input = LoadSkillArgs,
 )]
 pub struct LoadSkill {
-    pub skill_manager: Arc<SkillManager>,
+    pub skill_manager: SkillManager,
 }
 
 #[async_trait]
@@ -45,7 +45,7 @@ impl ToolRuntime for LoadSkill {
     }
 }
 
-pub fn load_skill_tool(skill_manager: Arc<SkillManager>) -> Vec<Arc<dyn ToolT>> {
+pub fn load_skill_tool(skill_manager: SkillManager) -> Vec<Arc<dyn ToolT>> {
     if skill_manager.is_empty() {
         return vec![];
     }

@@ -7,7 +7,7 @@ use crate::{
     domain::{
         entity::{Memory, MemoryType},
         repo::MemoryRepo,
-        vo::MemoryInput,
+        vo::{ChatId, MemoryInput},
     },
     error::{ErrorKind, OptionAppExt, Result},
 };
@@ -176,7 +176,7 @@ impl MemoryService {
     /// 语义搜索知识
     pub async fn search_knowledge(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         query: &str,
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {
@@ -189,7 +189,7 @@ impl MemoryService {
     /// 综合检索相关记忆
     pub async fn search_related_memories(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         query_vector: &Vector,
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {

@@ -57,7 +57,7 @@ impl RawClient {
             .inner
             .client
             .post(format!("{}{}", self.inner.base_url, sub_url))
-            .header("Authorization", format!("Bearer {}", &self.inner.api_key))
+            .header("Authorization", format!("Bearer {}", self.inner.api_key))
             .header("Content-Type", "application/json")
             .json(body)
             .send()
@@ -80,7 +80,7 @@ impl RawClient {
             .inner
             .client
             .post(format!("{}{}", self.inner.base_url, sub_url))
-            .header("Authorization", format!("Bearer {}", &self.inner.api_key))
+            .header("Authorization", format!("Bearer {}", self.inner.api_key))
             .header("Content-Type", "application/json")
             .json(body)
             .send()

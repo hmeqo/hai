@@ -1,42 +1,42 @@
-//! 账户组件 - 构建 RenderElement
+//! 账户组件 - 构建 XML 节点
 
+use super::fmt::display_name;
 use crate::{
-    agent::context::render_context::display_name,
-    agentcore::render::elements::{RenderElement, Section, item, section},
+    agentcore::render::elements::Node,
     domain::{entity::Account, vo::PlatformAccountMeta},
 };
 
 /// 构建单个账户元素
-pub fn account_element(account: &Account) -> RenderElement {
+pub fn account_element(account: &Account) -> Node {
     let meta = account
         .meta
         .as_ref()
         .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v.clone()).ok());
 
-    let mut builder = item("account").with_attr("id", account.id);
+    let mut b = Node::tag("account").attr("id", account.id);
 
     if let Some(m) = &meta {
         if let Some(u) = m.username() {
-            builder = builder.with_attr("username", format!("@{}", u));
+            b = b.attr("username", format!("@{}", u));
         }
-        builder = builder.with_attr("name", m.full_name());
+        b = b.attr("name", m.full_name());
     } else {
-        builder = builder.with_attr("name", display_name(account, account.id));
+        b = b.attr("name", display_name(Some(account), account.id));
     }
 
     if let Some(iid) = account.identity_id {
-        builder = builder.with_attr("identity_id", iid);
+        b = b.attr("identity_id", iid);
     }
 
-    builder.into_element()
+    b
 }
 
 /// 构建账户列表元素
-pub fn accounts_elements(accounts: &[Account]) -> Vec<RenderElement> {
+pub fn accounts_elements(accounts: &[Account]) -> Vec<Node> {
     accounts.iter().map(account_element).collect()
 }
 
 /// 构建账户 Section
-pub fn accounts_section(accounts: &[Account], tag: &str) -> Section {
-    section(tag).add_children(accounts_elements(accounts))
+pub fn accounts_section(accounts: &[Account], tag: &str) -> Node {
+    Node::tag(tag).children(accounts_elements(accounts))
 }

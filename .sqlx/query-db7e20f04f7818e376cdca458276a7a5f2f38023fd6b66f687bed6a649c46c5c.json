@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status = 'pending'\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $2\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
+  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status = 'unread'\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $2\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
   "describe": {
     "columns": [
       {
@@ -97,5 +97,5 @@
       true
     ]
   },
-  "hash": "4184d0bae446fcc7c9eb5c2ed5bb5aa8bd3cb7b87d827884cb9ca263c8a285aa"
+  "hash": "db7e20f04f7818e376cdca458276a7a5f2f38023fd6b66f687bed6a649c46c5c"
 }

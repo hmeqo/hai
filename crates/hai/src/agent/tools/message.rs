@@ -5,16 +5,18 @@ use autoagents::{
     core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
 };
 use autoagents_derive::{ToolInput, tool};
+use kameo::actor::ActorRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
     agent::{
-        link::{BotConn, SendMessageReq},
-        round::RoundContext,
+        link::SendMessageReq,
+        runtime::{actor::ChatActor, ctx::RoundCtx},
         tools::util::{MapToolErr, deserialize_option_lenient_i64_vec, tool_data},
     },
-    domain::service::DbServices,
+    domain::{service::DbServices, vo::ChatId},
+    error::{AppResultExt, ErrorKind},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
@@ -36,8 +38,8 @@ pub struct SendMessageArgs {
     input = SendMessageArgs,
 )]
 pub struct SendMessage {
-    pub chat_id: i64,
-    pub conn: BotConn,
+    pub chat_id: ChatId,
+    pub session: ActorRef<ChatActor>,
     pub services: DbServices,
 }
 
@@ -55,14 +57,15 @@ impl ToolRuntime for SendMessage {
         }
 
         let meta = self
-            .conn
-            .send_message(SendMessageReq {
+            .session
+            .ask(SendMessageReq {
                 chat_id: self.chat_id,
                 content: typed_args.content,
                 topic_id: typed_args.topic_id,
                 platform_reply_to_id: typed_args.platform_reply_to_id,
             })
             .await
+            .err_kind_msg(ErrorKind::Internal, "Session mailbox error")
             .into_tool_err()?;
 
         tool_data(json!({
@@ -71,10 +74,10 @@ impl ToolRuntime for SendMessage {
     }
 }
 
-pub fn get_message_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn get_message_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(SendMessage {
         chat_id: ctx.chat_id,
-        conn: ctx.conn.clone(),
+        session: ctx.session.clone(),
         services: ctx.services(),
     })]
 }

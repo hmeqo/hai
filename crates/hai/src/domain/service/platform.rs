@@ -5,6 +5,7 @@ use crate::{
     domain::{
         entity::{Account, Chat, ChatType, Platform},
         repo::{AccountRepo, ChatRepo},
+        vo::ChatId,
     },
     error::Result,
 };
@@ -70,7 +71,7 @@ impl PlatformService {
     }
 
     /// 通过内部 ID 获取会话
-    pub async fn get_chat_by_id(&self, id: i64) -> Result<Option<Chat>> {
+    pub async fn get_chat_by_id(&self, id: ChatId) -> Result<Option<Chat>> {
         ChatRepo::find_by_id(&self.pool, id).await
     }
 

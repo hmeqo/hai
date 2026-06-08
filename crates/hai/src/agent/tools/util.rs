@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 
 use crate::error::AppError;
 
+impl From<AppError> for ToolCallError {
+    fn from(e: AppError) -> Self {
+        ToolCallError::RuntimeError(Box::new(e))
+    }
+}
+
 pub fn tool_ok() -> Result<Value, ToolCallError> {
     Ok(json!({ "ok": true }))
 }

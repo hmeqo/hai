@@ -12,14 +12,14 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::topic_section,
-        round::RoundContext,
+        runtime::ctx::RoundCtx,
         tools::util::{
             MapToolErr, deserialize_lenient_i64_vec, deserialize_option_lenient_i64_vec, tool_data,
             tool_ok,
         },
     },
     agentcore::render::render_json,
-    domain::service::DbServices,
+    domain::{service::DbServices, vo::ChatId},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
@@ -53,7 +53,7 @@ impl ToolRuntime for CreateTopic {
             .services
             .topic
             .create_topic(
-                typed_args.chat_id,
+                ChatId::from(typed_args.chat_id),
                 &typed_args.title,
                 &typed_args.summary,
                 typed_args.message_ids.as_deref().unwrap_or(&[]),
@@ -133,7 +133,7 @@ impl ToolRuntime for ListTopics {
             .services
             .topic
             .list_topics(
-                typed_args.chat_id,
+                ChatId::from(typed_args.chat_id),
                 typed_args.status.as_deref(),
                 limit,
                 offset,
@@ -177,7 +177,7 @@ impl ToolRuntime for SearchTopics {
         let topics = self
             .services
             .topic
-            .search_topics_by_query(typed_args.chat_id, &typed_args.query, limit)
+            .search_topics_by_query(ChatId::from(typed_args.chat_id), &typed_args.query, limit)
             .await
             .into_tool_err()?;
         let topic_entities: Vec<_> = topics.into_iter().map(|t| t.topic).collect();
@@ -283,11 +283,7 @@ impl ToolRuntime for CloseTopic {
 
         self.services
             .topic
-            .update_topic(
-                typed_args.topic_id,
-                typed_args.title.as_deref(),
-                None,
-            )
+            .update_topic(typed_args.topic_id, typed_args.title.as_deref(), None)
             .await
             .into_tool_err()?;
 
@@ -329,7 +325,7 @@ impl ToolRuntime for DeleteTopic {
     }
 }
 
-pub fn get_topic_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn get_topic_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(CreateTopic {
             services: ctx.services(),

@@ -12,11 +12,14 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::related_memories_section,
-        round::RoundContext,
+        runtime::ctx::RoundCtx,
         tools::util::{MapToolErr, tool_data, tool_err, tool_ok},
     },
     agentcore::render::render_json,
-    domain::{service::DbServices, vo::MemoryInput},
+    domain::{
+        service::DbServices,
+        vo::{ChatId, MemoryInput},
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +65,7 @@ impl ToolRuntime for RecordMemory {
             references,
             ..
         } = typed_args;
+        let chat_id = ChatId::from(chat_id);
         let input = match typed_args.category {
             RecordMemoryCategory::UserFact => {
                 let account_id =
@@ -142,7 +146,7 @@ impl ToolRuntime for CorrectMemory {
                 importance,
             },
             RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
-                chat_id,
+                chat_id: ChatId::from(chat_id),
                 content: content.ok_or_else(|| tool_err("content is required for 'chat_rule'"))?,
             },
         };
@@ -185,7 +189,7 @@ impl ToolRuntime for SearchMemory {
         let memories = self
             .services
             .memory
-            .search_knowledge(typed_args.chat_id, &typed_args.query, limit)
+            .search_knowledge(ChatId::from(typed_args.chat_id), &typed_args.query, limit)
             .await
             .into_tool_err()?;
 
@@ -223,7 +227,7 @@ impl ToolRuntime for DeleteMemory {
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(RecordMemory {
             services: ctx.services(),

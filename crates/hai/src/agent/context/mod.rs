@@ -1,13 +1,18 @@
 //! 上下文模块
 //!
-//! - `context`：`CommonContext` 数据结构（含内置索引与渲染辅助方法）
-//! - `factory`：`ContextFactory` 异步组装服务
-//! - `sections`：从业务数据构建 RenderElement 的纯函数集合
+//! - `builder`：上下文渲染编排（`build_first_round_prompt`, `build_next_round_prompt`）
+//! - `types`：共享类型（`ContentParser`, `PreviousRound` 等）
+//! - `helpers`：DB 查询辅助函数
+//! - `render_context`：`RenderContext` 数据结构与渲染入口
+//! - `sections`：从业务数据构建 XML 节点的纯函数集合
 
-pub mod factory;
+pub mod builder;
+pub mod helper;
 pub mod render_context;
 pub mod sections;
+pub mod types;
 
-pub use factory::ContextFactory;
+pub use builder::{build_first_round_prompt, build_next_round_prompt};
 pub use render_context::RenderContext;
 pub use sections::*;
+pub use types::{Attachment, AttachmentPerceptionMap, ContentParser, ParsedContent};

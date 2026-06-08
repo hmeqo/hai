@@ -2,12 +2,41 @@ use std::sync::Arc;
 
 use autoagents::{
     core::{
-        agent::{AgentDeriveT, AgentHooks, Context},
+        agent::{
+            AgentDeriveT, AgentHooks, AgentOutputT, Context, prebuilt::executor::ReActAgentOutput,
+        },
         tool::{ToolCallResult, ToolT},
     },
     llm::ToolCall,
 };
+use autoagents_derive::AgentOutput;
 use autoagents_toolkit::mcp::McpToolWrapper;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Debug, Serialize, Deserialize, AgentOutput)]
+pub struct MainAgentOutput {
+    #[output(
+        description = "内部笔记，不会被发送给任何人。如果已用 send_message 等工具交互则无需填写。"
+    )]
+    pub notes: Option<String>,
+    #[serde(skip)]
+    pub tool_calls: Vec<ToolCallResult>,
+}
+
+impl From<ReActAgentOutput> for MainAgentOutput {
+    fn from(output: ReActAgentOutput) -> Self {
+        let notes = output
+            .try_parse::<MainAgentOutput>()
+            .ok()
+            .and_then(|m| m.notes)
+            .or(Some(output.response));
+        Self {
+            notes,
+            tool_calls: output.tool_calls,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MainAgent {
@@ -16,7 +45,7 @@ pub struct MainAgent {
 }
 
 impl AgentDeriveT for MainAgent {
-    type Output = String;
+    type Output = MainAgentOutput;
 
     fn name(&self) -> &str {
         "main_agent"
@@ -33,8 +62,8 @@ impl AgentDeriveT for MainAgent {
             .collect()
     }
 
-    fn output_schema(&self) -> Option<serde_json::Value> {
-        None
+    fn output_schema(&self) -> Option<Value> {
+        Some(MainAgentOutput::output_schema().into())
     }
 }
 
@@ -56,7 +85,7 @@ impl AgentHooks for MainAgent {
         );
     }
 
-    async fn on_tool_error(&self, tool_call: &ToolCall, err: serde_json::Value, _ctx: &Context) {
+    async fn on_tool_error(&self, tool_call: &ToolCall, err: Value, _ctx: &Context) {
         tracing::error!(
             tool = %tool_call.function.name,
             args = %tool_call.function.arguments,

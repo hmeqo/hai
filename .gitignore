@@ -62,3 +62,4 @@ Cargo.lock
 /.agents
 /.hai
 /skills-lock.json
+/rustc-ice-*.txt

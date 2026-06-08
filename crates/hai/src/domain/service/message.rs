@@ -6,14 +6,14 @@ use crate::{
     domain::{
         entity::{Message, MessageStatus},
         repo::message::{CreateMessage, MessageRepo},
-        vo::{AgentMessageMeta, MessageMeta, TelegramContentPart},
+        vo::{AgentMessageMeta, ChatId, MessageMeta, TelegramContentPart},
     },
     error::Result,
 };
 
 /// 保存用户消息所需参数
 pub struct NewUserMessage<'a> {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub account_id: i64,
     pub content: serde_json::Value,
     pub external_id: &'a str,
@@ -24,7 +24,7 @@ pub struct NewUserMessage<'a> {
 
 /// 保存 Agent 消息所需参数
 pub struct NewAgentMessage<'a> {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub account_id: Option<i64>,
     pub content: serde_json::Value,
     pub model: &'a str,
@@ -63,7 +63,7 @@ impl MessageService {
                 role: "user",
                 content: msg.content,
                 topic_id: None,
-                interaction_status: Some(MessageStatus::Pending.into()),
+                interaction_status: Some(MessageStatus::Unread.into()),
                 reply_to_id: msg.reply_to_id,
                 external_id: Some(msg.external_id),
                 meta: serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null),
@@ -110,12 +110,12 @@ impl MessageService {
     ///
     /// 返回 `(messages, total_pending)` —— `total_pending` 可能大于 messages 中实际
     /// pending 数，表示还有更多 pending 超出渲染窗口，agent 可通过工具获取。
-    pub async fn get_messages_for_context(
+    pub async fn get_messages(
         &self,
-        chat_id: i64,
-        limit: i64,
-    ) -> Result<(Vec<Message>, i64)> {
-        MessageRepo::get_messages_for_context(&self.pool, chat_id, limit).await
+        chat_id: ChatId,
+        min_count: i64,
+    ) -> Result<(Vec<Message>, Option<i64>)> {
+        MessageRepo::get_messages(&self.pool, chat_id.0, min_count).await
     }
 
     /// 通过内部消息 ID 获取消息
@@ -131,11 +131,16 @@ impl MessageService {
     /// 通过平台原始消息 ID 查找内部消息 ID
     pub async fn find_id_by_external_id(
         &self,
-        chat_id: i64,
+        chat_id: ChatId,
         external_id: &str,
     ) -> Result<Option<i64>> {
-        let msg = MessageRepo::find_by_external_id(&self.pool, chat_id, external_id).await?;
+        let msg = MessageRepo::find_by_external_id(&self.pool, chat_id.0, external_id).await?;
         Ok(msg.map(|m| m.id))
+    }
+
+    /// 获取 chat 中未读消息数
+    pub async fn count_unread_by_chat(&self, chat_id: ChatId) -> Result<i64> {
+        MessageRepo::count_unread_by_chat(&self.pool, chat_id.0).await
     }
 
     /// 标记指定消息中未标记的为已阅（自动过滤已标记的）

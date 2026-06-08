@@ -5,15 +5,20 @@ use autoagents::{
     core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
 };
 use autoagents_derive::{ToolInput, tool};
+use kameo::actor::ActorRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::{
-    link::{BotConn, SendVoiceReq},
-    node::MultimodalService,
-    round::RoundContext,
-    tools::util::{MapToolErr, tool_ok},
+use crate::{
+    agent::{
+        link::SendVoiceReq,
+        node::MultimodalService,
+        runtime::{actor::ChatActor, ctx::RoundCtx},
+        tools::util::{MapToolErr, tool_ok},
+    },
+    domain::vo::ChatId,
+    error::{AppResultExt, ErrorKind},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
@@ -34,8 +39,8 @@ pub struct SendVoiceArgs {
     input = SendVoiceArgs,
 )]
 pub struct SendVoice {
-    pub chat_id: i64,
-    pub conn: BotConn,
+    pub chat_id: ChatId,
+    pub session: ActorRef<ChatActor>,
     pub multimodal: MultimodalService,
 }
 
@@ -50,8 +55,8 @@ impl ToolRuntime for SendVoice {
             .await
             .into_tool_err()?;
 
-        self.conn
-            .send_voice(SendVoiceReq {
+        self.session
+            .ask(SendVoiceReq {
                 chat_id: self.chat_id,
                 audio_bytes,
                 prompt: typed_args.prompt,
@@ -59,21 +64,22 @@ impl ToolRuntime for SendVoice {
                 platform_reply_to_id: typed_args.platform_reply_to_id,
             })
             .await
+            .err_kind_msg(ErrorKind::Internal, "Session mailbox error")
             .into_tool_err()?;
 
         tool_ok()
     }
 }
 
-pub fn get_voice_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
-    let tts_cfg = &ctx.ctx.cfg.multimodal.tts;
+pub fn get_voice_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+    let tts_cfg = &ctx.app.cfg.multimodal.tts;
     if !tts_cfg.enabled() {
         return vec![];
     }
 
     vec![Arc::new(SendVoice {
         chat_id: ctx.chat_id,
-        conn: ctx.conn.clone(),
-        multimodal: ctx.ctx.provider.multimodal.clone(),
+        session: ctx.session.clone(),
+        multimodal: ctx.app.provider.multimodal.clone(),
     })]
 }

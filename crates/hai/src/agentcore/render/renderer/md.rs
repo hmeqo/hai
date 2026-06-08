@@ -1,86 +1,43 @@
-use std::fmt::{self, Write};
+use std::fmt::Write;
 
-use crate::agentcore::render::elements::{AttrValue, Item, KeyValue, RenderElement, Section, Text};
+use crate::agentcore::render::elements::{AttrValue, Node};
 
-fn format_attr(value: &AttrValue) -> String {
-    match value {
-        AttrValue::Null => "null".to_string(),
-        AttrValue::String(s) => format!("\"{s}\""),
-        AttrValue::Int(i) => i.to_string(),
-        AttrValue::Float(f) => f.to_string(),
-        AttrValue::Bool(b) => b.to_string(),
-    }
-}
-
-fn format_attrs(attrs: &indexmap::IndexMap<String, AttrValue>) -> String {
-    attrs
-        .iter()
-        .map(|(k, v)| format!("{{{k}:{}}}", format_attr(v)))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-pub fn render(element: &RenderElement) -> String {
+pub fn render(node: &Node) -> String {
     let mut output = String::new();
-    render_element(element, &mut output, 0).expect("writing to String should never fail");
-    output.trim().to_string()
+    render_node(node, &mut output, 0).ok();
+    output
 }
 
-fn render_element(element: &RenderElement, output: &mut String, indent: usize) -> fmt::Result {
-    match element {
-        RenderElement::Section(s) => render_section(s, output, indent),
-        RenderElement::Item(i) => render_item(i, output, indent),
-        RenderElement::Text(t) => render_text(t, output, indent),
-        RenderElement::KeyValue(kv) => render_kv(kv, output, indent),
-        RenderElement::Empty => Ok(()),
-    }
-}
-
-fn render_section(section: &Section, output: &mut String, indent: usize) -> fmt::Result {
-    let prefix = "  ".repeat(indent);
-    writeln!(output, "{prefix}**{}**", section.tag)?;
-    if !section.attrs.is_empty() {
-        let attrs = format_attrs(&section.attrs);
-        writeln!(output, "{prefix}{attrs}")?;
-    }
-    for child in &section.children {
-        render_element(child, output, indent + 1)?;
-    }
-    Ok(())
-}
-
-fn render_item(item: &Item, output: &mut String, indent: usize) -> fmt::Result {
-    let prefix = "  ".repeat(indent);
-    let attrs = format_attrs(&item.attrs);
-    let attrs_prefix = if attrs.is_empty() {
-        String::new()
-    } else {
-        format!("{attrs} ")
-    };
-
-    if let Some(content) = &item.content {
-        writeln!(output, "{prefix}- {attrs_prefix}```")?;
-        writeln!(output, "{prefix}{content}")?;
-        writeln!(output, "{prefix}```")?;
-    } else if !item.children.is_empty() || !attrs_prefix.is_empty() {
-        writeln!(output, "{prefix}- {attrs_prefix}**{}**", item.tag)?;
-        for child in &item.children {
-            render_element(child, output, indent + 1)?;
+fn render_node(node: &Node, output: &mut String, indent: usize) -> std::fmt::Result {
+    match node {
+        Node::Elem {
+            tag,
+            attrs,
+            children,
+        } => render_elem(tag, attrs, children, output, indent),
+        Node::Text(t) => {
+            writeln!(output, "{}{}", "  ".repeat(indent), t)?;
+            Ok(())
         }
-    } else {
-        writeln!(output, "{prefix}- *{}*", item.tag)?;
     }
-    Ok(())
 }
 
-fn render_text(text: &Text, output: &mut String, indent: usize) -> fmt::Result {
-    let prefix = "  ".repeat(indent);
-    writeln!(output, "{}{}", prefix, text.content)?;
-    Ok(())
-}
+fn render_elem(
+    tag: &str,
+    attrs: &indexmap::IndexMap<String, AttrValue>,
+    children: &[Node],
+    output: &mut String,
+    indent: usize,
+) -> std::fmt::Result {
+    let attr_str: String = attrs
+        .iter()
+        .map(|(k, v)| format!(" {}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("");
 
-fn render_kv(kv: &KeyValue, output: &mut String, indent: usize) -> fmt::Result {
-    let prefix = "  ".repeat(indent);
-    writeln!(output, "{}**{}:** {}", prefix, kv.key, kv.value)?;
+    writeln!(output, "{}{}{}", "  ".repeat(indent), tag, attr_str)?;
+    for child in children {
+        render_node(child, output, indent + 1)?;
+    }
     Ok(())
 }

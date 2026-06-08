@@ -5,6 +5,8 @@ use sqlx::FromRow;
 use strum::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
+use crate::domain::vo::ChatId;
+
 /// 记忆关联引用
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryReferences {
@@ -21,7 +23,7 @@ pub struct MemoryReferences {
 pub struct Memory {
     pub id: Uuid,
     pub account_id: Option<i64>,
-    pub chat_id: Option<i64>,
+    pub chat_id: Option<ChatId>,
     /// 记忆类型
     pub type_: String,
     pub content: String,

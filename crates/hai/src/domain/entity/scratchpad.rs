@@ -1,6 +1,8 @@
 use jiff::Timestamp;
 use sqlx::FromRow;
 
+use crate::domain::vo::ChatId;
+
 /// Agent 的短期工作记忆，与 chat 一对一
 ///
 /// 在每次 agent 运行结束时，通过结构化输出自动持久化。
@@ -10,7 +12,7 @@ use sqlx::FromRow;
 ///   - memory：长期、稳定、需 agent 主动调用工具写入
 #[derive(Debug, Clone, FromRow)]
 pub struct Scratchpad {
-    pub chat_id: i64,
+    pub chat_id: ChatId,
     pub content: String,
     pub token_count: i32,
     pub updated_at: jiff_sqlx::Timestamp,

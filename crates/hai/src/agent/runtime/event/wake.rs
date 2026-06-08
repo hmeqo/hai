@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
+use derive_more::Deref;
 use strum::{EnumString, IntoStaticStr};
+use tokio::time::Instant;
 use uuid::Uuid;
 
 /// 定时/后台任务的具体负载
@@ -10,7 +14,10 @@ pub struct TaskPayload {
 
 impl TaskPayload {
     pub fn new(description: impl Into<String>) -> Self {
-        Self { task_id: None, description: description.into() }
+        Self {
+            task_id: None,
+            description: description.into(),
+        }
     }
 
     pub fn with_id(mut self, task_id: Uuid) -> Self {
@@ -27,12 +34,12 @@ impl TaskPayload {
 #[strum(serialize_all = "snake_case")]
 pub enum WakeReason {
     #[default]
+    /// 注意力系统监测到新消息
+    Observe,
     /// 有人发来私信
     Direct,
     /// 被 @ 提及
     Mention,
-    /// 注意力系统判定值得看一眼
-    Observe,
     /// 定时/后台任务
     Scheduled(TaskPayload),
     /// 用户显式指令
@@ -40,16 +47,6 @@ pub enum WakeReason {
 }
 
 impl WakeReason {
-    /// 是否应绕过防抖立即处理
-    pub fn is_rapid(&self) -> bool {
-        matches!(self, Self::Scheduled(_) | Self::Command(_))
-    }
-
-    /// 当前轮次是否可被新事件打断
-    pub fn is_interruptible(&self) -> bool {
-        matches!(self, Self::Observe | Self::Mention | Self::Direct)
-    }
-
     pub fn label(&self) -> &'static str {
         self.into()
     }
@@ -72,16 +69,32 @@ impl WakeReason {
             Self::Command(description) => description.clone(),
         }
     }
-
-    /// 是否可合并（同类无负载信息的唤醒可合并为一条）
-    pub fn is_mergeable(&self) -> bool {
-        matches!(self, Self::Observe | Self::Mention | Self::Direct)
-    }
 }
 
-/// 唤醒事件——attention → gateway 的一次通知
+use crate::domain::vo::ChatId;
+
+/// WakeEvent 的内部数据（通过 Arc 共享）
 #[derive(Debug)]
-pub struct WakeEvent {
-    pub chat_id: i64,
+pub struct WakeEventInner {
+    pub chat_id: ChatId,
     pub reason: WakeReason,
+    pub created_at: Instant,
+}
+
+/// 平台 → ChatActor 的一条唤醒通知
+#[derive(Debug, Clone, Deref)]
+pub struct WakeEvent(Arc<WakeEventInner>);
+
+impl WakeEvent {
+    pub fn new(chat_id: ChatId, reason: WakeReason) -> Self {
+        Self(Arc::new(WakeEventInner {
+            chat_id,
+            reason,
+            created_at: Instant::now(),
+        }))
+    }
+
+    pub fn created_at(&self) -> Instant {
+        self.0.created_at
+    }
 }

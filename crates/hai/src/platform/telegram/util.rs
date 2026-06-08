@@ -1,16 +1,12 @@
 use teloxide::{
-    net::Download,
     prelude::*,
-    types::{FileId, MessageEntity, MessageEntityKind},
+    types::{MessageEntity, MessageEntityKind},
 };
 use uuid::Uuid;
 
-use crate::{
-    domain::{
-        entity::ChatType,
-        vo::{MessageMeta, PlatformMessageMeta, TelegramContentPart, TelegramMessageMeta},
-    },
-    error::{AppResultExt, ErrorKind, Result},
+use crate::domain::{
+    entity::ChatType,
+    vo::{MessageMeta, PlatformMessageMeta, TelegramContentPart, TelegramMessageMeta},
 };
 
 /// 从 Telegram Message 中提取 ChatType
@@ -144,24 +140,4 @@ impl ExtractedTelegramMessage {
 
         Self { parts, meta }
     }
-}
-
-/// 通过 file_id 下载文件字节（命令处理、sticker 缓存等场景使用）
-pub async fn download_file(bot: &Bot, file_id: &str) -> Result<Vec<u8>> {
-    let file = bot.get_file(FileId(file_id.to_string())).await?;
-    let mut data = Vec::new();
-    bot.download_file(&file.path, &mut data)
-        .await
-        .err_kind_msg(ErrorKind::BadRequest, "Failed to download file")?;
-    Ok(data)
-}
-
-/// 获取文件的 Telegram CDN URL（生成图片等场景使用）
-pub async fn get_file_url(bot: &Bot, file_id: FileId) -> Result<String> {
-    let file = bot.get_file(file_id).await?;
-    Ok(format!(
-        "https://api.telegram.org/file/bot{}/{}",
-        bot.token(),
-        file.path
-    ))
 }

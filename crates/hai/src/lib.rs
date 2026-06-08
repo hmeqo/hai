@@ -5,9 +5,8 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod ext;
 pub mod infra;
-pub mod minimal;
-pub mod personality;
 pub mod platform;
 pub mod util;
 

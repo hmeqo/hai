@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                account_id,\n                chat_id,\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM memory\n            WHERE type = 'user_fact' AND account_id = $1 AND chat_id = $2 AND content = $3\n            LIMIT 1\n            ",
+  "query": "\n            INSERT INTO memory (\n                id, account_id, chat_id, type, content,\n                embedding, importance, subject, \"references\", meta\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            RETURNING\n                id,\n                account_id,\n                chat_id as \"chat_id: ChatId\",\n                type as \"type_!\",\n                content as \"content!\",\n                embedding as \"embedding: Vector\",\n                importance as \"importance!\",\n                subject,\n                \"references\" as \"references: serde_json::Value\",\n                meta,\n                last_accessed_at as \"last_accessed_at!: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            ",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,7 @@
       },
       {
         "ordinal": 2,
-        "name": "chat_id",
+        "name": "chat_id: ChatId",
         "type_info": "Int8"
       },
       {
@@ -76,9 +76,21 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Int8",
         "Int8",
-        "Text"
+        "Varchar",
+        "Text",
+        {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        },
+        "Int4",
+        "Text",
+        "Jsonb",
+        "Jsonb"
       ]
     },
     "nullable": [
@@ -97,5 +109,5 @@
       true
     ]
   },
-  "hash": "6ad176c4bfd27d16b779c9a468329c04bb728afd5c5a8d4f79c9426cd1905428"
+  "hash": "34f4cafd864c7c2ac709a98dd014dd0aa1bddf1c6fc9d818dc36e9113c9b5e15"
 }

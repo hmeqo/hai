@@ -1,29 +1,56 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tracing::{debug, warn};
 
-use super::parser::Skill;
 use crate::error::Result;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub allowed_tools: Option<String>,
+    pub model: Option<String>,
+    pub version: Option<String>,
+    pub disable_model_invocation: bool,
+    pub body: String,
+    pub base_dir: PathBuf,
+}
+
+impl Skill {
+    pub fn resolved_body(&self) -> String {
+        let base = self.base_dir.to_string_lossy();
+        self.body.replace("{baseDir}", &base)
+    }
+
+    pub fn discovery_entry(&self) -> String {
+        format!("\"{}\": {}", self.name, self.description)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct SkillManager {
-    skills: Vec<Skill>,
+    skills: Arc<Vec<Skill>>,
 }
 
 impl SkillManager {
-    pub async fn load(dirs: &[PathBuf]) -> Result<Self> {
-        let mut manager = Self::default();
+    pub async fn load(dirs: &[PathBuf], disabled: &[String]) -> Result<Self> {
+        let mut buf = Vec::new();
         for dir in dirs {
             if dir.exists() {
-                manager.load_dir(dir).await;
+                Self::load_dir(&mut buf, dir, disabled).await;
             } else {
                 debug!("Skills directory not found, skipping: {}", dir.display());
             }
         }
-        Ok(manager)
+        Ok(Self {
+            skills: Arc::new(buf),
+        })
     }
 
-    async fn load_dir(&mut self, dir: &Path) {
+    async fn load_dir(buf: &mut Vec<Skill>, dir: &Path, disabled: &[String]) {
         let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
             warn!("Failed to read skills directory: {}", dir.display());
             return;
@@ -35,42 +62,75 @@ impl SkillManager {
                 continue;
             }
 
-            let skill_file = if path.join("SKILL.md").exists() {
-                path.join("SKILL.md")
-            } else {
-                path.join("skill.md")
+            let skill_file = Self::find_skill_file(&path);
+            let Some(skill_file) = skill_file else {
+                continue;
             };
-            if !skill_file.exists() {
+
+            let content = match tokio::fs::read_to_string(&skill_file).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read {}: {e}", skill_file.display());
+                    continue;
+                }
+            };
+
+            let parsed = match agent_skills::Skill::parse(&content) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to parse {}: {e}", skill_file.display());
+                    continue;
+                }
+            };
+
+            let name = parsed.name().as_str().to_string();
+
+            if disabled.contains(&name) {
+                debug!("Skill '{}' is disabled, skipping", name);
                 continue;
             }
 
-            match tokio::fs::read_to_string(&skill_file).await {
-                Ok(content) => match Skill::parse(&content, path.clone()) {
-                    Ok(skill) => {
-                        debug!("Loaded skill: {}", skill.frontmatter.name);
-                        self.skills
-                            .retain(|s| s.frontmatter.name != skill.frontmatter.name);
-                        self.skills.push(skill);
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse {}: {e}", skill_file.display());
-                    }
-                },
-                Err(e) => {
-                    warn!("Failed to read {}: {e}", skill_file.display());
-                }
+            if buf.iter().any(|s| s.name == name) {
+                debug!("Skill '{}' already loaded, skipping duplicate", name);
+                continue;
             }
+
+            let metadata = parsed.frontmatter().metadata();
+            let model = metadata.and_then(|m| m.get("model")).map(String::from);
+            let version = metadata.and_then(|m| m.get("version")).map(String::from);
+            let disable_model_invocation = metadata
+                .and_then(|m| m.get("disable-model-invocation"))
+                .and_then(|v| v.parse::<bool>().ok())
+                .unwrap_or(false);
+            let allowed_tools = parsed
+                .frontmatter()
+                .allowed_tools()
+                .map(|at| at.as_slice().join(" "));
+
+            buf.push(Skill {
+                name,
+                description: parsed.description().as_str().to_string(),
+                allowed_tools,
+                model,
+                version,
+                disable_model_invocation,
+                body: parsed.body_trimmed().to_string(),
+                base_dir: path,
+            });
         }
     }
 
+    fn find_skill_file(dir: &Path) -> Option<PathBuf> {
+        let candidates = [dir.join("SKILL.md"), dir.join("skill.md")];
+        candidates.into_iter().find(|p| p.exists())
+    }
+
     pub fn discoverable_skills(&self) -> impl Iterator<Item = &Skill> {
-        self.skills
-            .iter()
-            .filter(|s| !s.frontmatter.disable_model_invocation)
+        self.skills.iter().filter(|s| !s.disable_model_invocation)
     }
 
     pub fn find(&self, name: &str) -> Option<&Skill> {
-        self.skills.iter().find(|s| s.frontmatter.name == name)
+        self.skills.iter().find(|s| s.name == name)
     }
 
     pub fn is_empty(&self) -> bool {
