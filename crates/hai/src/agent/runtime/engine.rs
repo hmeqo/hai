@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     agent::{
-        MainAgent, MainAgentOutput,
+        node::{MainAgent, MainAgentOutput},
         personality::render::personality_context,
         prompts::SYSTEM_PROMPT,
         runtime::ctx::RoundCtx,

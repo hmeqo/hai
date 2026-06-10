@@ -8,7 +8,6 @@ use crate::config::schema::{ContainerRuntime, SandboxConfig};
 pub struct ContainerHandle {
     pub id: String,
     pub runtime: String,
-    pub image: String,
 }
 
 impl Drop for ContainerHandle {
@@ -117,7 +116,6 @@ async fn create_container(runtime: &str, image: &str) -> Result<ContainerHandle,
     Ok(ContainerHandle {
         id,
         runtime: runtime.to_string(),
-        image: image.to_string(),
     })
 }
 

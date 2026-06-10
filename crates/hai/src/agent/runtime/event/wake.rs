@@ -52,8 +52,6 @@ impl WakeReason {
     }
 
     /// 情境描述（纯观察，不含行为指令）
-    ///
-    /// Observe 返回空——没有情境就是最好的情境，agent 自己看消息就知道了。
     pub fn describe(&self) -> String {
         match self {
             Self::Direct => "有人发来私信。".to_string(),

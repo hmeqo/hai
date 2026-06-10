@@ -3,14 +3,15 @@
 //! 将 CommonContext（纯数据）渲染为 prompt 字符串。
 
 use super::{
-    account::account_element, chat::render_chat_info, memory::related_memories_section,
-    message::conversation_element, perception::perception_item, topic::topic_element,
+    account::account_element,
+    chat::render_chat_info,
+    memory::related_memories_section,
+    message::conversation_element,
+    perception::perception_item,
+    topic::{topic_element, topic_element_static},
 };
 use crate::{
-    agent::{
-        context::{RenderContext, topic_element_static},
-        event::WakeEvent,
-    },
+    agent::{context::RenderContext, event::WakeEvent},
     agentcore::render::{Format, Node, render_pretty},
     domain::{entity::MessageStatus, vo::Source},
 };
@@ -22,25 +23,20 @@ pub fn render_main_context(ctx: &RenderContext, instruction: Node) -> String {
 
 /// 构建 `<situation>` section（描述唤醒原因）
 pub fn build_situation_section(events: &[WakeEvent]) -> Node {
-    let items: Vec<Node> = events
-        .iter()
-        .filter_map(|event| {
-            let desc = event.reason.describe();
-            if desc.is_empty() {
-                None
-            } else {
-                Some(Node::tag("context").child(Node::text(desc)))
-            }
-        })
-        .collect();
-
-    if items.is_empty() {
-        Node::tag("situation")
-    } else if items.len() == 1 {
-        Node::tag("situation").child(items.into_iter().next().unwrap())
-    } else {
-        Node::tag("situation").children(items)
+    if events.is_empty() {
+        return Node::tag("situation");
     }
+
+    Node::tag("situation").children(
+        events
+            .iter()
+            .map(|event| {
+                Node::tag("trigger")
+                    .attr("reason", event.reason.label())
+                    .child(Node::text(event.reason.describe()))
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// 将通用上下文组装为顶层 Context 节点

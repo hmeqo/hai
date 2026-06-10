@@ -18,7 +18,7 @@ pub enum DispatchResult {
 
 impl WakeReason {
     pub(super) fn is_addressed(&self) -> bool {
-        matches!(self, Self::Direct | Self::Mention)
+        matches!(self, Self::Direct | Self::Mention | Self::Command(_))
     }
 
     pub(super) fn is_rapid(&self) -> bool {
@@ -40,14 +40,9 @@ pub struct EventScheduler {
 }
 
 impl EventScheduler {
-    pub fn new(
-        base_heat: f64,
-        window_secs: f64,
-        sustained_window_ms: Duration,
-        window_max_ms: Duration,
-    ) -> Self {
+    pub fn new(base_heat: f64, window_secs: f64) -> Self {
         Self {
-            batch: EventBatch::new(sustained_window_ms, window_max_ms),
+            batch: EventBatch::new(),
             heat: Heat::new(base_heat),
             window: Window::new(window_secs),
         }
@@ -74,7 +69,10 @@ impl EventScheduler {
             return DispatchResult::Wait;
         }
 
-        if self.window.is_active() || rand::random::<f64>() < self.heat.value {
+        if self.window.is_active() {
+            return DispatchResult::Ready(self.flush_dedup());
+        }
+        if rand::random::<f64>() < self.heat.value {
             self.heat.spend();
             return DispatchResult::Ready(self.flush_dedup());
         }
@@ -98,14 +96,6 @@ impl EventScheduler {
         items
     }
 
-    pub fn next_deadline(&self) -> Instant {
-        self.batch.next_deadline()
-    }
-
-    pub fn is_pending(&self) -> bool {
-        !self.batch.is_empty()
-    }
-
     /// 当前调度器快照（供外部查询）
     pub fn snapshot(&mut self) -> SchedulerStatus {
         self.refresh_heat();
@@ -116,11 +106,6 @@ impl EventScheduler {
             window_closes_in_secs: self.window.closes_in().map(|d| d.as_secs_f64()),
             pending_events: self.batch.len(),
         }
-    }
-
-    /// 窗口是否激活
-    pub fn is_window_active(&self) -> bool {
-        self.window.is_active()
     }
 
     /// 刷新窗口和热量——agent 发送消息后调用

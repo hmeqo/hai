@@ -90,8 +90,6 @@ impl ChatActor {
         EventScheduler::new(
             engine.app.agent.personality.base_attention(cfg),
             engine.app.agent.personality.attention_window_secs(),
-            Duration::from_millis(cfg.sustained_window_ms),
-            Duration::from_millis(cfg.window_max_ms),
         )
     }
 }

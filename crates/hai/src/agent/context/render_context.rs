@@ -90,10 +90,6 @@ impl RenderContextData {
         self.accounts.iter().find(|a| a.id == id)
     }
 
-    pub fn get_message(&self, id: i64) -> Option<&Message> {
-        self.messages.iter().find(|m| m.id == id)
-    }
-
     pub fn topic_hint(&self, msg: &Message) -> String {
         msg.topic_id
             .and_then(|tid| {
@@ -139,13 +135,6 @@ impl RenderContext {
         for (i, topic) in self.data.topics.iter().enumerate() {
             self.topics_by_id.insert(topic.id, i);
         }
-    }
-
-    pub fn get_account(&self, id: i64) -> Option<&Account> {
-        self.accounts_by_id
-            .get(&id)
-            .copied()
-            .and_then(|i| self.data.accounts.get(i))
     }
 
     pub fn get_message(&self, id: i64) -> Option<&Message> {

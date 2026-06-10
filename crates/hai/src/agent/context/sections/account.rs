@@ -30,13 +30,3 @@ pub fn account_element(account: &Account) -> Node {
 
     b
 }
-
-/// 构建账户列表元素
-pub fn accounts_elements(accounts: &[Account]) -> Vec<Node> {
-    accounts.iter().map(account_element).collect()
-}
-
-/// 构建账户 Section
-pub fn accounts_section(accounts: &[Account], tag: &str) -> Node {
-    Node::tag(tag).children(accounts_elements(accounts))
-}

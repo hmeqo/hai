@@ -15,16 +15,8 @@ pub fn tool_ok() -> Result<Value, ToolCallError> {
     Ok(json!({ "ok": true }))
 }
 
-pub fn tool_msg(msg: impl Into<String>) -> Result<Value, ToolCallError> {
-    Ok(json!({ "ok": true, "message": msg.into() }))
-}
-
 pub fn tool_data(data: Value) -> Result<Value, ToolCallError> {
     Ok(json!({ "ok": true, "data": data }))
-}
-
-pub fn tool_with(msg: impl Into<String>, data: Value) -> Result<Value, ToolCallError> {
-    Ok(json!({ "ok": true, "message": msg.into(), "data": data }))
 }
 
 pub fn tool_err(msg: impl Into<String>) -> ToolCallError {

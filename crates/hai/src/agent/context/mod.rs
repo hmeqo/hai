@@ -12,7 +12,13 @@ pub mod render_context;
 pub mod sections;
 pub mod types;
 
-pub use builder::{build_first_round_prompt, build_next_round_prompt};
-pub use render_context::RenderContext;
-pub use sections::*;
+pub(crate) use builder::{build_first_round_prompt, build_next_round_prompt};
+pub(crate) use render_context::RenderContext;
+pub(crate) use sections::{
+    account::account_element,
+    context::{build_situation_section, render_main_context},
+    fmt,
+    last_round::build_last_round_section,
+    related_memories_section, topic_section,
+};
 pub use types::{Attachment, AttachmentPerceptionMap, ContentParser, ParsedContent};

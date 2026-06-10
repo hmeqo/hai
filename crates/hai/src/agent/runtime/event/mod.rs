@@ -3,4 +3,4 @@ pub mod batch;
 pub mod scheduler;
 pub mod wake;
 
-pub use wake::{TaskPayload, WakeEvent, WakeReason};
+pub use wake::{WakeEvent, WakeReason};

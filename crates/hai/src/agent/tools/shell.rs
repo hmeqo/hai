@@ -34,6 +34,7 @@ struct ShellArgs {
 
 #[derive(Debug)]
 pub struct RunShell {
+    pub description: String,
     pub skill_manager: SkillManager,
     pub session: ActorRef<ChatActor>,
 }
@@ -44,7 +45,7 @@ impl ToolT for RunShell {
     }
 
     fn description(&self) -> &str {
-        "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。"
+        &self.description
     }
 
     fn args_schema(&self) -> Value {
@@ -85,7 +86,17 @@ impl ToolRuntime for RunShell {
 }
 
 pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+    let sandbox = &ctx.app.cfg.sandbox;
+    let description = if sandbox.enabled {
+        format!(
+            "执行 shell 命令。运行在容器中（镜像: {}）。可通过 skill 参数自动挂载 skill 目录。",
+            sandbox.image
+        )
+    } else {
+        "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into()
+    };
     vec![Arc::new(RunShell {
+        description,
         skill_manager: ctx.skill_manager.clone(),
         session: ctx.session.clone(),
     })]

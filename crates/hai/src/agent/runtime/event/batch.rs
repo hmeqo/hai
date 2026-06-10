@@ -1,4 +1,4 @@
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
 use super::wake::WakeEvent;
 
@@ -11,18 +11,14 @@ pub struct EventBatch {
     events: Vec<WakeEvent>,
     has_rapid: bool,
     first_at: Instant,
-    min_wait: Duration,
-    max_duration: Duration,
 }
 
 impl EventBatch {
-    pub fn new(min_wait: Duration, max_duration: Duration) -> Self {
+    pub fn new() -> Self {
         Self {
             events: Vec::new(),
             has_rapid: false,
             first_at: Instant::now(),
-            min_wait,
-            max_duration,
         }
     }
 
@@ -47,15 +43,5 @@ impl EventBatch {
     pub fn flush(&mut self) -> Vec<WakeEvent> {
         self.has_rapid = false;
         std::mem::take(&mut self.events)
-    }
-
-    pub fn next_deadline(&self) -> Instant {
-        if self.has_rapid {
-            Instant::now()
-        } else {
-            let rolling = Instant::now() + self.min_wait;
-            let hard_cap = self.first_at + self.max_duration;
-            rolling.min(hard_cap)
-        }
     }
 }
