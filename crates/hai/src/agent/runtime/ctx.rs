@@ -1,28 +1,28 @@
-use kameo::actor::ActorRef;
+use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
+use super::shell::ShellRuntime;
 use crate::{
-    agent::{event::WakeEvent, link::BotHandle, runtime::actor::ChatActor},
+    agent::{event::WakeEvent, link::BotHandle, node::MultimodalService},
     agentcore::skills::SkillManager,
     app::AppContext,
+    config::schema::SandboxConfig,
     domain::{entity::ChatType, service::DbServices, vo::ChatId},
 };
 
-/// 一轮 task 执行的上下文环境。
-///
-/// 由 ChatActor 创建，贯穿 prepare → RoundTask 整轮生命周期。
-pub struct RoundCtx {
+/// 一轮 task 的完整执行上下文（prompt 构建 + 工具执行共用）
+pub struct RoundContext {
     pub app: AppContext,
     pub chat_id: ChatId,
     pub chat_type: ChatType,
     pub bot: BotHandle,
-    /// 本轮唤醒事件
     pub events: Vec<WakeEvent>,
     pub skill_manager: SkillManager,
-    pub session: ActorRef<ChatActor>,
-}
-
-impl RoundCtx {
-    pub fn services(&self) -> DbServices {
-        self.app.db.srv.clone()
-    }
+    pub db: DbServices,
+    pub shell: Arc<Mutex<ShellRuntime>>,
+    pub multimodal: MultimodalService,
+    pub sandbox: SandboxConfig,
+    pub enabled_parsers: Vec<&'static str>,
+    pub tts_enabled: bool,
 }

@@ -5,43 +5,88 @@ use tokio::process::Command;
 
 use crate::config::schema::{ContainerRuntime, SandboxConfig};
 
-pub struct ContainerHandle {
-    pub id: String,
-    pub runtime: String,
+#[derive(Debug)]
+pub struct ContainerGuard {
+    runtime: String,
+    id: String,
 }
 
-impl Drop for ContainerHandle {
-    fn drop(&mut self) {
-        let id = self.id.clone();
-        let runtime = self.runtime.clone();
-        tokio::spawn(async move {
-            let output = Command::new(&runtime)
-                .args(["rm", "-f", &id])
-                .output()
-                .await;
-            if let Err(e) = output {
-                tracing::warn!("Failed to destroy container {}: {e}", id);
-            }
-        });
+impl ContainerGuard {
+    pub async fn create(runtime: &str, image: &str) -> Result<Self, ToolCallError> {
+        let output = Command::new(runtime)
+            .args(["create", "--rm", image, "sleep", "infinity"])
+            .output()
+            .await
+            .map_err(|e| {
+                ToolCallError::RuntimeError(format!("Failed to run {runtime}: {e}").into())
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ToolCallError::RuntimeError(
+                format!("Failed to create container: {stderr}").into(),
+            ));
+        }
+
+        let id = String::from_utf8(output.stdout)
+            .map_err(|e| {
+                ToolCallError::RuntimeError(format!("Non-UTF-8 container ID: {e}").into())
+            })?
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            return Err(ToolCallError::RuntimeError("Empty container ID".into()));
+        }
+
+        Command::new(runtime)
+            .args(["start", &id])
+            .output()
+            .await
+            .map_err(|e| {
+                ToolCallError::RuntimeError(format!("Failed to start container: {e}").into())
+            })?;
+
+        Ok(Self {
+            id,
+            runtime: runtime.to_string(),
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn runtime(&self) -> &str {
+        &self.runtime
     }
 }
 
+impl Drop for ContainerGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(&self.runtime)
+            .args(["rm", "-f", &self.id])
+            .output();
+    }
+}
+
+#[derive(Debug)]
 struct SandboxRuntime {
     runtime: ContainerRuntime,
     image: String,
-    container: Option<ContainerHandle>,
+    container: Option<ContainerGuard>,
 }
 
 impl SandboxRuntime {
-    async fn ensure_container(&mut self) -> Result<&ContainerHandle, ToolCallError> {
+    async fn ensure_container(&mut self) -> Result<&ContainerGuard, ToolCallError> {
         if self.container.is_none() {
-            let handle = create_container(self.runtime.as_str(), &self.image).await?;
-            self.container = Some(handle);
+            self.container =
+                Some(ContainerGuard::create(self.runtime.as_str(), &self.image).await?);
         }
-        Ok(self.container.as_ref().unwrap())
+        Ok(self.container.as_ref().expect("container just set"))
     }
 }
 
+#[derive(Debug)]
 pub struct ShellRuntime {
     default_timeout: u64,
     sandbox: Option<SandboxRuntime>,
@@ -77,46 +122,12 @@ impl ShellRuntime {
             return run_on_host(command, dir, timeout).await;
         };
 
-        let runtime = sb.runtime.as_str();
         let handle = sb.ensure_container().await?;
         if let Some(dir) = skill_dir {
-            copy_to_container(runtime, &handle.id, dir, "/workspace").await?;
+            copy_to_container(handle.runtime(), handle.id(), dir, "/workspace").await?;
         }
-        exec_in_container(runtime, &handle.id, command, timeout).await
+        exec_in_container(handle.runtime(), handle.id(), command, timeout).await
     }
-}
-
-async fn create_container(runtime: &str, image: &str) -> Result<ContainerHandle, ToolCallError> {
-    let output = Command::new(runtime)
-        .args(["create", "--rm", image, "sleep", "infinity"])
-        .output()
-        .await
-        .map_err(|e| ToolCallError::RuntimeError(format!("Failed to run {runtime}: {e}").into()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ToolCallError::RuntimeError(
-            format!("Failed to create container: {stderr}").into(),
-        ));
-    }
-
-    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if id.is_empty() {
-        return Err(ToolCallError::RuntimeError("Empty container ID".into()));
-    }
-
-    Command::new(runtime)
-        .args(["start", &id])
-        .output()
-        .await
-        .map_err(|e| {
-            ToolCallError::RuntimeError(format!("Failed to start container: {e}").into())
-        })?;
-
-    Ok(ContainerHandle {
-        id,
-        runtime: runtime.to_string(),
-    })
 }
 
 async fn exec_in_container(
@@ -154,7 +165,9 @@ async fn copy_to_container(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!("docker cp warning: {stderr}");
+        return Err(ToolCallError::RuntimeError(
+            format!("docker cp failed: {stderr}").into(),
+        ));
     }
     Ok(())
 }

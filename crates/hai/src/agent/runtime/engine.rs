@@ -3,14 +3,13 @@ use std::sync::Arc;
 use autoagents::{core::agent::DirectAgentHandle, llm::LLMProvider, prelude::*};
 use autoagents_toolkit::mcp::{McpConfig, McpServerConfig, McpTools};
 use derive_more::Deref;
-use tokio::sync::RwLock;
 
 use crate::{
     agent::{
         node::{MainAgent, MainAgentOutput},
         personality::render::personality_context,
         prompts::SYSTEM_PROMPT,
-        runtime::ctx::RoundCtx,
+        runtime::ctx::RoundContext,
         tools::{get_main_agent_tools, skills::load_skill_tool},
     },
     agentcore::{provider::LlmBuildConfig, skills::SkillManager},
@@ -26,7 +25,7 @@ pub struct AgentEngine(Arc<AgentEngineInner>);
 
 pub struct AgentEngineInner {
     pub app: AppContext,
-    llm: RwLock<Arc<dyn LLMProvider>>,
+    llm: Arc<dyn LLMProvider>,
     pub mcp_tools: McpTools,
     pub skill_manager: SkillManager,
 }
@@ -41,7 +40,7 @@ impl AgentEngine {
 
         Ok(Self(Arc::new(AgentEngineInner {
             app,
-            llm: RwLock::new(llm),
+            llm,
             mcp_tools,
             skill_manager,
         })))
@@ -49,8 +48,8 @@ impl AgentEngine {
 
     // ── LLM ──
 
-    pub async fn main_llm(&self) -> Arc<dyn LLMProvider> {
-        self.llm.read().await.clone()
+    pub fn main_llm(&self) -> Arc<dyn LLMProvider> {
+        self.llm.clone()
     }
 
     fn build_llm(app: &AppContext) -> Result<Arc<dyn LLMProvider>> {
@@ -73,9 +72,9 @@ impl AgentEngine {
 
     // ── Agent 组装 ──
 
-    pub async fn build_handle(
+    async fn build_handle(
         &self,
-        ctx: &RoundCtx,
+        ctx: &RoundContext,
     ) -> Result<DirectAgentHandle<ReActAgent<MainAgent>>> {
         let mut tools = get_main_agent_tools(ctx);
         tools.extend(self.mcp_tools.get_tools().await);
@@ -85,7 +84,7 @@ impl AgentEngine {
             tools,
             system_prompt: self.build_system_prompt(ctx.chat_type),
         }))
-        .llm(self.main_llm().await)
+        .llm(self.main_llm())
         .memory(Box::new(SlidingWindowMemory::new(
             self.app.cfg.agent.context.sliding_window_size,
         )))
@@ -96,7 +95,7 @@ impl AgentEngine {
 
     // ── 执行 ──
 
-    pub async fn run(&self, ctx: &RoundCtx, prompt: String) -> Result<MainAgentOutput> {
+    pub async fn run(&self, ctx: &RoundContext, prompt: String) -> Result<MainAgentOutput> {
         let handle = self.build_handle(ctx).await?;
         handle
             .agent
@@ -109,7 +108,7 @@ impl AgentEngine {
 
     pub fn build_system_prompt(&self, chat_type: ChatType) -> String {
         let config = &self.app.cfg;
-        let personality_prompt = personality_context(&self.app.agent.personality);
+        let personality_prompt = personality_context(&self.app.cfg.agent.personality);
 
         let mut prompt = SYSTEM_PROMPT.to_owned();
         prompt.push_str("\n\n");

@@ -11,6 +11,12 @@ use crate::{
 
 pub struct MessageRepo;
 
+/// 消息过滤条件
+pub(super) enum MessageFilter {
+    Unread,
+    Read,
+}
+
 /// 创建消息所需的参数
 pub struct CreateMessage<'a> {
     pub chat_id: ChatId,
@@ -130,17 +136,15 @@ impl MessageRepo {
     }
 
     /// 内部通用查询：按时间倒序取最新 N 条，再正序返回
-    ///
-    /// - `status_filter`: `None` 不过滤；`Some("pending")` 仅 pending；
-    ///   其他值均视为"排除 pending"（已处理）
     async fn list_messages_ordered(
         pool: &PgPool,
         chat_id: i64,
         limit: i64,
-        status_filter: Option<&str>,
+        filter: Option<MessageFilter>,
     ) -> Result<Vec<Message>> {
+        let status = MessageStatus::Unread.as_str();
         // sqlx 宏不支持动态 WHERE，分三种情况展开
-        let rows = match status_filter {
+        let rows = match filter {
             None => {
                 sqlx::query_as!(
                     Message,
@@ -166,7 +170,7 @@ impl MessageRepo {
                 .fetch_all(pool)
                 .await?
             }
-            Some("pending") => {
+            Some(MessageFilter::Unread) => {
                 sqlx::query_as!(
                     Message,
                     r#"
@@ -179,19 +183,20 @@ impl MessageRepo {
                         updated_at as "updated_at!: jiff_sqlx::Timestamp"
                     FROM (
                         SELECT * FROM message
-                        WHERE chat_id = $1 AND interaction_status = 'unread'
+                        WHERE chat_id = $1 AND interaction_status = $2
                         ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
-                        LIMIT $2
+                        LIMIT $3
                     ) AS sub
                     ORDER BY COALESCE(sent_at, created_at) ASC, id ASC
                     "#,
                     chat_id,
+                    status,
                     limit,
                 )
                 .fetch_all(pool)
                 .await?
             }
-            _ => {
+            Some(MessageFilter::Read) => {
                 sqlx::query_as!(
                     Message,
                     r#"
@@ -204,13 +209,14 @@ impl MessageRepo {
                         updated_at as "updated_at!: jiff_sqlx::Timestamp"
                     FROM (
                         SELECT * FROM message
-                        WHERE chat_id = $1 AND interaction_status != 'unread'
+                        WHERE chat_id = $1 AND interaction_status != $2
                         ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
-                        LIMIT $2
+                        LIMIT $3
                     ) AS sub
                     ORDER BY COALESCE(sent_at, created_at) ASC, id ASC
                     "#,
                     chat_id,
+                    status,
                     limit,
                 )
                 .fetch_all(pool)
@@ -220,6 +226,61 @@ impl MessageRepo {
         Ok(rows)
     }
 
+    /// 获取指定 ID 之后（或最新）的消息，有界窗口查询
+    ///
+    /// `since_id = None` 取最新的 `limit` 条；
+    /// `since_id = Some(id)` 取出 `id` 之后消息（不含该 ID），上限 `limit` 条。
+    pub async fn get_messages_window(
+        pool: &PgPool,
+        chat_id: i64,
+        since_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        sqlx::query_as!(
+            Message,
+            r#"
+            SELECT id, chat_id, account_id, role, content,
+                topic_id as "topic_id: Uuid",
+                interaction_status as "interaction_status!",
+                reply_to_id, external_id, meta,
+                token_count, sent_at as "sent_at: jiff_sqlx::Timestamp",
+                created_at as "created_at!: jiff_sqlx::Timestamp",
+                updated_at as "updated_at!: jiff_sqlx::Timestamp"
+            FROM (
+                SELECT * FROM message
+                WHERE chat_id = $1 AND id > $2
+                ORDER BY id DESC
+                LIMIT $3
+            ) AS sub
+            ORDER BY id ASC
+            "#,
+            chat_id,
+            since_id.unwrap_or(-1),
+            limit,
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// 获取最新的未读消息，上限 `limit` 条
+    pub async fn get_unread_messages(
+        pool: &PgPool,
+        chat_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        Self::list_messages_ordered(pool, chat_id, limit, Some(MessageFilter::Unread)).await
+    }
+
+    /// 获取最新的非未读消息（用于上下文填充），上限 `limit` 条
+    pub async fn get_read_messages(
+        pool: &PgPool,
+        chat_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        Self::list_messages_ordered(pool, chat_id, limit, Some(MessageFilter::Read)).await
+    }
+
     /// 获取用于 agent 上下文的消息，同时返回 pending 消息的总数
     ///
     /// 返回 `(messages, total_pending)`：
@@ -227,19 +288,20 @@ impl MessageRepo {
     /// - total_pending: 该 chat 全部 pending 条数（用于提示 agent 还有多少未读）
     ///
     /// 获取消息：优先返回所有未读消息，不够 min_count 时用已读消息补充。
-    /// 返回 (messages, last_seen_id)。
     pub async fn get_messages(
         pool: &PgPool,
         chat_id: i64,
         min_count: i64,
     ) -> Result<(Vec<Message>, Option<i64>)> {
         let all_pending =
-            Self::list_messages_ordered(pool, chat_id, i64::MAX, Some("pending")).await?;
+            Self::list_messages_ordered(pool, chat_id, i64::MAX, Some(MessageFilter::Unread))
+                .await?;
 
         let history_limit = (min_count - all_pending.len() as i64).max(0);
 
         let mut history =
-            Self::list_messages_ordered(pool, chat_id, history_limit, Some("!pending")).await?;
+            Self::list_messages_ordered(pool, chat_id, history_limit, Some(MessageFilter::Read))
+                .await?;
 
         history.extend(all_pending);
         let last_seen_id = history.last().map(|m| m.id);

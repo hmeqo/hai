@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status = 'unread'\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $2\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
+  "query": "\n            SELECT id, chat_id, account_id, role, content,\n                topic_id as \"topic_id: Uuid\",\n                interaction_status as \"interaction_status!\",\n                reply_to_id, external_id, meta,\n                token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n            FROM (\n                SELECT * FROM message\n                WHERE chat_id = $1 AND id > $2\n                ORDER BY id DESC\n                LIMIT $3\n            ) AS sub\n            ORDER BY id ASC\n            ",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,7 @@
     "parameters": {
       "Left": [
         "Int8",
+        "Int8",
         "Int8"
       ]
     },
@@ -97,5 +98,5 @@
       true
     ]
   },
-  "hash": "db7e20f04f7818e376cdca458276a7a5f2f38023fd6b66f687bed6a649c46c5c"
+  "hash": "490bdd9eb9636e055ea7a96fe0565c714dde573fa4942aa3a354c80a04c10ce9"
 }

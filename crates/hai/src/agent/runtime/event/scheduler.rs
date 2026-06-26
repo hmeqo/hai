@@ -1,42 +1,65 @@
-use std::collections::HashSet;
-
 use tokio::time::{Duration, Instant};
 
 use super::{
     attention::{Heat, Window},
-    batch::EventBatch,
-    wake::{WakeEvent, WakeReason},
+    wake::WakeEvent,
 };
 
-/// 事件派发的结果
-pub enum DispatchResult {
-    Ready(Vec<WakeEvent>),
+const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 调度器轮询结果
+pub enum PollOutcome {
+    Dispatch(Vec<WakeEvent>),
     Wait,
+    Expired,
 }
 
-// ─── 调度策略 ─────────────────────────────────────────────────────────────────
+// ─── 事件缓冲 ──────────────────────────────────────────────────────────────────
 
-impl WakeReason {
-    pub(super) fn is_addressed(&self) -> bool {
-        matches!(self, Self::Direct | Self::Mention | Self::Command(_))
+struct EventBatch {
+    events: Vec<WakeEvent>,
+    has_rapid: bool,
+}
+
+impl EventBatch {
+    fn new() -> Self {
+        Self { events: Vec::new(), has_rapid: false }
     }
 
-    pub(super) fn is_rapid(&self) -> bool {
-        matches!(self, Self::Scheduled(_) | Self::Command(_))
+    fn len(&self) -> usize {
+        self.events.len()
     }
 
-    pub(super) fn is_mergeable(&self) -> bool {
-        matches!(self, Self::Observe | Self::Mention | Self::Direct)
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn has_rapid(&self) -> bool {
+        self.has_rapid
+    }
+
+    fn push(&mut self, event: WakeEvent) {
+        if event.reason.is_rapid() {
+            self.has_rapid = true;
+        }
+        self.events.push(event);
+    }
+
+    fn flush(&mut self) -> Vec<WakeEvent> {
+        self.has_rapid = false;
+        std::mem::take(&mut self.events)
     }
 }
 
 // ─── 事件调度器 ───────────────────────────────────────────────────────────────
 
-/// per-session，管理 batch + 热度 + 窗口 + 超时。
+/// per-session，管理 batch + 热度 + 窗口 + 防抖 + 过期。
 pub struct EventScheduler {
     batch: EventBatch,
     heat: Heat,
     window: Window,
+    debounce_until: Option<Instant>,
 }
 
 impl EventScheduler {
@@ -45,6 +68,7 @@ impl EventScheduler {
             batch: EventBatch::new(),
             heat: Heat::new(base_heat),
             window: Window::new(window_secs),
+            debounce_until: None,
         }
     }
 
@@ -52,7 +76,8 @@ impl EventScheduler {
         self.heat.decay(self.window.closes_at());
     }
 
-    /// 事件入队。被明确指向的事件（Direct/Mention）自动刷新窗口+热量。
+    /// 事件入队。被明确指向的事件刷新窗口+热量。
+    /// rapid 事件清除防抖（等待 caller 立即 dispatch），其余设置 500ms 防抖。
     pub fn push(&mut self, event: WakeEvent) {
         self.refresh_heat();
 
@@ -60,43 +85,78 @@ impl EventScheduler {
             self.window.refresh();
             self.heat.reset();
         }
+
+        if event.reason.is_rapid() {
+            self.debounce_until = None;
+        } else {
+            self.debounce_until = Some(Instant::now() + DEBOUNCE_DURATION);
+        }
+
         self.batch.push(event);
     }
 
-    /// 尝试派发。注意状态且 batch 非空 → Ready。
-    pub fn try_dispatch(&mut self) -> DispatchResult {
-        if self.batch.is_empty() {
-            return DispatchResult::Wait;
+    /// 返回下次应该 poll 的时间。
+    /// - 防抖 pending → 防抖 deadline
+    /// - batch 有事件 → 立即（now）或轮询间隔（防抖已过但未 dispatch）
+    /// - window 激活且 batch 空 → window + idle_timeout
+    /// - 否则 → None
+    pub fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
+        let now = Instant::now();
+
+        if let Some(d) = self.debounce_until {
+            return Some(d);
         }
 
+        if !self.batch.is_empty() {
+            return Some(now + POLL_INTERVAL);
+        }
+
+        if let Some(close) = self.window.closes_at() {
+            return Some(close + idle_timeout);
+        }
+
+        None
+    }
+
+    /// 轮询调度器。在 `next_deadline` 返回的 deadline 到来时调用。
+    pub fn poll(&mut self, idle_timeout: Duration) -> PollOutcome {
+        let now = Instant::now();
+
+        // 防抖尚未过期 → 继续等
+        if let Some(d) = self.debounce_until {
+            if now < d {
+                return PollOutcome::Wait;
+            }
+            self.debounce_until = None;
+        }
+
+        self.refresh_heat();
+
+        // batch 空 → 检查过期
+        if self.batch.is_empty() {
+            if let Some(close) = self.window.closes_at()
+                && now > close + idle_timeout
+            {
+                return PollOutcome::Expired;
+            }
+            return PollOutcome::Wait;
+        }
+
+        // batch 有事件 → 尝试派发
+        if self.batch.has_rapid() {
+            return PollOutcome::Dispatch(self.batch.flush());
+        }
         if self.window.is_active() {
-            return DispatchResult::Ready(self.flush_dedup());
+            return PollOutcome::Dispatch(self.batch.flush());
         }
         if rand::random::<f64>() < self.heat.value {
             self.heat.spend();
-            return DispatchResult::Ready(self.flush_dedup());
+            return PollOutcome::Dispatch(self.batch.flush());
         }
 
-        DispatchResult::Wait
+        PollOutcome::Wait
     }
 
-    fn flush_dedup(&mut self) -> Vec<WakeEvent> {
-        let events = self.batch.flush();
-        let mut seen = HashSet::new();
-        let mut items = Vec::new();
-        for event in events {
-            if event.reason.is_mergeable() {
-                if seen.insert(event.reason.label()) {
-                    items.push(event);
-                }
-            } else {
-                items.push(event);
-            }
-        }
-        items
-    }
-
-    /// 当前调度器快照（供外部查询）
     pub fn snapshot(&mut self) -> SchedulerStatus {
         self.refresh_heat();
         SchedulerStatus {
@@ -113,17 +173,9 @@ impl EventScheduler {
         self.window.refresh();
         self.heat.reset();
     }
-
-    /// session 是否已过期：窗口关闭后超过 idle_timeout
-    pub fn is_expired(&self, idle_timeout: Duration) -> bool {
-        let Some(close) = self.window.closes_at() else {
-            return false;
-        };
-        Instant::now() > close + idle_timeout
-    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SchedulerStatus {
     pub heat_value: f64,
     pub heat_base: f64,

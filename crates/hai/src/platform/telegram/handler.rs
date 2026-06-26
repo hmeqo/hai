@@ -5,7 +5,7 @@ use teloxide::{
     Bot,
     payloads::{SendMessageSetters, SendVoiceSetters},
     prelude::Requester,
-    types::{ChatAction, FileId, InputFile, MessageId, ReplyParameters},
+    types::{ChatAction, FileId, InputFile, MessageId, ParseMode, ReplyParameters},
 };
 use uuid::Uuid;
 
@@ -128,7 +128,11 @@ impl PlatformHandler for TelegramPlatformHandler {
         if let Some(params) = reply_params {
             tg_req = tg_req.reply_parameters(params);
         }
-        let sent_msg = tg_req.await?;
+        let sent_msg = match tg_req.clone().parse_mode(ParseMode::MarkdownV2).await {
+            Ok(msg) => msg,
+            Err(err) if err.to_string().contains("Can't parse entities") => tg_req.await?,
+            Err(err) => return Err(err.into()),
+        };
 
         let content = serde_json::to_value(vec![TelegramContentPart::Text { text: req.content }])?;
         self.persist_message(

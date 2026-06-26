@@ -1,6 +1,5 @@
 use std::fmt::{Debug, Display};
 
-use serde_json::Value;
 use strum::{EnumString, IntoStaticStr};
 use thiserror::Error;
 
@@ -119,8 +118,6 @@ pub struct AppError {
 
     message: Option<String>,
 
-    errors: Option<Value>,
-
     #[source]
     source: Option<Box<DynError>>,
 }
@@ -130,7 +127,6 @@ impl AppError {
         Self {
             kind,
             message: None,
-            errors: None,
             source: None,
         }
     }
@@ -172,10 +168,6 @@ impl AppError {
         self.message
             .as_deref()
             .unwrap_or_else(|| self.kind.default_message())
-    }
-
-    pub fn errors(&self) -> Option<&Value> {
-        self.errors.as_ref()
     }
 
     pub fn trace_source(&self) {

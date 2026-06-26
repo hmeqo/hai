@@ -58,7 +58,6 @@ linkify = "0.11"
 timeago = "0.6"
 sanitize-filename = "0.6"
 quick-xml = "0.40"
-kameo = { version = "0.20.0", features = ["macros"] }
 
 [profile.release]
 panic = "abort"

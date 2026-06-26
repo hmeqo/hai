@@ -9,13 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{
-    agent::{
-        link::PlatformHandler,
-        runtime::ctx::RoundCtx,
-        tools::util::{MapToolErr, tool_data, tool_err},
-    },
-    domain::vo::AttachmentParser,
+use crate::agent::{
+    link::PlatformHandler,
+    runtime::ctx::RoundContext,
+    tools::util::{MapToolErr, tool_data, tool_err},
 };
 
 #[derive(Serialize, Deserialize, ToolInput)]
@@ -71,21 +68,11 @@ impl ToolRuntime for AnalyzeAttachment {
     }
 }
 
-pub fn multimodal_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
-    let mut enabled_parsers = Vec::new();
-    if ctx.app.cfg.multimodal.input.audio.enabled() {
-        enabled_parsers.push(AttachmentParser::Audio.name());
-    }
-    if ctx.app.cfg.multimodal.input.video.enabled() {
-        enabled_parsers.push(AttachmentParser::Video.name());
-    }
-    if ctx.app.cfg.multimodal.input.image.enabled() {
-        enabled_parsers.push(AttachmentParser::Image.name());
-    }
-    if enabled_parsers.is_empty() {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+    if ctx.enabled_parsers.is_empty() {
         return vec![];
     }
-    let extra_desc = format!("仅支持解析类型：{:?}。", enabled_parsers.join(", "));
+    let extra_desc = format!("仅支持解析类型：{:?}。", ctx.enabled_parsers.join(", "));
     vec![Arc::new(AnalyzeAttachment::new(
         ctx.bot.handler.clone(),
         &extra_desc,

@@ -1,3 +1,4 @@
+pub(super) mod command;
 pub mod dispatcher;
 pub mod handler;
 pub mod media;

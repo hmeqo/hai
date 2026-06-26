@@ -85,32 +85,6 @@ impl From<&SandboxConfig> for SandboxInfo {
     }
 }
 
-impl RenderContextData {
-    pub fn get_account(&self, id: i64) -> Option<&Account> {
-        self.accounts.iter().find(|a| a.id == id)
-    }
-
-    pub fn topic_hint(&self, msg: &Message) -> String {
-        msg.topic_id
-            .and_then(|tid| {
-                self.topics
-                    .iter()
-                    .find(|t| t.id == tid)
-                    .and_then(|t| t.title.as_deref().map(|s| s.to_string()))
-            })
-            .unwrap_or_default()
-    }
-
-    pub fn sender_name(&self, msg: &Message) -> String {
-        let aid = msg.account_id.unwrap_or(0);
-        display_name(self.get_account(aid), aid)
-    }
-
-    pub fn perceptions(&self) -> &[Perception] {
-        &self.perceptions
-    }
-}
-
 impl RenderContext {
     pub fn new(data: RenderContextData, content_renderer: ContentRenderer) -> Self {
         let mut ctx = Self {
@@ -124,7 +98,6 @@ impl RenderContext {
         ctx
     }
 
-    /// 构建 O(1) 索引
     fn build_indices(&mut self) {
         for (i, account) in self.data.accounts.iter().enumerate() {
             self.accounts_by_id.insert(account.id, i);
@@ -142,5 +115,33 @@ impl RenderContext {
             .get(&id)
             .copied()
             .and_then(|i| self.data.messages.get(i))
+    }
+
+    pub fn get_account(&self, id: i64) -> Option<&Account> {
+        self.accounts_by_id
+            .get(&id)
+            .copied()
+            .and_then(|i| self.data.accounts.get(i))
+    }
+
+    pub fn topic_hint(&self, msg: &Message) -> String {
+        msg.topic_id
+            .and_then(|tid| {
+                self.topics_by_id
+                    .get(&tid)
+                    .copied()
+                    .and_then(|i| self.data.topics.get(i))
+                    .and_then(|t| t.title.as_deref().map(|s| s.to_string()))
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn sender_name(&self, msg: &Message) -> String {
+        let aid = msg.account_id.unwrap_or(0);
+        display_name(self.get_account(aid), aid)
+    }
+
+    pub fn perceptions(&self) -> &[Perception] {
+        &self.data.perceptions
     }
 }

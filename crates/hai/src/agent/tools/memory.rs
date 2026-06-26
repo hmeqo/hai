@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::related_memories_section,
-        runtime::ctx::RoundCtx,
+        runtime::ctx::RoundContext,
         tools::util::{MapToolErr, tool_data, tool_err, tool_ok},
     },
     agentcore::render::render_json,
@@ -227,19 +227,19 @@ impl ToolRuntime for DeleteMemory {
     }
 }
 
-pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(RecordMemory {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(CorrectMemory {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(SearchMemory {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(DeleteMemory {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
     ]
 }

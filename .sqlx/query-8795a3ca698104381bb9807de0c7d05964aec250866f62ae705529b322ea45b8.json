@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status != 'unread'\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $2\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
+  "query": "\n                    SELECT id, chat_id, account_id, role, content,\n                        topic_id as \"topic_id: Uuid\",\n                        interaction_status as \"interaction_status!\",\n                        reply_to_id, external_id, meta,\n                        token_count, sent_at as \"sent_at: jiff_sqlx::Timestamp\",\n                        created_at as \"created_at!: jiff_sqlx::Timestamp\",\n                        updated_at as \"updated_at!: jiff_sqlx::Timestamp\"\n                    FROM (\n                        SELECT * FROM message\n                        WHERE chat_id = $1 AND interaction_status != $2\n                        ORDER BY COALESCE(sent_at, created_at) DESC, id DESC\n                        LIMIT $3\n                    ) AS sub\n                    ORDER BY COALESCE(sent_at, created_at) ASC, id ASC\n                    ",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,7 @@
     "parameters": {
       "Left": [
         "Int8",
+        "Text",
         "Int8"
       ]
     },
@@ -97,5 +98,5 @@
       true
     ]
   },
-  "hash": "a717c36448333caafc7dfbcbbe16a5defdfa4cfb2ebba12d3bae50223d8607c8"
+  "hash": "8795a3ca698104381bb9807de0c7d05964aec250866f62ae705529b322ea45b8"
 }

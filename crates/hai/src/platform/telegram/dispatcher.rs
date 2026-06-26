@@ -1,25 +1,24 @@
 use std::sync::Arc;
 
-use kameo::actor::ActorRef;
 use tap::Tap;
 use teloxide::{
     Bot,
     dispatching::{HandlerExt, UpdateFilterExt, dialogue::InMemStorage},
     dptree,
     prelude::*,
-    types::{Me, Message, Update},
+    types::{Me, Message, ParseMode, Update},
     utils::command::BotCommands,
 };
 
-use super::util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type};
+use super::{
+    command::{Command, MAJOR_HELP_TEXT},
+    util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type},
+};
 use crate::{
     agent::{
         event::{WakeEvent, WakeReason},
         link::{BotHandle, BotId},
-        runtime::{
-            actor::{ChatActor, GetStatus},
-            registry::ChatActorManager,
-        },
+        runtime::{ChatSessionHandle, registry::ChatSessionManager},
     },
     app::AppContext,
     domain::{
@@ -27,31 +26,7 @@ use crate::{
         vo::{ChatId, PlatformAccountMeta, TelegramAccountMeta},
     },
     error::{AppError, AppResultExt, ErrorKind, Result},
-    ext::kameo::KameoExt,
 };
-
-const MAJOR_HELP_TEXT: &str = r#"
-你现在正与一位 AI 助手（Agent）对话。这个 Agent 拥有以下能力：
-- 借助多模态理解并分析图片、视频、音频等附件
-- 管理对话历史并持续累积记忆
-- 自主识别和推进话题
-- 向您请教和学习
-- 随时随地请求总结或梳理讨论
-- 可在 Telegram 上使用
-"#;
-
-#[derive(Debug, BotCommands, Clone)]
-#[command(rename_rule = "lowercase")]
-pub(crate) enum Command {
-    #[command(description = "启动机器人")]
-    Start,
-    #[command(description = "获取帮助")]
-    Help,
-    #[command(description = "查看 Agent 状态")]
-    Status,
-    #[command(description = "整理记忆和主题")]
-    OrganizeMemory,
-}
 
 /// Telegram 分发器
 pub struct TelegramDispather {
@@ -59,7 +34,7 @@ pub struct TelegramDispather {
     pub bot: Bot,
     pub ctx: AppContext,
     pub handle: BotHandle,
-    pub registry: ChatActorManager,
+    pub registry: ChatSessionManager,
     pub allowed_chat_ids: Vec<i64>,
 }
 
@@ -68,7 +43,7 @@ impl TelegramDispather {
         bot_id: BotId,
         bot: Bot,
         ctx: AppContext,
-        registry: ChatActorManager,
+        registry: ChatSessionManager,
         handle: BotHandle,
         allowed_chat_ids: Vec<i64>,
     ) -> Result<Self> {
@@ -112,11 +87,9 @@ impl TelegramDispather {
                                  msg: Message,
                                  cmd: Command,
                                  dp: Arc<TelegramDispather>| async move {
-                                    tokio::spawn(async move {
-                                        if let Err(err) = dp.handle_command(bot, msg, cmd).await {
-                                            tracing::error!("Failed to handle command: {}", err);
-                                        }
-                                    });
+                                    if let Err(err) = dp.handle_command(bot, msg, cmd).await {
+                                        tracing::error!("Failed to handle command: {err}");
+                                    }
                                     Ok::<(), AppError>(())
                                 },
                             ),
@@ -165,7 +138,7 @@ impl TelegramDispather {
         Ok(())
     }
 
-    async fn actor(&self, chat_id: ChatId) -> ActorRef<ChatActor> {
+    async fn session(&self, chat_id: ChatId) -> ChatSessionHandle {
         self.registry.get_or_create(chat_id).await
     }
 
@@ -173,6 +146,12 @@ impl TelegramDispather {
         let Some(from) = msg.from.as_ref() else {
             return Ok(());
         };
+        tracing::info!(
+            chat_id = %msg.chat.id,
+            from = %from.full_name(),
+            text = %msg.text().unwrap_or("<non-text>"),
+            "Message received",
+        );
         let chat_type = msg_chat_type(&msg);
 
         let (chat, account) = self.resolve_chat_and_account(&msg, from, chat_type).await?;
@@ -198,37 +177,45 @@ impl TelegramDispather {
             }
             Command::Status => {
                 let inner_chat_id = self.get_internal_chat_id(&msg).await?;
-                let status_msg = match self.actor(inner_chat_id).await.ask(GetStatus).await {
-                    Ok(status) => format!(
-                        "📊 Agent 状态\n热度: {:.2}/{:.2}\n窗口: {}\n待处理事件: {}",
-                        status.heat_value,
-                        status.heat_base,
-                        if status.window_active {
-                            format!(
-                                "活跃（{}s 后关闭）",
-                                status.window_closes_in_secs.unwrap_or(0.0) as i64
-                            )
+                let status_msg = match self.session(inner_chat_id).await.status().await {
+                    Some(s) => {
+                        let sched = &s.scheduler;
+                        let running = match s.round_elapsed_secs {
+                            Some(secs) => format!("🟢 运行 `{secs:.1}s`"),
+                            None => "⚪ 空闲".into(),
+                        };
+                        let window = if sched.window_active {
+                            let secs = sched.window_closes_in_secs.unwrap_or(0.0) as i64;
+                            format!("🪟 `{secs}s`")
                         } else {
-                            "关闭".into()
-                        },
-                        status.pending_events,
-                    ),
-                    Err(_) => "📊 Agent 状态\n获取失败".into(),
+                            "🪟 —".into()
+                        };
+                        format!(
+                            "🤖 Agent · {}轮次 · `{}`\n{}\n🔥 `{:.2}` / `{:.2}`\n{}\n📥 `{}`",
+                            s.rounds_completed,
+                            s.model,
+                            running,
+                            sched.heat_value,
+                            sched.heat_base,
+                            window,
+                            sched.pending_events,
+                        )
+                    }
+                    None => "🤖 Agent 状态\n获取失败".into(),
                 };
-                self.bot.send_message(msg.chat.id, status_msg).await?;
+                self.bot
+                    .send_message(msg.chat.id, status_msg)
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .await?;
             }
             Command::OrganizeMemory => {
                 let inner_chat_id = self.get_internal_chat_id(&msg).await?;
-                self.actor(inner_chat_id)
-                    .await
-                    .tell(WakeEvent::new(
-                        inner_chat_id,
-                        WakeReason::Command(
-                            "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建"
-                                .into(),
-                        ),
-                    ))
-                    .fire();
+                self.session(inner_chat_id).await.wake(WakeEvent::new(
+                    inner_chat_id,
+                    WakeReason::Command(
+                        "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建".into(),
+                    ),
+                ));
             }
         }
         Ok(())
@@ -320,10 +307,10 @@ impl TelegramDispather {
         } else {
             WakeReason::Observe
         };
-        self.actor(chat_id)
+        tracing::info!(%chat_id, reason = reason.label(), "Agent event dispatched");
+        self.session(chat_id)
             .await
-            .tell(WakeEvent::new(chat_id, reason))
-            .fire();
+            .wake(WakeEvent::new(chat_id, reason));
     }
 }
 

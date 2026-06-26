@@ -41,7 +41,6 @@ pub struct PersonalityConfig {
     pub interests: Vec<String>,
     /// 主色调
     pub tone: String,
-    pub communication_style: String,
 }
 
 impl Default for PersonalityConfig {
@@ -56,12 +55,25 @@ impl Default for PersonalityConfig {
             mood: 0.1,
             interests: vec![],
             tone: "你是一个有自己的主见的人, 你很友善很聪明, 你不会太过刻意的表达自己的意见或一味附和别人".into(),
-            communication_style: "口语化，像正常人网上聊天一样。你不会尾随句号, 网络交流尾随句号会很别扭, 两段话可以分两次发送".into(),
         }
     }
 }
 
 impl PersonalityConfig {
+    fn curve(t: f64) -> f64 {
+        1.0 - (1.0 - t).powf(1.5)
+    }
+
+    pub fn base_attention(&self, cfg: &AttentionConfig) -> f64 {
+        let base = Self::curve(self.sociability) * cfg.base_attention_cap;
+        base.max(cfg.base_attention)
+    }
+
+    /// 注意力窗口时长（秒）：agent 主动参与后保持高注意力的时长
+    pub fn attention_window_secs(&self) -> f64 {
+        5.0 + Self::curve(self.sociability) * 55.0
+    }
+
     pub fn dims(&self) -> Vec<(&str, f64, &str)> {
         vec![
             ("Sociability", self.sociability, "沉默潜水 ←→ 活跃话痨"),
@@ -118,6 +130,8 @@ pub struct ContextConfig {
     pub private_prompt: String,
     pub sliding_window_size: usize,
     pub message_history_limit: i64,
+    /// 单次 round 最多加载的消息数
+    pub history_cap: i64,
     pub related_memory_limit: i64,
     pub related_topic_limit: i64,
     /// 话题闲置时间（小时），超过此时间的话题标记为 need-close
@@ -132,9 +146,21 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
-            group_prompt: String::new(),
+            group_prompt: "\
+在群聊中，你就像群里的一个普通成员。
+
+正常人不会对每条消息都回应——那样会打扰别人、破坏对话节奏。
+
+- 被 @ 提及或别人直接向你提问时再回应。
+- 别人在聊的话题如果你没有特别要补充的，保持沉默是完全正常且得体的。
+- 不要打断别人正在进行的对话。
+- 如果你要说话，确保你说的对当前话题有价值。
+- 观察不等于需要参与。大多数时候，看看就好。
+"
+            .into(),
             private_prompt: String::new(),
             message_history_limit: 10,
+            history_cap: 100,
             sliding_window_size: 10,
             related_memory_limit: 5,
             related_topic_limit: 3,
@@ -165,11 +191,6 @@ pub struct AttentionConfig {
     pub base_attention: f64,
     /// 基础注意力上限（sociability 能推到的最大值，防止过于频繁）
     pub base_attention_cap: f64,
-    /// 注意力窗口最小持续期（毫秒），收集事件后等待的时间窗口
-    /// 注意力窗口最小持续期（毫秒），收集事件后等待的时间窗口
-    pub sustained_window_ms: u64,
-    /// 注意力窗口硬上限（毫秒），从首个事件起最多等多久强制触发
-    pub window_max_ms: u64,
 }
 
 impl Default for AttentionConfig {
@@ -177,8 +198,6 @@ impl Default for AttentionConfig {
         Self {
             base_attention: 0.02,
             base_attention_cap: 0.33,
-            sustained_window_ms: 1000,
-            window_max_ms: 5000,
         }
     }
 }

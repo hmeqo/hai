@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use derive_more::Deref;
 use strum::{EnumString, IntoStaticStr};
-use tokio::time::Instant;
 use uuid::Uuid;
+
+use crate::domain::vo::ChatId;
 
 /// 定时/后台任务的具体负载
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -56,7 +57,7 @@ impl WakeReason {
         match self {
             Self::Direct => "有人发来私信。".to_string(),
             Self::Mention => "有人在群里提到你。".to_string(),
-            Self::Observe => String::new(),
+            Self::Observe => "群里有新消息。默认观察，不需要回复。".to_string(),
             Self::Scheduled(payload) => {
                 if let Some(id) = payload.task_id {
                     format!("定时任务 [TaskID:{}]：{}。", id, payload.description)
@@ -69,30 +70,35 @@ impl WakeReason {
     }
 }
 
-use crate::domain::vo::ChatId;
+// ─── 调度策略 ─────────────────────────────────────────────────────────────────
+
+impl WakeReason {
+    pub fn is_addressed(&self) -> bool {
+        matches!(self, Self::Direct | Self::Mention | Self::Command(_))
+    }
+
+    pub fn is_rapid(&self) -> bool {
+        matches!(self, Self::Scheduled(_) | Self::Command(_))
+    }
+
+    pub fn is_mergeable(&self) -> bool {
+        matches!(self, Self::Observe | Self::Mention | Self::Direct)
+    }
+}
 
 /// WakeEvent 的内部数据（通过 Arc 共享）
 #[derive(Debug)]
 pub struct WakeEventInner {
     pub chat_id: ChatId,
     pub reason: WakeReason,
-    pub created_at: Instant,
 }
 
-/// 平台 → ChatActor 的一条唤醒通知
+/// 平台 → ChatSession 的一条唤醒通知
 #[derive(Debug, Clone, Deref)]
 pub struct WakeEvent(Arc<WakeEventInner>);
 
 impl WakeEvent {
     pub fn new(chat_id: ChatId, reason: WakeReason) -> Self {
-        Self(Arc::new(WakeEventInner {
-            chat_id,
-            reason,
-            created_at: Instant::now(),
-        }))
-    }
-
-    pub fn created_at(&self) -> Instant {
-        self.0.created_at
+        Self(Arc::new(WakeEventInner { chat_id, reason }))
     }
 }

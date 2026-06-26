@@ -72,7 +72,13 @@ impl Memory {
     }
 
     pub fn set_references(&mut self, refs: MemoryReferences) {
-        self.references = serde_json::to_value(&refs).ok();
+        self.references = match serde_json::to_value(&refs) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::error!("Failed to serialize memory references: {e}");
+                None
+            }
+        };
     }
 }
 

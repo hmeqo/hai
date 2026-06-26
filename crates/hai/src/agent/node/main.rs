@@ -16,23 +16,14 @@ use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize, AgentOutput)]
 pub struct MainAgentOutput {
-    #[output(
-        description = "内部笔记，不会被发送给任何人。如果已用 send_message 等工具交互则无需填写。"
-    )]
-    pub notes: Option<String>,
+    #[output()]
     #[serde(skip)]
     pub tool_calls: Vec<ToolCallResult>,
 }
 
 impl From<ReActAgentOutput> for MainAgentOutput {
     fn from(output: ReActAgentOutput) -> Self {
-        let notes = output
-            .try_parse::<MainAgentOutput>()
-            .ok()
-            .and_then(|m| m.notes)
-            .or(Some(output.response));
         Self {
-            notes,
             tool_calls: output.tool_calls,
         }
     }

@@ -5,7 +5,7 @@ use teloxide::{Bot, prelude::Requester};
 use crate::{
     agent::{
         link::{BotHandle, BotId, BotProfile},
-        runtime::{AgentEngine, registry::ChatActorManager},
+        runtime::{AgentEngine, registry::ChatSessionManager},
     },
     app::AppContext,
     config::schema::{BotConfig, BotPlatform},
@@ -41,13 +41,17 @@ pub async fn spawn_bots(ctx: &AppContext, engine: &AgentEngine) -> Result<()> {
                     bot_id.clone(),
                     bot,
                     ctx.clone(),
-                    ChatActorManager::new(handle.clone(), engine.clone()),
+                    ChatSessionManager::new(handle.clone(), engine.clone()),
                     handle,
                     resolved.allowed_chat_ids,
                 )
                 .await?;
 
-                tokio::spawn(async move { dispatcher.run().await });
+                tokio::spawn(async move {
+                    if let Err(e) = dispatcher.run().await {
+                        tracing::error!(bot_id = %bot_id, "Dispatcher panicked: {e}");
+                    }
+                });
             }
         }
     }

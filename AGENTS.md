@@ -17,66 +17,51 @@ cargo run --bin hai -- config     # 查看配置
 ## 架构要点
 
 ```
-hai/src/
-├── agent/           LLM 会话管理、工具（无平台依赖）
-│   ├── link.rs      PlatformHandler trait + BotHandle
-│   ├── runtime/
-│   │   ├── actor.rs        ChatActor (kameo actor, 事件调度 + round 生命周期 + 容器管理)
-│   │   ├── engine.rs       AgentEngine (LLM + ChatActorManager)
-│   │   ├── event/          EventScheduler (batch + heat + window)
-│   │   ├── container.rs    容器生命周期（docker/podman create / exec / destroy）
-│   │   ├── rounds.rs       RoundManager（round 队列 + 当前 task）
-│   │   ├── ctx.rs          RoundCtx
-│   │   ├── data.rs         Round, ToolResult
-│   │   ├── query.rs        RoundResult, SchedulerStatus
-│   │   ├── registry.rs     ChatActorManager（管理所有 ChatActor）
-│   │   └── round_task.rs / task_payload.rs
-│   ├── context/             prompt 构建（builder + sections + types）
-│   ├── node/output.rs       MainAgentOutput { notes: Option<String> }
-│   └── tools/               send_message, send_voice, run_shell, analyze_attachment 等
-├── ext/kameo.rs      KameoExt trait: actor.tell(msg).fire()
-├── platform/telegram/       平台适配
-│   ├── actor.rs      TelegramBotActor (#[derive(Actor)])
-│   ├── handler.rs    实现 PlatformHandler
-│   └── dispatcher.rs 事件入口（通过 registry.get_or_create 获取 ChatActor）
-├── domain/vo/chat_id.rs      ChatId newtype（防止与平台侧 ID 混淆）
-└── agentcore/        LLM provider 封装 (autoagents)
-
-依赖: entity → vo → repo → service → agent → app。infra 不依赖上层。platform 依赖 app，不依赖 agent。
+hai/src/agent/runtime/
+├── session.rs      ChatSessionHandle + SessionLoop（单一状态机：事件循环 + 调度 + rounds 管理）
+├── ctx.rs          RoundContext（prompt 构建 + 工具执行共用）
+├── engine.rs       AgentEngine（LLM + agent 组装）
+├── event/
+│   ├── scheduler.rs EventScheduler（batches + heat + window）
+│   ├── batch.rs     EventBatch + debounce（0.5s 防抖）
+│   ├── wake.rs      WakeEvent + WakeReason
+│   └── attention.rs Heat + Window
+├── round.rs         Round + RoundTaskPayload（纯数据）
+├── shell.rs        ShellRuntime（容器/本地 shell）
+└── registry.rs     ChatSessionManager（管理所有 ChatSessionHandle）
 ```
 
 ## 通信模型
 
 ```
-Dispatcher ──tell(WakeEvent)──► registry.get_or_create(ChatId)
-                                     │
-                                ChatActor.handle(WaveEvent)
-                                     │
-                                     ├── scheduler.push(event)
-                                     └── try_consume() → RoundManager::spawn()
-                                                            │
-                                                       engine.run() → MainAgentOutput
-                                                            │
-                                                       tell(RoundResult) ──► ChatActor
-                                                                              │
-                                                                           try_consume()
+Dispatcher ──handle.wake(WakeEvent)──► ChatSessionHandle.wake_tx
+                                          │
+                                     SessionLoop::run()
+                                          │
+                                     select! { wake_rx, result_rx }
+                                          │
+                                     try_dispatch() → engine.run() (tokio::spawn)
+                                          │
+                                     result_tx.send(RoundResult) ◄───────┘
+                                          │
+                                     on_result() → rounds.push / schedule.refresh
 ```
 
-- **Agent → platform**：agent tool 调 `bot_actor.ask(SendMessageReq)`（经过 `BotHandle` → `PlatformHandler`）
-- **Platform → agent**：dispatcher 调 `engine.sessions.get_or_create(ChatId, spawn_fn)` → `actor.tell(WakeEvent)`
-- **查询**：`actor.ask(GetStatus).await` → `SchedulerStatus`
-- **fire-and-forget**：`actor.tell(msg).fire()`（`ext/kameo.rs` `KameoExt`，同步 try_send）
-- 内部命令（`/help`、`/status`、`/start`）走 `self.bot.send_message()`，不经 actor
+- **Platform → agent**：dispatcher 调 `registry.get_or_create(ChatId)` → `handle.wake(WakeEvent)`
+- **Agent round 执行**：`try_dispatch()` → `engine.run()` → Result 通过 `result_tx` 返回
+- **查询状态**：`handle.status()`（Arc\<RwLock\<SchedulerStatus\>\> 同步快照）
+- **内部命令**走 `self.bot.send_message()`，不经会话
+- 无 kameo，纯 tokio mpsc + select!
 
 ## 调度策略
-
-定义在 `scheduler.rs` 的 `impl WakeReason` 中，不是 `wake.rs`（数据 vs 策略分离）：
 
 | 方法 | 含义 |
 |------|------|
 | `is_addressed()` | `Direct` / `Mention` → 刷新窗口 + 热量 |
-| `is_rapid()` | `Scheduled` / `Command` → 绕过 batch deadline |
+| `is_rapid()` | `Scheduled` / `Command` → 绕过防抖+窗口+热度 |
 | `is_mergeable()` | `Observe` / `Mention` / `Direct` → 同轮次可合并 |
+| `debounce_remaining()` | 0.5s 防抖：最后一次事件后等 500ms 才 dispatch |
+| Guard window | 3s 内新 addressed 事件可 interrupt 当前 round |
 
 ## Bot 配置
 
@@ -96,3 +81,4 @@ Config 覆盖链：`.hai/config.toml` → `HAI_` 环境变量 → 运行时热�
 - `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`
 - nightly toolchain, edition 2024
 - 无 CI / 无 pre-commit
+- `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见

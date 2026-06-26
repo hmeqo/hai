@@ -1,33 +1,28 @@
 use crate::{
     agent::{
         context::{
-            RenderContext, build_last_round_section, build_situation_section,
+            RenderContext, build_situation_section,
             helper::{
                 build_attachment_maps, collect_accounts, load_chat, load_perceptions,
                 load_reply_context, search_related_context,
             },
             render_context::{RenderContextData, SandboxInfo},
             render_main_context,
-            sections::message::messages_elements,
+            sections::{chat::render_chat_info, message::conversation_element},
         },
         link::BuiltContext,
-        runtime::{ctx::RoundCtx, round::Round},
+        runtime::ctx::RoundContext,
     },
     agentcore::render::{Format, Node, render_pretty},
     domain::entity::Message,
     error::Result,
 };
 
-/// 首轮全量上下文渲染（含感知、话题、记忆等完整信息）
-pub async fn build_first_round_prompt(
-    ctx: &RoundCtx,
+/// 加载 reply context → 合并 → 排序 → 提取 message_ids
+async fn prepare_messages(
+    services: &crate::domain::service::DbServices,
     messages: &[Message],
-) -> Result<BuiltContext> {
-    let services = &ctx.app.db.srv;
-    let cfg = &ctx.app.cfg;
-    let parser = ctx.bot.handler.content_parser();
-    let chat_id = ctx.chat_id;
-
+) -> Result<(Vec<Message>, Vec<i64>)> {
     let mut all_messages = messages.to_vec();
     let reply_context = load_reply_context(services, &all_messages).await?;
     all_messages.extend(reply_context);
@@ -37,6 +32,20 @@ pub async fn build_first_round_prompt(
             .then(a.id.cmp(&b.id))
     });
     let message_ids: Vec<i64> = all_messages.iter().map(|m| m.id).collect();
+    Ok((all_messages, message_ids))
+}
+
+/// 首轮全量上下文渲染（含感知、话题、记忆等完整信息）
+pub async fn build_first_round_prompt(
+    ctx: &RoundContext,
+    messages: &[Message],
+) -> Result<BuiltContext> {
+    let services = &ctx.app.db.srv;
+    let cfg = &ctx.app.cfg;
+    let parser = ctx.bot.handler.content_parser();
+    let chat_id = ctx.chat_id;
+
+    let (all_messages, message_ids) = prepare_messages(services, messages).await?;
 
     let parsed: Vec<_> = all_messages
         .iter()
@@ -79,11 +88,10 @@ pub async fn build_first_round_prompt(
     })
 }
 
-/// 后续轮次增量上下文渲染（last-round + 新消息）
+/// 后续轮次增量上下文渲染（<new> 块）
 pub async fn build_next_round_prompt(
-    ctx: &RoundCtx,
+    ctx: &RoundContext,
     messages: &[Message],
-    prev_round: Option<&Round>,
 ) -> Result<BuiltContext> {
     let services = &ctx.app.db.srv;
     let cfg = &ctx.app.cfg;
@@ -97,16 +105,12 @@ pub async fn build_next_round_prompt(
         });
     }
 
-    let mut all_messages = messages.to_vec();
-    let reply_context = load_reply_context(services, &all_messages).await?;
-    all_messages.extend(reply_context);
-    all_messages.sort_by_key(|a| a.id);
-
-    let message_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    let (all_messages, message_ids) = prepare_messages(services, messages).await?;
     let perception_map = build_attachment_maps(services, parser, &all_messages).await?;
     let renderer = parser.create_renderer(&perception_map);
     let accounts = collect_accounts(services, &all_messages).await?;
     let chat = load_chat(services, chat_id).await?;
+    let chat_info = render_chat_info(&chat);
 
     let data = RenderContextData {
         bot: ctx.bot.profile.clone(),
@@ -125,26 +129,34 @@ pub async fn build_next_round_prompt(
     };
     let render_ctx = RenderContext::new(data, renderer);
 
-    let msg_refs: Vec<&Message> = messages.iter().collect();
-    let message_elements = messages_elements(&msg_refs, &render_ctx);
+    let msg_refs: Vec<&Message> = render_ctx.messages.iter().collect();
+    let conversation = conversation_element(&msg_refs, &render_ctx);
+
+    let current_time = jiff::Zoned::now().to_string();
 
     let mut elements: Vec<Node> = Vec::new();
-    if let Some(prev) = prev_round
-        && let Some(section) = build_last_round_section(prev)
-    {
-        elements.push(section);
-    }
-    elements.push(Node::tag("current_time").child(Node::text(jiff::Zoned::now().to_string())));
+
+    // 1. <situation> — 和 <context> 对齐，在第一子
     let situation = build_situation_section(&ctx.events);
     if !situation.is_empty() {
         elements.push(situation);
     }
-    elements.push(Node::tag("messages").children(message_elements));
 
-    let update = render_pretty(Node::tag("update").children(elements), Format::Xml);
+    // 2. <environment><current_time/></environment>
+    elements.push(
+        Node::tag("environment").child(Node::tag("current_time").child(Node::text(current_time))),
+    );
+
+    // 3. <chat> — 标识当前聊天
+    elements.push(chat_info);
+
+    // 4. <conversation> — 同首轮完全一致的消息渲染
+    elements.push(conversation);
+
+    let new = render_pretty(Node::tag("new").children(elements), Format::Xml);
 
     Ok(BuiltContext {
-        rendered_prompt: update,
+        rendered_prompt: new,
         message_ids,
     })
 }

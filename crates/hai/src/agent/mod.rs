@@ -7,4 +7,4 @@ pub(crate) mod runtime;
 pub(crate) mod tools;
 
 pub use node::{MediaInput, MediaSource, ModelService, MultimodalService};
-pub(crate) use runtime::{event, *};
+pub(crate) use runtime::event;

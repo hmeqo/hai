@@ -106,6 +106,16 @@ impl MessageService {
         .await
     }
 
+    /// 获取指定 ID 之后（或最新）的消息，有界窗口查询
+    pub async fn get_messages_window(
+        &self,
+        chat_id: ChatId,
+        since_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        MessageRepo::get_messages_window(&self.pool, chat_id.0, since_id, limit).await
+    }
+
     /// 获取 agent 上下文消息：先取全量 pending，再用剩余配额补到 limit 条已处理消息
     ///
     /// 返回 `(messages, total_pending)` —— `total_pending` 可能大于 messages 中实际
@@ -116,6 +126,16 @@ impl MessageService {
         min_count: i64,
     ) -> Result<(Vec<Message>, Option<i64>)> {
         MessageRepo::get_messages(&self.pool, chat_id.0, min_count).await
+    }
+
+    /// 获取最新的未读消息，上限 `limit` 条
+    pub async fn get_unread_messages(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
+        MessageRepo::get_unread_messages(&self.pool, chat_id.0, limit).await
+    }
+
+    /// 获取最新的非未读消息（用于上下文填充），上限 `limit` 条
+    pub async fn get_read_messages(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
+        MessageRepo::get_read_messages(&self.pool, chat_id.0, limit).await
     }
 
     /// 通过内部消息 ID 获取消息

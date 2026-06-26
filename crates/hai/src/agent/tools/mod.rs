@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use autoagents::prelude::ToolT;
 
-use crate::agent::runtime::ctx::RoundCtx;
+use crate::agent::runtime::ctx::RoundContext;
 
 pub mod account;
 pub mod memory;
@@ -15,20 +15,18 @@ pub mod topic;
 pub mod util;
 pub mod voice;
 
-pub fn get_main_agent_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
-    let tools: Vec<Arc<dyn ToolT>> = [
-        account::tools(ctx),
-        message::get_message_tools(ctx),
-        topic::get_topic_tools(ctx),
-        memory::tools(ctx),
-        scratchpad::tools(ctx),
-        multimodal::multimodal_tools(ctx),
-        voice::get_voice_tools(ctx),
-        shell::tools(ctx),
+pub fn get_main_agent_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+    [
+        account::tools,
+        message::tools,
+        topic::tools,
+        memory::tools,
+        scratchpad::tools,
+        multimodal::tools,
+        voice::tools,
+        shell::tools,
     ]
     .into_iter()
-    .flatten()
-    .collect();
-
-    tools
+    .flat_map(|f| f(ctx))
+    .collect()
 }

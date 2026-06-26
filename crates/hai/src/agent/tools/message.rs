@@ -5,18 +5,16 @@ use autoagents::{
     core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
 };
 use autoagents_derive::{ToolInput, tool};
-use kameo::actor::ActorRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
     agent::{
-        link::SendMessageReq,
-        runtime::{actor::ChatActor, ctx::RoundCtx},
+        link::{BotHandle, SendMessageReq},
+        runtime::ctx::RoundContext,
         tools::util::{MapToolErr, deserialize_option_lenient_i64_vec, tool_data},
     },
     domain::{service::DbServices, vo::ChatId},
-    error::{AppResultExt, ErrorKind},
 };
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
@@ -39,7 +37,7 @@ pub struct SendMessageArgs {
 )]
 pub struct SendMessage {
     pub chat_id: ChatId,
-    pub session: ActorRef<ChatActor>,
+    pub bot: BotHandle,
     pub services: DbServices,
 }
 
@@ -57,15 +55,14 @@ impl ToolRuntime for SendMessage {
         }
 
         let meta = self
-            .session
-            .ask(SendMessageReq {
+            .bot
+            .send_message(SendMessageReq {
                 chat_id: self.chat_id,
                 content: typed_args.content,
                 topic_id: typed_args.topic_id,
                 platform_reply_to_id: typed_args.platform_reply_to_id,
             })
             .await
-            .err_kind_msg(ErrorKind::Internal, "Session mailbox error")
             .into_tool_err()?;
 
         tool_data(json!({
@@ -74,10 +71,10 @@ impl ToolRuntime for SendMessage {
     }
 }
 
-pub fn get_message_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(SendMessage {
         chat_id: ctx.chat_id,
-        session: ctx.session.clone(),
-        services: ctx.services(),
+        bot: ctx.bot.clone(),
+        services: ctx.db.clone(),
     })]
 }

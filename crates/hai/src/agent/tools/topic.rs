@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     agent::{
         context::topic_section,
-        runtime::ctx::RoundCtx,
+        runtime::ctx::RoundContext,
         tools::util::{
             MapToolErr, deserialize_lenient_i64_vec, deserialize_option_lenient_i64_vec, tool_data,
             tool_ok,
@@ -325,31 +325,31 @@ impl ToolRuntime for DeleteTopic {
     }
 }
 
-pub fn get_topic_tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(CreateTopic {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(AssignTopic {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(ListTopics {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(SearchTopics {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(CorrectTopic {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(PushTopicSummary {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(CloseTopic {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
         Arc::new(DeleteTopic {
-            services: ctx.services(),
+            services: ctx.db.clone(),
         }),
     ]
 }

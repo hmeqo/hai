@@ -49,4 +49,3 @@ linkify = { workspace = true }
 timeago = { workspace = true }
 sanitize-filename = { workspace = true }
 quick-xml = { workspace = true }
-kameo = { workspace = true }

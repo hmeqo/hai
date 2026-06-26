@@ -70,23 +70,32 @@ pub async fn collect_accounts(services: &DbServices, messages: &[Message]) -> Re
     Ok(account_map.into_values().collect())
 }
 
-/// 查询附件感知数据（按文件 ID 和 URL）
-pub async fn load_perceptions(
-    services: &DbServices,
-    parsed: &[ParsedContent],
-) -> Result<PerceptionResult> {
-    let mut perceptions: Vec<Perception> = Vec::new();
-    let mut seen: HashSet<Uuid> = HashSet::new();
-    let mut by_attachment_id: HashMap<Uuid, Vec<Perception>> = HashMap::new();
-    let mut same_resource_as: HashMap<Uuid, Uuid> = HashMap::new();
+// ── Perception 加载器 ─────────────────────────────────────────────────────────
 
-    let attachment_parts: Vec<&Attachment> =
-        parsed.iter().flat_map(|p| p.attachments.iter()).collect();
+struct PerceptionLoader<'a> {
+    services: &'a DbServices,
+    perceptions: Vec<Perception>,
+    seen: HashSet<Uuid>,
+    by_attachment_id: HashMap<Uuid, Vec<Perception>>,
+    same_resource_as: HashMap<Uuid, Uuid>,
+}
 
-    if !attachment_parts.is_empty() {
-        let file_ids: Vec<String> = attachment_parts.iter().map(|a| a.file_id.clone()).collect();
+impl<'a> PerceptionLoader<'a> {
+    fn new(services: &'a DbServices) -> Self {
+        Self {
+            services,
+            perceptions: Vec::new(),
+            seen: HashSet::new(),
+            by_attachment_id: HashMap::new(),
+            same_resource_as: HashMap::new(),
+        }
+    }
+
+    async fn load_file_attachments(&mut self, parts: &[&Attachment]) -> Result<()> {
+        let file_ids: Vec<String> = parts.iter().map(|a| a.file_id.clone()).collect();
         let mut file_id_perceptions: HashMap<String, Vec<Perception>> = HashMap::new();
-        for (fid, p) in services
+        for (fid, p) in self
+            .services
             .perception
             .find_by_platform_file_ids(&file_ids)
             .await?
@@ -95,49 +104,79 @@ pub async fn load_perceptions(
         }
 
         let mut first_file_attachment: HashMap<Uuid, Uuid> = HashMap::new();
-        for att in &attachment_parts {
+        for att in parts {
             let file_uid = resource_id_from_file_id(&att.file_id);
             let hit = file_id_perceptions.get(&att.file_id);
 
             if let Some(&first) = first_file_attachment.get(&file_uid) {
-                same_resource_as.insert(att.id, first);
+                self.same_resource_as.insert(att.id, first);
             } else {
                 first_file_attachment.insert(file_uid, att.id);
                 if let Some(ps) = hit {
-                    by_attachment_id.insert(att.id, ps.clone());
+                    self.by_attachment_id.insert(att.id, ps.clone());
                 }
             }
 
             for p in hit.into_iter().flatten() {
-                if seen.insert(p.id) {
-                    perceptions.push(p.clone());
+                if self.seen.insert(p.id) {
+                    self.perceptions.push(p.clone());
                 }
             }
         }
+        Ok(())
     }
 
-    let urls: Vec<String> = parsed
-        .iter()
-        .flat_map(|p| p.text_fragments.iter())
-        .flat_map(|text| extract_urls(text))
-        .collect();
+    async fn load_urls(&mut self, parsed: &[ParsedContent]) -> Result<()> {
+        let urls: Vec<String> = parsed
+            .iter()
+            .flat_map(|p| p.text_fragments.iter())
+            .flat_map(|text| extract_urls(text))
+            .collect();
 
-    if !urls.is_empty() {
-        let url_perceptions = services.perception.find_by_urls(&urls).await?;
-        for p in url_perceptions {
-            if seen.insert(p.id) {
-                perceptions.push(p);
+        if !urls.is_empty() {
+            let url_perceptions = self.services.perception.find_by_urls(&urls).await?;
+            for p in url_perceptions {
+                if self.seen.insert(p.id) {
+                    self.perceptions.push(p);
+                }
             }
+        }
+        Ok(())
+    }
+
+    fn build_attachment_map(self) -> AttachmentPerceptionMap {
+        AttachmentPerceptionMap {
+            by_attachment_id: self.by_attachment_id,
+            same_resource_as: self.same_resource_as,
         }
     }
 
-    Ok(PerceptionResult {
-        items: perceptions,
-        map: AttachmentPerceptionMap {
-            by_attachment_id,
-            same_resource_as,
-        },
-    })
+    fn build_perception_result(self) -> PerceptionResult {
+        PerceptionResult {
+            items: self.perceptions,
+            map: AttachmentPerceptionMap {
+                by_attachment_id: self.by_attachment_id,
+                same_resource_as: self.same_resource_as,
+            },
+        }
+    }
+}
+
+/// 查询附件感知数据（按文件 ID 和 URL）
+pub async fn load_perceptions(
+    services: &DbServices,
+    parsed: &[ParsedContent],
+) -> Result<PerceptionResult> {
+    let mut loader = PerceptionLoader::new(services);
+
+    let attachment_parts: Vec<&Attachment> =
+        parsed.iter().flat_map(|p| p.attachments.iter()).collect();
+    if !attachment_parts.is_empty() {
+        loader.load_file_attachments(&attachment_parts).await?;
+    }
+    loader.load_urls(parsed).await?;
+
+    Ok(loader.build_perception_result())
 }
 
 /// 仅构建附件映射（不返回感知列表）
@@ -153,8 +192,15 @@ pub async fn build_attachment_maps(
         });
     }
     let parsed: Vec<ParsedContent> = messages.iter().map(|m| parser.parse(&m.content)).collect();
-    let result = load_perceptions(services, &parsed).await?;
-    Ok(result.map)
+    let mut loader = PerceptionLoader::new(services);
+
+    let attachment_parts: Vec<&Attachment> =
+        parsed.iter().flat_map(|p| p.attachments.iter()).collect();
+    if !attachment_parts.is_empty() {
+        loader.load_file_attachments(&attachment_parts).await?;
+    }
+
+    Ok(loader.build_attachment_map())
 }
 
 /// 向量搜索相关内容（记忆+话题）

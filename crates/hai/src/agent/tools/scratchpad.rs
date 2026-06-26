@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{
     agent::{
-        runtime::ctx::RoundCtx,
+        runtime::ctx::RoundContext,
         tools::util::{MapToolErr, tool_ok},
     },
     domain::{service::DbServices, vo::ChatId},
@@ -48,8 +48,8 @@ impl ToolRuntime for UpdateScratchpad {
     }
 }
 
-pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(UpdateScratchpad {
-        services: ctx.services(),
+        services: ctx.db.clone(),
     })]
 }

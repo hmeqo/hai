@@ -1,9 +1,6 @@
-use super::PersonalityMgr;
 use crate::config::schema::PersonalityConfig;
 
-pub fn personality_context(personality: &PersonalityMgr) -> String {
-    let p = personality.config();
-
+pub fn personality_context(p: &PersonalityConfig) -> String {
     let mut parts = Vec::new();
 
     parts.push(format!(
@@ -12,7 +9,7 @@ pub fn personality_context(personality: &PersonalityMgr) -> String {
         tone = p.tone,
     ));
 
-    parts.push(build_character_sketch(&p));
+    parts.push(build_character_sketch(p));
 
     if !p.interests.is_empty() {
         parts.push(format!(

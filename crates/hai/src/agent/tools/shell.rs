@@ -5,16 +5,13 @@ use autoagents::{
     core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
 };
 use autoagents_derive::ToolInput;
-use kameo::actor::ActorRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::{
     agent::{
-        runtime::{
-            actor::{ChatActor, ExecuteShell},
-            ctx::RoundCtx,
-        },
+        runtime::{ctx::RoundContext, shell::ShellRuntime},
         tools::util::tool_data,
     },
     agentcore::skills::SkillManager,
@@ -36,7 +33,7 @@ struct ShellArgs {
 pub struct RunShell {
     pub description: String,
     pub skill_manager: SkillManager,
-    pub session: ActorRef<ChatActor>,
+    pub shell: Arc<Mutex<ShellRuntime>>,
 }
 
 impl ToolT for RunShell {
@@ -65,17 +62,16 @@ impl ToolRuntime for RunShell {
             .map(|s| s.base_dir.clone());
 
         let output = self
-            .session
-            .ask(ExecuteShell {
-                command: typed.command,
-                workdir: typed.workdir,
-                skill_dir,
-                timeout_secs: typed.timeout_secs,
-            })
+            .shell
+            .lock()
             .await
-            .map_err(|e| {
-                ToolCallError::RuntimeError(format!("Shell execution failed: {e}").into())
-            })?;
+            .execute(
+                &typed.command,
+                typed.workdir,
+                skill_dir.as_deref(),
+                typed.timeout_secs,
+            )
+            .await?;
 
         tool_data(json!({
             "stdout": output.stdout,
@@ -85,12 +81,11 @@ impl ToolRuntime for RunShell {
     }
 }
 
-pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
-    let sandbox = &ctx.app.cfg.sandbox;
-    let description = if sandbox.enabled {
+pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+    let description = if ctx.sandbox.enabled {
         format!(
             "执行 shell 命令。运行在容器中（镜像: {}）。可通过 skill 参数自动挂载 skill 目录。",
-            sandbox.image
+            ctx.sandbox.image
         )
     } else {
         "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into()
@@ -98,6 +93,6 @@ pub fn tools(ctx: &RoundCtx) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(RunShell {
         description,
         skill_manager: ctx.skill_manager.clone(),
-        session: ctx.session.clone(),
+        shell: ctx.shell.clone(),
     })]
 }
