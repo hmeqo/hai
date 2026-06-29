@@ -1,33 +1,40 @@
-use sqlx::PgPool;
-use uuid::Uuid;
-
 use crate::{
     domain::{
-        entity::Identity,
-        repo::{AccountRepo, IdentityRepo},
+        model::{Account, Identity},
+        vo::{AccountId, IdentityId},
     },
     error::Result,
 };
 
-/// 身份管理服务
 #[derive(Debug)]
 pub struct IdentityService {
-    pool: PgPool,
+    db: toasty::Db,
 }
 
 impl IdentityService {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: toasty::Db) -> Self {
+        Self { db }
     }
 
-    /// 创建新身份
     pub async fn create_identity(&self, name: Option<&str>) -> Result<Identity> {
-        IdentityRepo::create(&self.pool, name, None).await
+        let now = jiff::Timestamp::now();
+        toasty::create!(Identity {
+            id: uuid::Uuid::now_v7(),
+            name: name.map(String::from),
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut self.db.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// 将账号绑定到身份
-    pub async fn bind_account(&self, identity_id: Uuid, account_id: i64) -> Result<()> {
-        AccountRepo::bind_identity(&self.pool, account_id, identity_id).await?;
+    pub async fn bind_account(&self, identity_id: IdentityId, account_id: AccountId) -> Result<()> {
+        Account::filter_by_id(account_id.0)
+            .update()
+            .identity_id(Some(identity_id.0))
+            .exec(&mut self.db.clone())
+            .await?;
         Ok(())
     }
 }

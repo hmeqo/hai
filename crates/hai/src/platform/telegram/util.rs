@@ -5,9 +5,25 @@ use teloxide::{
 use uuid::Uuid;
 
 use crate::domain::{
-    entity::ChatType,
+    model::ChatType,
     vo::{MessageMeta, PlatformMessageMeta, TelegramContentPart, TelegramMessageMeta},
 };
+
+/// MarkdownV2 保留字符中无格式化意义的字符。
+/// 这些字符在文本中自然出现时需要转义，但不应破坏 `*`, `_`, `` ` `` 等 Markdown 语法。
+const MD_V2_ESCAPE_CHARS: &[char] = &['.', '!', '+', '-', '=', '>', '#', '|', '{', '}', '(', ')'];
+
+/// 转义 MarkdownV2 保留字符中无格式化意义的符号，使 AI 生成文本可安全使用 MarkdownV2 发送。
+pub(super) fn escape_md_v2(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if MD_V2_ESCAPE_CHARS.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
 
 /// 从 Telegram Message 中提取 ChatType
 pub fn msg_chat_type(msg: &Message) -> ChatType {

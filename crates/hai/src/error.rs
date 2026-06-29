@@ -268,8 +268,7 @@ register_errors! {
     std::net::AddrParseError        => ErrorKind::InvalidParameter, "Invalid address format";
     teloxide::RequestError          => ErrorKind::Internal;
     reqwest::Error                  => ErrorKind::BadRequest, "HTTP request failed";
-    sqlx::Error                     => ErrorKind::Internal;
-    sqlx::migrate::MigrateError     => ErrorKind::Internal;
+    toasty::Error                   => ErrorKind::Internal;
     std::num::ParseIntError         => ErrorKind::DataParse, "Failed to parse integer";
     std::time::SystemTimeError      => ErrorKind::Internal;
     jiff::Error                     => ErrorKind::Internal;

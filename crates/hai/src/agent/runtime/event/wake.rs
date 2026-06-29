@@ -57,7 +57,7 @@ impl WakeReason {
         match self {
             Self::Direct => "有人发来私信。".to_string(),
             Self::Mention => "有人在群里提到你。".to_string(),
-            Self::Observe => "群里有新消息。默认观察，不需要回复。".to_string(),
+            Self::Observe => "群里有新消息。无主要任务，观察。".to_string(),
             Self::Scheduled(payload) => {
                 if let Some(id) = payload.task_id {
                     format!("定时任务 [TaskID:{}]：{}。", id, payload.description)

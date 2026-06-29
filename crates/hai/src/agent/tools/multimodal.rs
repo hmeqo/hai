@@ -19,7 +19,7 @@ use crate::agent::{
 pub struct AnalyzeAttachmentArgs {
     #[input(description = "附件 ID")]
     pub attachment_id: String,
-    #[input(description = "可自定义识别要求，留空默认")]
+    #[input(description = "聚焦分析方向，留空默认全面分析")]
     pub prompt: Option<String>,
 }
 

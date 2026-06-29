@@ -3,16 +3,15 @@ use std::collections::HashSet;
 use crate::{
     agent::context::{RenderContext, fmt::format_time_dyn2},
     agentcore::render::elements::Node,
-    domain::entity::{Message, MessageStatus},
+    domain::model::{Message, MessageStatus},
 };
 
 pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
-    let sent_at = format_time_dyn2(msg.sent_at());
+    let sent_at = format_time_dyn2(msg.sent_at);
     let is_replied = msg.status() == MessageStatus::Replied;
 
     let mut b = Node::tag("message")
         .attr("id", msg.id)
-        .attr("role", &msg.role)
         .attr("sent_at", sent_at.as_str());
 
     if is_replied {
@@ -23,15 +22,14 @@ pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
         && let Some(replied_msg) = ctx.get_message(reply_id)
     {
         let replied_sender = ctx.sender_name(replied_msg);
-        let replied_sent_at = format_time_dyn2(replied_msg.sent_at());
+        let replied_sent_at = format_time_dyn2(replied_msg.sent_at);
         let replied_is_replied = replied_msg.status() == MessageStatus::Replied;
 
         let mut elements = (ctx.content_renderer)(&replied_msg.content);
         truncate_text_nodes(&mut elements, 50);
 
-        let mut reference = Node::tag("reference")
+        let mut reference = Node::tag("reply_to")
             .attr("id", reply_id)
-            .attr("role", &replied_msg.role)
             .attr("sender", replied_sender.as_str())
             .attr("sent_at", replied_sent_at.as_str());
 

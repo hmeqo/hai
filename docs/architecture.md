@@ -5,154 +5,137 @@ graph TB
   TG["Telegram API"]
 
   subgraph Platform["Platform Layer"]
-    DP["TelegramDispather<br/>事件入口 + 聊天/用户解析"]
-    BM["spawn_bots()<br/>→ BotHandle + ActorRef<TelegramBotActor>"]
+    DP["TelegramDispatcher<br/>事件入口 + 聊天/用户解析"]
+    TH["TelegramPlatformHandler<br/>send_message / send_voice / analyze_attachment"]
   end
 
-  subgraph Agent["Agent Layer"]
-    SM["SessionManager<br/>get_or_create(ChatId)"]
-    CS["ChatSession (kameo actor)<br/>EventScheduler + 事件驱动"]
-    EN["AgentEngine<br/>LLM 管理 + Agent 组装"]
-    RT["RoundTask<br/>engine.run() → tokio::spawn"]
+  subgraph Session["Session Layer"]
+    SM["ChatSessionManager<br/>get_or_create(ChatId)"]
+    SL["SessionLoop<br/>EventScheduler + 状态机 Idle/Running"]
+    RN["spawn_round_task()<br/>tokio::spawn + oneshot"]
+    EN["AgentEngine<br/>LLM call"]
     CTX["ContextBuilder<br/>prompt 渲染"]
-    AG["MainAgentOutput { notes }<br/>结构化输出"]
-    SEND["send_message / send_voice<br/>tool → BotHandle → PlatformHandler"]
+    AG["MainAgentOutput<br/>结构化输出"]
   end
 
-  subgraph App["AppContext (DI)"]
+  subgraph App["AppContext"]
     CFG["Config"]
-    MCP["MCP Tools"]
-    DB["DbServices"]
-  end
-
-  subgraph Actors["kameo actors"]
-    BA["TelegramBotActor<br/>消息发送 API + 消息入库"]
+    SRV["DbServices"]
+    MC["MCP Tools / Skills"]
   end
 
   PG[("PostgreSQL")]
 
   TG --> DP
-  DP --> SM --> CS
-  CS --> EN --> RT
-  RT --> CTX --> AG
-  AG --> SEND
-  SEND -.-> BA
+  DP --> SM --> SL
+  SL --> RN --> EN
+  EN --> CTX --> AG
+  AG -.-> TH
 
-  CS -- tell(RoundResult) --> CS
+  SL -- push(events) + poll() --> SL
 
-  DP -- "/status → ask(GetStatus)" --> SM
+  DP -- status --> SM
 
-  App -.-> DP
-  App -.-> EN
-  App -.-> CTX
+  CTX --> SRV
+  TH --> SRV
+  SRV --> PG
 
-  CTX --> DB
-  SEND --> DB
-  DB --> PG
-  BA --> DB
-
-  classDef infra fill:#f5f5f5
   classDef platform fill:#e3f2fd
-  classDef agent fill:#e8f5e9
+  classDef session fill:#e8f5e9
   classDef app fill:#fff3e0
-  classDef store fill:#fce4ec
 
-  class DP,BM platform
-  class SM,CS,EN,RT,CTX,AG,SEND agent
-  class CFG,MCP,DB app
-  class PG store
-  class BA infra
+  class DP,TH platform
+  class SM,SL,RN,EN,CTX,AG session
+  class CFG,SRV,MC app
 ```
 
 ## 核心抽象
 
 | 类型 | 职责 | 通信方式 |
 |------|------|---------|
-| `ChatSession` | 单 chat 事件调度 + round 生命周期 | kameo actor: `tell(WakeEvent)`, `ask(GetStatus)`, `tell(RoundResult)` |
-| `TelegramBotActor` | 消息发送 + 入库 | kameo actor: `ask(SendMessageReq)`, `tell(TypingMsg)` |
-| `AgentEngine` | LLM 管理 + Agent 组装 + `SessionManager` | `Arc` 共享 |
-| `BotHandle` | 包装 `Arc<dyn PlatformHandler>`，工具通过它调平台 | 直接 `async fn` |
-| `SessionManager` | 集中管理 ChatSession，`get_or_create(ChatId, spawn_fn)` | 内部 `RwLock<HashMap<ChatId, ActorRef>>` |
-| `RoundTask` | 一轮 LLM 执行，完成后 `tell(RoundResult)` | `tokio::spawn` |
-| `EventScheduler` | batch + heat + window | ChatSession 内部状态机 |
-| `MainAgentOutput` | 结构化输出 `{ notes: Option<String> }` | autoagents `#[derive(AgentOutput)]` |
+| `ChatSessionManager` | `get_or_create(ChatId)` → `ChatSessionHandle` | tokio `RwLock<HashMap>` |
+| `ChatSessionHandle` | wake/status 操作的 proxy | tokio `mpsc::UnboundedSender` × 2 |
+| `SessionLoop` | 单 chat 事件调度 + round 状态机 | `select!` 轮询 wake/status/result |
+| `RunningRound` | 一轮 in-flight 的 `JoinHandle` + `oneshot::Receiver` | `poll()` → `RunningOutcome` |
+| `EventScheduler` | batch + heat + window + debounce 0.5s | `push()` + `poll()` + `next_deadline()` |
+| `AgentEngine` | LLM 调用 + Agent 组装 | `Arc` 共享 |
+| `BotHandle` | 包装 `Arc<dyn PlatformHandler>` | 直接 `async fn` |
+| `RoundContext` | 一轮 task 的完整执行上下文（prompt + tools + db） | 纯数据 |
 
 ## 信号流
 
 ```
-Telegram → TelegramDispather
-  → engine.sessions.get_or_create(chat_id)
-  → ChatSession.tell(WakeEvent)
-  → scheduler.push() + try_consume()
-  → RoundTask::spawn()
-  → engine.run() → MainAgentOutput { notes }
-  → tell(RoundResult) → ChatSession (下轮 context 用)
+Telegram → TelegramDispatcher
+  → registry.get_or_create(chat_id)
+  → ChatSessionHandle.wake(WakeEvent)
+  → scheduler.push() + poll()
+  → dispatch_with()
+    → assemble_round()  (build_round_context + gather_messages + build_prompt)
+    → spawn_round_task() → engine.run() → Round
+  → on_round_complete() → rounds.push + schedule.refresh
 ```
 
 ```
 agent 工具调用:
   send_message tool → BotHandle.send_message()
-  → TelegramPlatformHandler → bot_actor.ask(SendMessageReq)
-  → resolve_platform_chat_id() → teloxide bot.send_message()
+  → TelegramPlatformHandler → resolve_platform_chat_id()
+  → teloxide bot.send_message()
 ```
 
 ```
 内部命令（/help /status /start）:
   dispatcher → self.bot.send_message()
-  不经 actor，不经过 agent 系统
+  不经 agent 系统
 ```
 
-## 调度策略
+## ChatId 安全边界
 
-`scheduler.rs` 中的 `impl WakeReason` 块：
+`domain/vo/id.rs` 定义具体 newtype（`ChatId`, `MessageId` 等），模型字段用裸 `i64`/`Uuid` 保持 ORM 兼容。
 
-| 策略 | 条件 | 效果 |
-|------|------|------|
-| `is_addressed` | `Direct` / `Mention` | 刷新注意力窗口 + 热量重置 |
-| `is_rapid` | `Scheduled` / `Command` | 绕过 batch deadline |
-| `is_mergeable` | `Observe` / `Mention` / `Direct` | 同类事件可合并 |
-
-## ChatId 边界
-
-`domain/vo/chat_id.rs` 定义 `ChatId(pub i64)`，和平台侧 chat ID 类型不同：
-
-- agent 层内部传递全用 `ChatId`
-- DB 层（repo/service）保持 `i64`，边界处 `.0` 取出
-- dispatcher 入口处 `msg.chat.id.0` 不能直接传（编译不通过），强迫显式转换
+- 服务层签名用 `ChatId` → 编译期防止和 `i64` 混淆
+- 边界处 `.0` 解开传递给 toasty
+- dispatcher 入口处 `msg.chat.id`（teloxide 类型）不可隐式转换
 
 ## Context 渲染顺序
 
 首轮（`build_first_round_prompt`）：
 ```
-<situation> → <environment> → <chat> → <accounts>
-→ <related_memories> → <related_topics> → <current_topics>
-→ <scratchpad> → <perceptions> → <conversation>
+<situation> → <chat> → <accounts> → <related_memories>
+→ <related_topics> → <current_topics> → <scratchpad>
+→ <perceptions> → <conversation>
 ```
 
 后续轮次（`build_next_round_prompt`）：
 ```
 <update>
-  <last-round> → <toolcalls> → <internal><notes>
+  <last-round> → <toolcalls> → <notes>
   <current_time> → <situation> → <messages>
 ```
 
-## System Prompt 叠加
+## 调度策略
 
-`SYSTEM_PROMPT`（自包含，含工具手册）→ `personality_context()` → config `system_prompt` → `private_prompt`/`group_prompt` → skills
+`scheduler.rs`：
+
+| 方法 | 触发条件 | 效果 |
+|------|----------|------|
+| `is_addressed` | Direct / Mention | 刷新窗口 + 热量 |
+| `is_rapid` | Scheduled / Command | 绕过 batch deadline |
+| `is_mergeable` | Observe / Mention / Direct | 同类事件合并 |
+| debounce | 最后一次事件后 500ms | 到达 deadline 才 dispatch |
+| guard window | 3s | 新 addressed 事件打断当前 round |
 
 ## Bot 配置
 
 ```toml
-[bot.main]
-type = "telegram"
+[bot.telegram]
 bot-token = "xxx"
 allowed-chat-ids = [123456]
-
-[bot.dev]
-bot-token = "yyy"        # 省略 type，从 key 名推断
-allowed-chat-ids = []
 ```
 
-## 层次依赖
+省略 `type` 从 key 名推断。Config 覆盖链：`.hai/config.toml` → `HAI_` 环境变量。
 
-`entity → vo → repo → service → agent → app`，`infra` 不依赖上层。`platform` 依赖 `app`，不依赖 `agent`。
+## Provider
+
+- `api_key: Option<String>` — Ollama 等本地服务可省略
+- 已知 backend 需显式注册 `[providers.*]`
+- Requesty 路由：`openai/gpt-4o`、`vertex/gemini-3.1-flash-lite`

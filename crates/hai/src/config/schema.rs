@@ -161,7 +161,7 @@ impl Default for ContextConfig {
             private_prompt: String::new(),
             message_history_limit: 10,
             history_cap: 100,
-            sliding_window_size: 10,
+            sliding_window_size: 50,
             related_memory_limit: 5,
             related_topic_limit: 3,
             topic_idle_hours: 3,
@@ -410,8 +410,8 @@ pub struct ProviderConfig {
     /// provider 类型，如 openai, anthropic, requesty 等
     /// 如果不提供，则默认使用配置中的 key 名称
     pub r#type: Option<String>,
-    /// API key
-    pub api_key: String,
+    /// API key（Ollama 等本地服务可省略）
+    pub api_key: Option<String>,
     /// 可选的 base_url 覆盖值
     pub base_url: Option<String>,
 }

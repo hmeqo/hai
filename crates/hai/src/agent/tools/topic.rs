@@ -24,8 +24,6 @@ use crate::{
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct CreateTopicArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "标题")]
     pub title: String,
     #[input(description = "初始摘要")]
@@ -41,6 +39,7 @@ pub struct CreateTopicArgs {
     input = CreateTopicArgs,
 )]
 pub struct CreateTopic {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -49,14 +48,20 @@ impl ToolRuntime for CreateTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: CreateTopicArgs = serde_json::from_value(args)?;
 
+        let msg_ids: Vec<crate::domain::vo::MessageId> = typed_args
+            .message_ids
+            .iter()
+            .flat_map(|v| v.iter())
+            .map(|id| crate::domain::vo::MessageId(*id))
+            .collect();
         let topic = self
             .services
             .topic
             .create_topic(
-                ChatId::from(typed_args.chat_id),
+                self.chat_id,
                 &typed_args.title,
                 &typed_args.summary,
-                typed_args.message_ids.as_deref().unwrap_or(&[]),
+                &msg_ids,
                 None,
             )
             .await
@@ -68,8 +73,6 @@ impl ToolRuntime for CreateTopic {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct AssignTopicArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "话题 ID")]
     pub topic_id: Uuid,
     #[serde(deserialize_with = "deserialize_lenient_i64_vec")]
@@ -91,9 +94,14 @@ impl ToolRuntime for AssignTopic {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: AssignTopicArgs = serde_json::from_value(args)?;
 
+        let msg_ids: Vec<crate::domain::vo::MessageId> = typed_args
+            .message_ids
+            .iter()
+            .map(|id| crate::domain::vo::MessageId(*id))
+            .collect();
         self.services
             .topic
-            .assign_topic(&typed_args.message_ids, typed_args.topic_id)
+            .assign_topic(&msg_ids, typed_args.topic_id)
             .await
             .into_tool_err()?;
 
@@ -103,8 +111,6 @@ impl ToolRuntime for AssignTopic {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct ListTopicsArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "状态: active/closed")]
     pub status: Option<String>,
     #[input(description = "数量限制")]
@@ -119,6 +125,7 @@ pub struct ListTopicsArgs {
     input = ListTopicsArgs,
 )]
 pub struct ListTopics {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -132,12 +139,7 @@ impl ToolRuntime for ListTopics {
         let topics = self
             .services
             .topic
-            .list_topics(
-                ChatId::from(typed_args.chat_id),
-                typed_args.status.as_deref(),
-                limit,
-                offset,
-            )
+            .list_topics(self.chat_id, typed_args.status.as_deref(), limit, offset)
             .await
             .into_tool_err()?;
 
@@ -151,8 +153,6 @@ impl ToolRuntime for ListTopics {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct SearchTopicsArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "搜索关键词")]
     pub query: String,
     #[input(description = "数量限制")]
@@ -165,6 +165,7 @@ pub struct SearchTopicsArgs {
     input = SearchTopicsArgs,
 )]
 pub struct SearchTopics {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -177,7 +178,7 @@ impl ToolRuntime for SearchTopics {
         let topics = self
             .services
             .topic
-            .search_topics_by_query(ChatId::from(typed_args.chat_id), &typed_args.query, limit)
+            .search_topics_by_query(self.chat_id, &typed_args.query, limit)
             .await
             .into_tool_err()?;
         let topic_entities: Vec<_> = topics.into_iter().map(|t| t.topic).collect();
@@ -249,7 +250,7 @@ impl ToolRuntime for PushTopicSummary {
 
         self.services
             .topic
-            .push_summary(typed_args.topic_id, &typed_args.summary)
+            .append_summary(typed_args.topic_id, &typed_args.summary)
             .await
             .into_tool_err()?;
 
@@ -328,15 +329,18 @@ impl ToolRuntime for DeleteTopic {
 pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(CreateTopic {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(AssignTopic {
             services: ctx.db.clone(),
         }),
         Arc::new(ListTopics {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(SearchTopics {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(CorrectTopic {

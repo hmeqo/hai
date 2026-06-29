@@ -9,7 +9,10 @@ use teloxide::{
 };
 use uuid::Uuid;
 
-use super::{TelegramService, media::TelegramMediaAnalyzer, parser::TelegramContentParser};
+use super::{
+    TelegramService, media::TelegramMediaAnalyzer, parser::TelegramContentParser,
+    util::escape_md_v2,
+};
 use crate::{
     agent::link::{ContentParser, PlatformHandler, SendMessageReq, SendVoiceReq, SentMessageMeta},
     app::AppContext,
@@ -63,7 +66,14 @@ impl TelegramPlatformHandler {
         let Some(msg_id) = platform_reply_to_id else {
             return Ok(None);
         };
-        let Some(msg) = self.ctx.db.srv.message.get_message_by_id(msg_id).await? else {
+        let Some(msg) = self
+            .ctx
+            .db
+            .srv
+            .message
+            .get_message_by_id(crate::domain::vo::MessageId(msg_id))
+            .await?
+        else {
             return Ok(None);
         };
         let Some(id) = msg
@@ -95,15 +105,41 @@ impl TelegramPlatformHandler {
                 chat_id,
                 account_id: Some(self.account_id),
                 content,
-                model: &model,
+                model: model.to_string(),
                 tokens: 0,
                 reply_to_id,
-                external_id: Some(external_id),
+                external_id: Some(external_id.to_string()),
                 sent_at: Some(jiff::Timestamp::from_second(sent_at_ts)?.into()),
             })
             .await?;
 
         Ok(())
+    }
+
+    /// 先尝试 MarkdownV2（已转义），失败降级纯文本
+    async fn send_with_markdown_fallback(
+        &self,
+        content: &str,
+        cid: teloxide::types::ChatId,
+        reply_params: &Option<ReplyParameters>,
+    ) -> Result<teloxide::types::Message> {
+        let escaped = escape_md_v2(content);
+        let send_md = self.bot.send_message(cid, &escaped);
+        let send_md = match reply_params {
+            Some(p) => send_md.reply_parameters(p.clone()),
+            None => send_md,
+        };
+        match send_md.parse_mode(ParseMode::MarkdownV2).await {
+            Ok(msg) => Ok(msg),
+            Err(_) => {
+                let send_plain = self.bot.send_message(cid, content);
+                let send_plain = match reply_params {
+                    Some(p) => send_plain.reply_parameters(p.clone()),
+                    None => send_plain,
+                };
+                send_plain.await.map_err(Into::into)
+            }
+        }
     }
 }
 
@@ -116,36 +152,27 @@ impl fmt::Debug for TelegramPlatformHandler {
 #[async_trait::async_trait]
 impl PlatformHandler for TelegramPlatformHandler {
     async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta> {
-        let platform_chat_id = self.resolve_platform_chat_id(req.chat_id).await?;
+        let cid = teloxide::types::ChatId(self.resolve_platform_chat_id(req.chat_id).await?);
         let reply_params = self
             .resolve_reply_parameters(req.platform_reply_to_id)
             .await?;
 
-        let mut tg_req = self.bot.send_message(
-            teloxide::types::ChatId(platform_chat_id),
-            req.content.clone(),
-        );
-        if let Some(params) = reply_params {
-            tg_req = tg_req.reply_parameters(params);
-        }
-        let sent_msg = match tg_req.clone().parse_mode(ParseMode::MarkdownV2).await {
-            Ok(msg) => msg,
-            Err(err) if err.to_string().contains("Can't parse entities") => tg_req.await?,
-            Err(err) => return Err(err.into()),
-        };
+        let sent_msg = self
+            .send_with_markdown_fallback(&req.content, cid, &reply_params)
+            .await?;
 
         let content = serde_json::to_value(vec![TelegramContentPart::Text { text: req.content }])?;
         self.persist_message(
             req.chat_id,
             req.platform_reply_to_id,
             content,
-            &sent_msg.id.0.to_string(),
+            &sent_msg.id.to_string(),
             sent_msg.date.timestamp(),
         )
         .await?;
 
         Ok(SentMessageMeta {
-            external_id: sent_msg.id.0.to_string(),
+            external_id: sent_msg.id.to_string(),
         })
     }
 
@@ -177,13 +204,13 @@ impl PlatformHandler for TelegramPlatformHandler {
             req.chat_id,
             req.platform_reply_to_id,
             content,
-            &sent_msg.id.0.to_string(),
+            &sent_msg.id.to_string(),
             sent_msg.date.timestamp(),
         )
         .await?;
 
         Ok(SentMessageMeta {
-            external_id: sent_msg.id.0.to_string(),
+            external_id: sent_msg.id.to_string(),
         })
     }
 

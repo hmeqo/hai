@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     agent::context::render_context::ContentRenderer,
-    domain::{entity::Perception, service::memory::RelatedMemory, vo::TopicSearchResult},
+    domain::{model::Perception, service::memory::RelatedMemory, vo::TopicSearchResult},
 };
 
 /// 附件感知查找表

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{
-    entity::{Memory, MemoryType, Topic},
+    model::{Memory, MemoryType, Topic},
     vo::ChatId,
 };
 

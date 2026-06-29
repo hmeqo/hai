@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use arc_swap::{ArcSwap, Guard};
 use derive_more::Deref;
-use sqlx::PgPool;
 
 use crate::{
     agent::node::{ModelService, MultimodalService},
@@ -31,8 +30,8 @@ impl AppContext {
         let providers = ProviderManager::new(&cfg)?;
         let multimodal = MultimodalService::from_config(&cfg, &providers);
 
-        let pool = db::init_pool(&cfg.database).await?;
-        let db_srv = DbServices::new(pool.clone(), multimodal.clone());
+        let db_handle = db::init_db(&cfg.database).await?;
+        let db_srv = DbServices::new(db_handle.clone(), multimodal.clone());
 
         let provider = ProviderContext {
             provider: providers,
@@ -42,7 +41,10 @@ impl AppContext {
         let agent = AgentContext {
             current_model: ArcSwap::from_pointee(cfg.agent.model.clone()),
         };
-        let db = DbContext { pool, srv: db_srv };
+        let db = DbContext {
+            pool: db_handle,
+            srv: db_srv,
+        };
         Ok(Self {
             inner: Arc::new(AppContextInner {
                 cfg_mgr,
@@ -56,7 +58,7 @@ impl AppContext {
 }
 
 pub struct DbContext {
-    pub pool: PgPool,
+    pub pool: toasty::Db,
     pub srv: DbServices,
 }
 

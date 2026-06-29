@@ -5,7 +5,7 @@ use crate::{
     agent::node::MediaInput,
     app::AppContext,
     domain::{
-        entity::Platform,
+        model::Platform,
         vo::{AttachmentParser, Source, TelegramContentPart},
     },
     error::{ErrorKind, OptionAppExt, Result},

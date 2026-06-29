@@ -74,6 +74,8 @@ pub fn spawn_chat_session(
         status_tx,
     };
 
+    tracing::info!(%chat_id, "Chat session started");
+
     let session = tokio::spawn(async move {
         super::SessionLoop::new(engine, chat_id, bot, shell, base_heat, window_secs)
             .await

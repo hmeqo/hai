@@ -24,7 +24,10 @@ struct EventBatch {
 
 impl EventBatch {
     fn new() -> Self {
-        Self { events: Vec::new(), has_rapid: false }
+        Self {
+            events: Vec::new(),
+            has_rapid: false,
+        }
     }
 
     fn len(&self) -> usize {

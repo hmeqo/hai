@@ -33,8 +33,6 @@ pub enum RecordMemoryCategory {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct RecordMemoryArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "分类", choice = ["user_fact", "knowledge", "note", "chat_rule"])]
     pub category: RecordMemoryCategory,
     #[input(description = "内容")]
@@ -51,6 +49,7 @@ pub struct RecordMemoryArgs {
     input = RecordMemoryArgs,
 )]
 pub struct RecordMemory {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -58,31 +57,30 @@ pub struct RecordMemory {
 impl ToolRuntime for RecordMemory {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: RecordMemoryArgs = serde_json::from_value(args)?;
-        let RecordMemoryArgs {
-            chat_id,
-            content,
-            account_id,
-            references,
-            ..
-        } = typed_args;
-        let chat_id = ChatId::from(chat_id);
         let input = match typed_args.category {
             RecordMemoryCategory::UserFact => {
-                let account_id =
-                    account_id.ok_or_else(|| tool_err("account_id is required for 'user_fact'"))?;
+                let account_id = typed_args
+                    .account_id
+                    .ok_or_else(|| tool_err("account_id is required for 'user_fact'"))?;
                 MemoryInput::CreateUserFact {
                     account_id,
-                    chat_id,
-                    content,
+                    chat_id: self.chat_id,
+                    content: typed_args.content,
                 }
             }
-            RecordMemoryCategory::Knowledge => MemoryInput::CreateKnowledge { chat_id, content },
-            RecordMemoryCategory::Note => MemoryInput::CreateAgentNote {
-                chat_id,
-                references,
-                content,
+            RecordMemoryCategory::Knowledge => MemoryInput::CreateKnowledge {
+                chat_id: self.chat_id,
+                content: typed_args.content,
             },
-            RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule { chat_id, content },
+            RecordMemoryCategory::Note => MemoryInput::CreateAgentNote {
+                chat_id: self.chat_id,
+                references: typed_args.references,
+                content: typed_args.content,
+            },
+            RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
+                chat_id: self.chat_id,
+                content: typed_args.content,
+            },
         };
 
         self.services
@@ -97,8 +95,6 @@ impl ToolRuntime for RecordMemory {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct CorrectMemoryArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "记忆 ID")]
     pub id: Uuid,
     #[input(description = "分类", choice = ["user_fact", "knowledge", "note", "chat_rule"])]
@@ -115,6 +111,7 @@ pub struct CorrectMemoryArgs {
     input = CorrectMemoryArgs,
 )]
 pub struct CorrectMemory {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -122,32 +119,27 @@ pub struct CorrectMemory {
 impl ToolRuntime for CorrectMemory {
     async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
         let typed_args: CorrectMemoryArgs = serde_json::from_value(args)?;
-        let CorrectMemoryArgs {
-            chat_id,
-            id,
-            content,
-            importance,
-            ..
-        } = typed_args;
         let input = match typed_args.category {
             RecordMemoryCategory::UserFact => MemoryInput::UpdateUserFact {
-                id,
-                content,
-                importance,
+                id: typed_args.id,
+                content: typed_args.content,
+                importance: typed_args.importance,
             },
             RecordMemoryCategory::Knowledge => MemoryInput::UpdateKnowledge {
-                id,
-                content,
-                importance,
+                id: typed_args.id,
+                content: typed_args.content,
+                importance: typed_args.importance,
             },
             RecordMemoryCategory::Note => MemoryInput::UpdateAgentNote {
-                id,
-                content,
-                importance,
+                id: typed_args.id,
+                content: typed_args.content,
+                importance: typed_args.importance,
             },
             RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
-                chat_id: ChatId::from(chat_id),
-                content: content.ok_or_else(|| tool_err("content is required for 'chat_rule'"))?,
+                chat_id: self.chat_id,
+                content: typed_args
+                    .content
+                    .ok_or_else(|| tool_err("content is required for 'chat_rule'"))?,
             },
         };
 
@@ -163,8 +155,6 @@ impl ToolRuntime for CorrectMemory {
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct SearchMemoryArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "搜索词")]
     pub query: String,
     #[input(description = "数量限制（默认 10）")]
@@ -177,6 +167,7 @@ pub struct SearchMemoryArgs {
     input = SearchMemoryArgs,
 )]
 pub struct SearchMemory {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -189,7 +180,7 @@ impl ToolRuntime for SearchMemory {
         let memories = self
             .services
             .memory
-            .search_knowledge(ChatId::from(typed_args.chat_id), &typed_args.query, limit)
+            .search_knowledge(self.chat_id, &typed_args.query, limit)
             .await
             .into_tool_err()?;
 
@@ -219,7 +210,7 @@ impl ToolRuntime for DeleteMemory {
         let typed_args: DeleteMemoryArgs = serde_json::from_value(args)?;
         self.services
             .memory
-            .delete(typed_args.id)
+            .delete(crate::domain::vo::MemoryId(typed_args.id))
             .await
             .into_tool_err()?;
 
@@ -230,12 +221,15 @@ impl ToolRuntime for DeleteMemory {
 pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![
         Arc::new(RecordMemory {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(CorrectMemory {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(SearchMemory {
+            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(DeleteMemory {

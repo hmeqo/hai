@@ -13,7 +13,7 @@ use super::{
 use crate::{
     agent::{context::RenderContext, event::WakeEvent},
     agentcore::render::{Format, Node, render_pretty},
-    domain::{entity::MessageStatus, vo::Source},
+    domain::{model::MessageStatus, vo::Source},
 };
 
 /// 将 CommonContext 渲染为最终的 XML prompt 字符串
@@ -151,7 +151,7 @@ impl<'a> ContextBuilder<'a> {
             .ctx
             .topics
             .iter()
-            .partition(|t| t.last_active_at() >= cutoff);
+            .partition(|t| t.last_active_at >= cutoff);
 
         if active.is_empty() && stale.is_empty() {
             return self;

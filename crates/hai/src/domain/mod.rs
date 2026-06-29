@@ -1,5 +1,4 @@
 pub mod db;
-pub mod entity;
-pub mod repo;
+pub mod model;
 pub mod service;
 pub mod vo;

@@ -40,7 +40,7 @@ impl ToolRuntime for GetAccountInfo {
         let account = self
             .services
             .platform
-            .get_account_by_id(typed_args.account_id)
+            .get_account_by_id(crate::domain::vo::AccountId(typed_args.account_id))
             .await
             .into_tool_err()?
             .ok_or_else(|| tool_err("账号不存在"))?;

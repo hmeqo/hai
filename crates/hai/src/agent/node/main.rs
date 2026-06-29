@@ -19,12 +19,14 @@ pub struct MainAgentOutput {
     #[output()]
     #[serde(skip)]
     pub tool_calls: Vec<ToolCallResult>,
+    pub response: String,
 }
 
 impl From<ReActAgentOutput> for MainAgentOutput {
     fn from(output: ReActAgentOutput) -> Self {
         Self {
             tool_calls: output.tool_calls,
+            response: output.response,
         }
     }
 }
@@ -69,11 +71,26 @@ impl AgentHooks for MainAgent {
     }
 
     async fn on_tool_result(&self, _tool_call: &ToolCall, result: &ToolCallResult, _ctx: &Context) {
+        let result_str = result.result.to_string();
+        let result_len = result_str.len();
+        let truncated = if result_len > 500 {
+            format!("{}…(truncated, {result_len} chars)", &result_str[..500])
+        } else {
+            result_str
+        };
         tracing::info!(
             tool = %result.tool_name,
-            result = %result.result,
+            result = %truncated,
+            result_len,
             "tool ok"
         );
+        if result_len > 500 {
+            tracing::debug!(
+                tool = %result.tool_name,
+                result = %result.result,
+                "tool ok full"
+            );
+        }
     }
 
     async fn on_tool_error(&self, tool_call: &ToolCall, err: Value, _ctx: &Context) {

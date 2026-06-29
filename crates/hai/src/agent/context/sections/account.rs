@@ -3,7 +3,7 @@
 use super::fmt::display_name;
 use crate::{
     agentcore::render::elements::Node,
-    domain::{entity::Account, vo::PlatformAccountMeta},
+    domain::{model::Account, vo::PlatformAccountMeta},
 };
 
 /// 构建单个账户元素
@@ -11,7 +11,7 @@ pub fn account_element(account: &Account) -> Node {
     let meta = account
         .meta
         .as_ref()
-        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v.clone()).ok());
+        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v.0.clone()).ok());
 
     let mut b = Node::tag("account").attr("id", account.id);
 

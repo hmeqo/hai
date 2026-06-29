@@ -1,117 +1,194 @@
-use pgvector::Vector;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     agent::node::MultimodalService,
     domain::{
-        entity::Topic,
-        repo::{MessageRepo, TopicRepo},
-        vo::{ChatId, TopicSearchResult},
+        model::{Message, MessageStatus, Topic},
+        vo::{ChatId, MessageId, TopicSearchResult},
     },
     error::Result,
 };
 
-/// 话题管理服务
 #[derive(Debug)]
 pub struct TopicService {
-    pool: PgPool,
+    db: toasty::Db,
     embedding: MultimodalService,
 }
 
 impl TopicService {
-    pub fn new(pool: PgPool, embedding: MultimodalService) -> Self {
-        Self { pool, embedding }
+    pub fn new(db: toasty::Db, embedding: MultimodalService) -> Self {
+        Self { db, embedding }
     }
 
-    /// 创建新话题，将指定消息关联到该话题并标记为已处理
     pub async fn create_topic(
         &self,
         chat_id: ChatId,
         title: &str,
         summary: &str,
-        message_ids: &[i64],
+        message_ids: &[MessageId],
         meta: Option<serde_json::Value>,
     ) -> Result<Topic> {
-        let topic = TopicRepo::create(&self.pool, chat_id, title, summary, meta).await?;
+        let mut db = self.db.clone();
+        let mut tx = db.transaction().await?;
+        let now = jiff::Timestamp::now();
+
+        let topic = toasty::create!(Topic {
+            id: uuid::Uuid::now_v7(),
+            chat_id: chat_id.0,
+            title,
+            summary,
+            status: "active",
+            started_at: now,
+            last_active_at: now,
+            token_count: 0,
+            message_count: 0,
+            meta: meta.map(toasty::Json),
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut tx)
+        .await?;
+
         if !message_ids.is_empty() {
-            MessageRepo::assign_topic(&self.pool, message_ids, topic.id).await?;
+            Message::filter(
+                Message::fields()
+                    .id()
+                    .in_list(MessageId::raw_ids(message_ids)),
+            )
+            .update()
+            .topic_id(topic.id)
+            .interaction_status(MessageStatus::Seen.as_str())
+            .exec(&mut tx)
+            .await?;
         }
+
+        tx.commit().await?;
         Ok(topic)
     }
 
-    /// 将消息批量关联到已存在的话题并标记为已处理
-    pub async fn assign_topic(&self, message_ids: &[i64], topic_id: Uuid) -> Result<u64> {
-        MessageRepo::assign_topic(&self.pool, message_ids, topic_id).await
+    pub async fn assign_topic(&self, message_ids: &[MessageId], topic_id: Uuid) -> Result<()> {
+        let mut db = self.db.clone();
+        let mut tx = db.transaction().await?;
+
+        Message::filter(
+            Message::fields()
+                .id()
+                .in_list(MessageId::raw_ids(message_ids)),
+        )
+        .update()
+        .topic_id(topic_id)
+        .interaction_status(MessageStatus::Seen.as_str())
+        .exec(&mut tx)
+        .await?;
+
+        sync_topic_times(&mut tx, topic_id).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
-    /// 标记消息为已回复
-    pub async fn mark_as_replied(&self, message_ids: &[i64]) -> Result<u64> {
-        MessageRepo::mark_replied(&self.pool, message_ids).await
+    pub async fn append_summary(&self, topic_id: Uuid, new_summary: &str) -> Result<Topic> {
+        let mut db = self.db.clone();
+        let topic = Topic::get_by_id(&mut db, &topic_id).await?;
+        topic.ensure_not_closed()?;
+
+        let formatted = format!("\n---\n{new_summary}");
+        let combined = match topic.summary {
+            Some(ref s) => format!("{s}{formatted}"),
+            None => formatted,
+        };
+        Topic::filter_by_id(topic_id)
+            .update()
+            .summary(&combined)
+            .exec(&mut db)
+            .await?;
+        Ok(topic)
     }
 
-    /// 追加话题摘要（保留原有内容，追加新内容）
-    pub async fn push_summary(&self, topic_id: Uuid, new_summary: &str) -> Result<Option<Topic>> {
-        let topic = TopicRepo::find_by_id(&self.pool, topic_id).await?;
-        if let Some(topic) = &topic {
-            topic.ensure_not_closed()?;
-        }
-        let formatted = format!("\n---\n{}", new_summary);
-        TopicRepo::append_summary(&self.pool, topic_id, &formatted).await
-    }
-
-    /// 修正话题：同时或单独更新标题/摘要，只加载一次 topic
     pub async fn update_topic(
         &self,
         topic_id: Uuid,
         title: Option<&str>,
         summary: Option<&str>,
-    ) -> Result<Option<Topic>> {
-        if title.is_none() && summary.is_none() {
-            return Ok(None);
+    ) -> Result<Topic> {
+        let mut db = self.db.clone();
+        let topic = Topic::get_by_id(&mut db, &topic_id).await?;
+        let mut builder = Topic::filter_by_id(topic_id).update();
+        if let Some(t) = title {
+            builder = builder.title(t);
         }
-        if let Some(title) = title {
-            TopicRepo::update_title(&self.pool, topic_id, title).await?;
+        if let Some(s) = summary {
+            builder = builder.summary(s);
         }
-        if let Some(summary) = summary {
-            TopicRepo::update_summary(&self.pool, topic_id, summary).await?;
-        }
-        TopicRepo::find_by_id(&self.pool, topic_id).await
+        builder.exec(&mut db).await?;
+        Ok(topic)
     }
 
-    /// 关闭话题：写入最终摘要、标记 closed
-    pub async fn close_topic(&self, topic_id: Uuid, summary: &str) -> Result<Option<Topic>> {
-        if let Some(topic) = TopicRepo::find_by_id(&self.pool, topic_id).await? {
-            topic.ensure_not_closed()?;
-        }
+    pub async fn close_topic(&self, topic_id: Uuid, summary: &str) -> Result<Topic> {
+        let mut db = self.db.clone();
+        let topic = Topic::get_by_id(&mut db, &topic_id).await?;
+        topic.ensure_not_closed()?;
+
         let embedding = self.embedding.generate_embedding(summary).await?;
-        TopicRepo::close_with_summary(
-            &self.pool,
-            topic_id,
-            summary,
-            Some(Vector::from(embedding)),
-            0,
-            0,
-        )
-        .await
+        Topic::filter_by_id(topic_id)
+            .update()
+            .status("closed")
+            .summary(summary)
+            .embedding(Some(toasty::Json(embedding)))
+            .closed_at(Some(jiff::Timestamp::now()))
+            .exec(&mut db)
+            .await?;
+        Ok(topic)
     }
 
-    /// 通过向量语义检索相关话题
     pub async fn search_related_topics(
         &self,
         chat_id: ChatId,
-        query_embedding: &Vector,
+        query_embedding: &[f32],
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
-        TopicRepo::search_by_embedding(&self.pool, chat_id, query_embedding, limit).await
+        let topics: Vec<Topic> = Topic::filter(
+            Topic::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Topic::fields().status().eq("active")),
+        )
+        .exec(&mut self.db.clone())
+        .await?;
+
+        let mut scored: Vec<TopicSearchResult> = topics
+            .into_iter()
+            .filter_map(|t| {
+                let emb = t.embedding.as_ref()?;
+                let dist = 1.0 - crate::util::vector::cosine_similarity(query_embedding, &emb.0)?;
+                Some(TopicSearchResult {
+                    topic: t,
+                    distance: dist,
+                })
+            })
+            .collect();
+
+        scored.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(limit as usize);
+        Ok(scored)
     }
 
-    /// 获取活跃话题
     pub async fn get_active_topics(&self, chat_id: ChatId) -> Result<Vec<Topic>> {
-        TopicRepo::list_active(&self.pool, chat_id).await
+        Topic::filter(
+            Topic::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Topic::fields().status().eq("active")),
+        )
+        .order_by(Topic::fields().last_active_at().desc())
+        .exec(&mut self.db.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// 语义搜索话题
     pub async fn search_topics_by_query(
         &self,
         chat_id: ChatId,
@@ -119,11 +196,9 @@ impl TopicService {
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
         let embedding = self.embedding.generate_embedding(query).await?;
-        let vector = pgvector::Vector::from(embedding);
-        self.search_related_topics(chat_id, &vector, limit).await
+        self.search_related_topics(chat_id, &embedding, limit).await
     }
 
-    /// 分页获取话题列表
     pub async fn list_topics(
         &self,
         chat_id: ChatId,
@@ -131,11 +206,55 @@ impl TopicService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Topic>> {
-        TopicRepo::list_paged(&self.pool, chat_id, status, limit, offset).await
+        let mut q = Topic::filter(Topic::fields().chat_id().eq(chat_id.0));
+        if let Some(s) = status {
+            q = q.filter(Topic::fields().status().eq(s));
+        }
+        q.order_by(Topic::fields().last_active_at().desc())
+            .limit(limit as usize)
+            .offset(offset as usize)
+            .exec(&mut self.db.clone())
+            .await
+            .map_err(Into::into)
     }
 
-    /// 删除话题
-    pub async fn delete_topic(&self, topic_id: Uuid) -> Result<u64> {
-        TopicRepo::delete(&self.pool, topic_id).await
+    pub async fn delete_topic(&self, topic_id: Uuid) -> Result<()> {
+        Topic::delete_by_id(&mut self.db.clone(), topic_id).await?;
+        Ok(())
     }
+}
+
+async fn sync_topic_times(tx: &mut toasty::Transaction<'_>, topic_id: Uuid) -> Result<()> {
+    let first = Message::filter(Message::fields().topic_id().eq(Some(topic_id)))
+        .order_by((
+            Message::fields().sent_at().asc(),
+            Message::fields().created_at().asc(),
+        ))
+        .first()
+        .exec(tx)
+        .await?;
+    let last = Message::filter(Message::fields().topic_id().eq(Some(topic_id)))
+        .order_by((
+            Message::fields().sent_at().desc(),
+            Message::fields().created_at().desc(),
+        ))
+        .first()
+        .exec(tx)
+        .await?;
+
+    if let Some(ref msg) = first {
+        Topic::filter_by_id(topic_id)
+            .update()
+            .started_at(msg.active_at())
+            .exec(tx)
+            .await?;
+    }
+    if let Some(ref msg) = last {
+        Topic::filter_by_id(topic_id)
+            .update()
+            .last_active_at(msg.active_at())
+            .exec(tx)
+            .await?;
+    }
+    Ok(())
 }

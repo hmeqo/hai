@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use crate::{
     agent::{
         runtime::{ctx::RoundContext, shell::ShellRuntime},
-        tools::util::tool_data,
+        tools::util::{deserialize_option_lenient_u64, tool_data},
     },
     agentcore::skills::SkillManager,
 };
@@ -25,6 +25,7 @@ struct ShellArgs {
     pub workdir: Option<String>,
     #[input(description = "关联的 skill 名称")]
     pub skill: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_lenient_u64")]
     #[input(description = "超时秒数，默认 30")]
     pub timeout_secs: Option<u64>,
 }

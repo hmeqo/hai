@@ -30,10 +30,11 @@ arc-swap = { workspace = true }
 derive_more = { workspace = true }
 tap = { workspace = true }
 jiff = { workspace = true }
-sqlx = { workspace = true }
-pgvector = { workspace = true }
+toasty = { workspace = true }
+toasty-cli = { workspace = true }
+anyhow = { workspace = true }
+
 uuid = { workspace = true }
-jiff-sqlx = { workspace = true }
 strum = { workspace = true }
 tiktoken-rs = { workspace = true }
 struct-patch = { workspace = true }
@@ -49,3 +50,4 @@ linkify = { workspace = true }
 timeago = { workspace = true }
 sanitize-filename = { workspace = true }
 quick-xml = { workspace = true }
+indicatif = { workspace = true }

@@ -47,9 +47,13 @@ impl ToolRuntime for SendMessage {
         let typed_args: SendMessageArgs = serde_json::from_value(args)?;
 
         if let Some(ids) = &typed_args.replied_message_ids {
+            let msg_ids: Vec<crate::domain::vo::MessageId> = ids
+                .iter()
+                .map(|id| crate::domain::vo::MessageId(*id))
+                .collect();
             self.services
-                .topic
-                .mark_as_replied(ids)
+                .message
+                .mark_replied(&msg_ids)
                 .await
                 .into_tool_err()?;
         }

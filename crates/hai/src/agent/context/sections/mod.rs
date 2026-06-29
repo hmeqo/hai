@@ -10,7 +10,7 @@ pub mod topic;
 
 use crate::{
     agentcore::render::elements::Node,
-    domain::{entity::Topic, service::memory::RelatedMemory},
+    domain::{model::Topic, service::memory::RelatedMemory},
 };
 
 pub fn topic_section(topics: &[Topic]) -> Node {

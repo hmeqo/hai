@@ -22,7 +22,7 @@ use crate::{
     },
     app::AppContext,
     domain::{
-        entity::{Account, Chat, ChatType, Platform},
+        model::{Account, Chat, ChatType, Platform},
         vo::{ChatId, PlatformAccountMeta, TelegramAccountMeta},
     },
     error::{AppError, AppResultExt, ErrorKind, Result},
@@ -155,8 +155,9 @@ impl TelegramDispather {
         let chat_type = msg_chat_type(&msg);
 
         let (chat, account) = self.resolve_chat_and_account(&msg, from, chat_type).await?;
-        self.persist_user_message(&msg, chat.id, account.id).await?;
-        self.dispatch_agent_event(chat.id, chat_type, &msg, &me)
+        self.persist_user_message(&msg, ChatId::from(chat.id), account.id)
+            .await?;
+        self.dispatch_agent_event(ChatId::from(chat.id), chat_type, &msg, &me)
             .await;
 
         Ok(())
@@ -228,7 +229,7 @@ impl TelegramDispather {
         let (chat, _) = self
             .resolve_chat_and_account(msg, from, msg_chat_type(msg))
             .await?;
-        Ok(chat.id)
+        Ok(ChatId::from(chat.id))
     }
 
     async fn resolve_chat_and_account(
@@ -264,13 +265,14 @@ impl TelegramDispather {
         chat_id: ChatId,
         account_id: i64,
     ) -> Result<()> {
-        let reply_to_id = if let Some(reply) = msg.reply_to_message() {
+        let reply_to_id: Option<i64> = if let Some(reply) = msg.reply_to_message() {
             self.ctx
                 .db
                 .srv
                 .message
-                .find_id_by_external_id(chat_id, &reply.id.0.to_string())
+                .get_message_id_by_external_id(chat_id, &reply.id.0.to_string())
                 .await?
+                .map(|id| id.0)
         } else {
             None
         };
@@ -284,7 +286,7 @@ impl TelegramDispather {
                 chat_id,
                 account_id,
                 content: serde_json::to_value(extracted.parts)?,
-                external_id: &msg.id.0.to_string(),
+                external_id: msg.id.to_string(),
                 reply_to_id,
                 meta: extracted.meta,
                 sent_at: Some(jiff::Timestamp::from_second(msg.date.timestamp())?.into()),

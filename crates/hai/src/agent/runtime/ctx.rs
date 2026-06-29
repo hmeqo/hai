@@ -8,7 +8,7 @@ use crate::{
     agentcore::skills::SkillManager,
     app::AppContext,
     config::schema::SandboxConfig,
-    domain::{entity::ChatType, service::DbServices, vo::ChatId},
+    domain::{model::ChatType, service::DbServices, vo::ChatId},
 };
 
 /// 一轮 task 的完整执行上下文（prompt 构建 + 工具执行共用）

@@ -12,7 +12,7 @@ pub(super) fn related_memory_element(mem: &RelatedMemory) -> Node {
         .unwrap_or_else(|| "System".into());
 
     Node::tag("memory")
-        .attr("id", mem.id)
+        .attr("id", mem.id.0)
         .attr("source", source)
         .attr("relevance", format!("{:.4}", mem.distance))
         .attr("created_at", format_time_dyn(mem.created_at))

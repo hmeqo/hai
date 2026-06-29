@@ -1,27 +1,21 @@
-use sqlx::PgPool;
-use uuid::Uuid;
-
 use crate::{
     domain::{
-        entity::{Account, Chat, ChatType, Platform},
-        repo::{AccountRepo, ChatRepo},
-        vo::ChatId,
+        model::{Account, Chat, ChatType, Platform},
+        vo::{AccountId, ChatId, IdentityId},
     },
     error::Result,
 };
 
-/// 平台服务
 #[derive(Debug)]
 pub struct PlatformService {
-    pool: PgPool,
+    db: toasty::Db,
 }
 
 impl PlatformService {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: toasty::Db) -> Self {
+        Self { db }
     }
 
-    /// 确保会话和账号都存在（通常在收到消息时调用）
     pub async fn ensure_chat_and_account(
         &self,
         platform: Platform,
@@ -40,17 +34,39 @@ impl PlatformService {
         Ok((chat, account))
     }
 
-    /// 通过平台标识获取或创建账号
     pub async fn get_or_create_account(
         &self,
         platform: Platform,
         external_id: &str,
         meta: Option<serde_json::Value>,
     ) -> Result<Account> {
-        AccountRepo::get_or_create(&self.pool, platform.into(), external_id, meta).await
+        let platform_str: &str = platform.into();
+        if let Some(account) = Account::filter(
+            Account::fields()
+                .platform()
+                .eq(platform_str)
+                .and(Account::fields().external_id().eq(external_id)),
+        )
+        .first()
+        .exec(&mut self.db.clone())
+        .await?
+        {
+            return Ok(account);
+        }
+        let now = jiff::Timestamp::now();
+        toasty::create!(Account {
+            platform: platform_str,
+            external_id,
+            meta: meta.map(toasty::Json),
+            last_active_at: now,
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut self.db.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// 通过平台标识获取或创建会话/群组
     pub async fn get_or_create_chat(
         &self,
         platform: Platform,
@@ -59,34 +75,59 @@ impl PlatformService {
         name: Option<&str>,
         meta: Option<serde_json::Value>,
     ) -> Result<Chat> {
-        ChatRepo::get_or_create(
-            &self.pool,
-            platform.into(),
-            external_id,
-            chat_type.into(),
-            name,
-            meta,
+        let platform_str: &str = platform.into();
+        let chat_type_str: &str = chat_type.into();
+        if let Some(chat) = Chat::filter(
+            Chat::fields()
+                .platform()
+                .eq(platform_str)
+                .and(Chat::fields().external_id().eq(external_id)),
         )
+        .first()
+        .exec(&mut self.db.clone())
+        .await?
+        {
+            return Ok(chat);
+        }
+        let now = jiff::Timestamp::now();
+        toasty::create!(Chat {
+            platform: platform_str,
+            external_id,
+            chat_type: chat_type_str,
+            name: name.map(|s| s.to_string()),
+            config: None::<toasty::Json<serde_json::Value>>,
+            meta: meta.map(toasty::Json),
+            created_at: now,
+            updated_at: now,
+        })
+        .exec(&mut self.db.clone())
         .await
+        .map_err(Into::into)
     }
 
-    /// 通过内部 ID 获取会话
     pub async fn get_chat_by_id(&self, id: ChatId) -> Result<Option<Chat>> {
-        ChatRepo::find_by_id(&self.pool, id).await
+        Chat::get_by_id(&mut self.db.clone(), &id.0)
+            .await
+            .map(Some)
+            .or_else(|_| Ok(None))
     }
 
-    /// 通过内部 ID 获取账号
-    pub async fn get_account_by_id(&self, id: i64) -> Result<Option<Account>> {
-        AccountRepo::find_by_id(&self.pool, id).await
+    pub async fn get_account_by_id(&self, id: AccountId) -> Result<Option<Account>> {
+        Account::get_by_id(&mut self.db.clone(), &id.0)
+            .await
+            .map(Some)
+            .or_else(|_| Ok(None))
     }
 
-    /// 获取身份关联的所有账号
-    pub async fn get_identity_accounts(&self, identity_id: Uuid) -> Result<Vec<Account>> {
-        AccountRepo::list_by_identity_id(&self.pool, identity_id).await
+    pub async fn get_identity_accounts(&self, identity_id: IdentityId) -> Result<Vec<Account>> {
+        Account::filter_by_identity_id(identity_id.0)
+            .exec(&mut self.db.clone())
+            .await
+            .map_err(Into::into)
     }
 
-    /// 确保 Bot 账号存在
     pub async fn ensure_bot_account(&self) -> Result<Account> {
-        AccountRepo::get_or_create(&self.pool, Platform::System.into(), "bot", None).await
+        self.get_or_create_account(Platform::System, "bot", None)
+            .await
     }
 }

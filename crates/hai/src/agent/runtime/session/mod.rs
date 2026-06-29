@@ -1,5 +1,8 @@
-mod assembly;
+mod context;
+mod dispatch;
+mod messages;
 mod proxy;
+mod round;
 
 use std::sync::Arc;
 
@@ -12,23 +15,19 @@ use tokio::{
 
 use super::{
     AgentEngine,
-    event::{
-        WakeEvent,
-        scheduler::{EventScheduler, PollOutcome},
-    },
-    round::{Round, RoundTaskPayload},
+    event::{WakeEvent, scheduler::EventScheduler},
+    round::Round,
     shell::ShellRuntime,
 };
 use crate::{
-    agent::{link::BotHandle, runtime::ctx::RoundContext},
-    config::schema::SessionConfig,
+    agent::link::BotHandle,
     domain::{
-        entity::ChatType,
+        model::ChatType,
         vo::{AttachmentParser, ChatId},
     },
 };
 
-// ─── Running round ──────────────────────────────────────────────────────────
+// ── 运行中的轮次 ─────────────────────────────────────────────────────────────
 
 struct RunningRound {
     handle: JoinHandle<()>,
@@ -36,7 +35,30 @@ struct RunningRound {
     started_at: Instant,
 }
 
-// ─── Running outcome ────────────────────────────────────────────────────────
+impl RunningRound {
+    async fn poll(
+        &mut self,
+        wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
+        status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
+    ) -> RunningOutcome {
+        tokio::select! {
+            biased;
+            Some(wake) = wake_rx.recv() => RunningOutcome::Wake(wake),
+            Some(query) = status_rx.recv() => RunningOutcome::Status(query),
+            result = &mut self.result_rx => match result {
+                Ok(Some(output)) => RunningOutcome::Success(output),
+                Ok(None) => RunningOutcome::Failed,
+                Err(_) => RunningOutcome::Cancelled,
+            },
+        }
+    }
+
+    fn abort(self) {
+        self.handle.abort();
+    }
+}
+
+// ── select! 轮询结果 ─────────────────────────────────────────────────────────
 
 enum RunningOutcome {
     Wake(WakeEvent),
@@ -46,7 +68,7 @@ enum RunningOutcome {
     Cancelled,
 }
 
-// ─── Session Loop ────────────────────────────────────────────────────────────
+// ── Session 状态机 ───────────────────────────────────────────────────────────
 
 struct SessionLoop {
     schedule: EventScheduler,
@@ -104,7 +126,11 @@ impl SessionLoop {
             tts_enabled,
         }
     }
+}
 
+// ── 事件循环 ─────────────────────────────────────────────────────────────────
+
+impl SessionLoop {
     async fn run(
         &mut self,
         mut wake_rx: mpsc::UnboundedReceiver<WakeEvent>,
@@ -119,55 +145,25 @@ impl SessionLoop {
         }
     }
 
-    // ─── Phase Handlers ───────────────────────────────────────────────────
-
     async fn step_idle(
         &mut self,
         wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
         status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
     ) -> bool {
-        let deadline = self.schedule.next_deadline(self.idle_timeout());
-
-        match deadline {
+        let timeout = self.idle_timeout();
+        match self.schedule.next_deadline(timeout) {
             Some(t) => {
                 tokio::select! {
-                    Some(wake) = wake_rx.recv() => {
-                let is_rapid = wake.reason.is_rapid();
-                self.schedule.push(wake);
-                if is_rapid
-                    && let PollOutcome::Dispatch(events) = self.schedule.poll(self.idle_timeout())
-                {
-                    self.dispatch_with(events).await;
-                }
-                    }
-                    Some(query) = status_rx.recv() => {
-                        self.answer_status(query, false, None);
-                    }
-                    _ = tokio::time::sleep_until(t) => match self.schedule.poll(self.idle_timeout()) {
-                        PollOutcome::Dispatch(events) => self.dispatch_with(events).await,
-                        PollOutcome::Expired => {
-                            tracing::info!(chat_id = %self.chat_id, "Session expired, shutting down");
-                            return false;
-                        }
-                        PollOutcome::Wait => {},
-                    },
+                    Some(wake) = wake_rx.recv() => self.on_wake(wake).await,
+                    Some(query) = status_rx.recv() => self.answer_status(query, false, None),
+                    _ = tokio::time::sleep_until(t) => return self.handle_deadline().await,
                     else => return false,
                 }
             }
             None => {
                 tokio::select! {
-                    Some(wake) = wake_rx.recv() => {
-                let is_rapid = wake.reason.is_rapid();
-                self.schedule.push(wake);
-                if is_rapid
-                    && let PollOutcome::Dispatch(events) = self.schedule.poll(self.idle_timeout())
-                {
-                    self.dispatch_with(events).await;
-                }
-                    }
-                    Some(query) = status_rx.recv() => {
-                        self.answer_status(query, false, None);
-                    }
+                    Some(wake) = wake_rx.recv() => self.on_wake(wake).await,
+                    Some(query) = status_rx.recv() => self.answer_status(query, false, None),
                     else => return false,
                 }
             }
@@ -179,26 +175,13 @@ impl SessionLoop {
         &mut self,
         wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
         status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
-    ) -> bool {
+    ) {
         let mut round = match self.running.take() {
             Some(r) => r,
-            None => return true,
+            None => return,
         };
 
-        let outcome = {
-            let result_rx = &mut round.result_rx;
-
-            tokio::select! {
-                biased;
-                Some(wake) = wake_rx.recv() => RunningOutcome::Wake(wake),
-                Some(query) = status_rx.recv() => RunningOutcome::Status(query),
-                result = &mut *result_rx => match result {
-                    Ok(Some(output)) => RunningOutcome::Success(output),
-                    Ok(None) => RunningOutcome::Failed,
-                    Err(_) => RunningOutcome::Cancelled,
-                },
-            }
-        };
+        let outcome = round.poll(wake_rx, status_rx).await;
 
         match outcome {
             RunningOutcome::Wake(wake) => {
@@ -206,17 +189,16 @@ impl SessionLoop {
                 let is_addressed = wake.reason.is_addressed();
                 self.schedule.push(wake);
                 if is_rapid {
-                    round.handle.abort();
+                    round.abort();
                     self.try_dispatch_next().await;
                 } else if is_addressed && round.started_at.elapsed() < Duration::from_secs(3) {
-                    round.handle.abort();
+                    round.abort();
                 } else {
                     self.running = Some(round);
                 }
             }
             RunningOutcome::Status(query) => {
-                let status = self.build_status(true, Some(round.started_at));
-                let _ = query.send(status);
+                self.answer_status(query, true, Some(round.started_at));
                 self.running = Some(round);
             }
             RunningOutcome::Success(output) => {
@@ -224,139 +206,21 @@ impl SessionLoop {
                 self.try_dispatch_next().await;
             }
             RunningOutcome::Failed => {
-                tracing::warn!(%self.chat_id, "Round task failed");
+                let elapsed = round.started_at.elapsed();
+                tracing::warn!(
+                    %self.chat_id,
+                    elapsed_secs = %elapsed.as_secs_f64(),
+                    "Round failed",
+                );
             }
             RunningOutcome::Cancelled => {
-                tracing::warn!(%self.chat_id, "Round task panicked");
+                let elapsed = round.started_at.elapsed();
+                tracing::warn!(
+                    %self.chat_id,
+                    elapsed_secs = %elapsed.as_secs_f64(),
+                    "Round panicked",
+                );
             }
         }
-        true
-    }
-
-    // ─── Transition helpers ───────────────────────────────────────────────
-
-    async fn on_round_complete(&mut self, output: Round) {
-        let did_send = output
-            .tool_calls
-            .iter()
-            .any(|t| matches!(t.tool_name.as_str(), "send_message" | "send_voice"));
-        self.rounds.push(output);
-        if did_send {
-            self.schedule.refresh();
-        }
-        if matches!(
-            self.engine.app.cfg.agent.context.session,
-            SessionConfig::SingleRound
-        ) {
-            self.rounds.clear();
-        }
-    }
-
-    fn build_status(
-        &mut self,
-        round_running: bool,
-        round_started: Option<Instant>,
-    ) -> proxy::SessionStatus {
-        proxy::SessionStatus {
-            scheduler: self.schedule.snapshot(),
-            rounds_completed: self.rounds.len(),
-            round_running,
-            round_elapsed_secs: round_started.map(|t| t.elapsed().as_secs_f64()),
-            model: self.engine.app.cfg.agent.model.clone(),
-        }
-    }
-
-    fn answer_status(
-        &mut self,
-        query: oneshot::Sender<proxy::SessionStatus>,
-        round_running: bool,
-        round_started: Option<Instant>,
-    ) {
-        let status = self.build_status(round_running, round_started);
-        let _ = query.send(status);
-    }
-
-    // ─── Dispatch ─────────────────────────────────────────────────────────
-
-    /// 从 scheduler 获取下一批 events 并派发。用于 round 完成后或中断后链式调度。
-    async fn try_dispatch_next(&mut self) {
-        if self.running.is_some() {
-            return;
-        }
-        if let PollOutcome::Dispatch(events) = self.schedule.poll(self.idle_timeout()) {
-            self.dispatch_with(events).await;
-        }
-    }
-
-    async fn dispatch_with(&mut self, events: Vec<WakeEvent>) {
-        if self.running.is_some() {
-            return;
-        }
-
-        let Some((ctx, payload)) = self.assemble_round(events).await else {
-            return;
-        };
-
-        let (handle, rx) = Self::spawn_round_task(self.engine.clone(), ctx, payload);
-
-        self.running = Some(RunningRound {
-            handle,
-            result_rx: rx,
-            started_at: Instant::now(),
-        });
-    }
-
-    fn spawn_round_task(
-        engine: AgentEngine,
-        ctx: RoundContext,
-        payload: RoundTaskPayload,
-    ) -> (JoinHandle<()>, oneshot::Receiver<proxy::RoundSignal>) {
-        let bot = ctx.bot.clone();
-        let chat_id = ctx.chat_id;
-        let events_reasons: Vec<&str> = ctx.events.iter().map(|e| e.reason.label()).collect();
-        let prompt = if tracing::enabled!(tracing::Level::INFO) {
-            Some(payload.prompt.clone())
-        } else {
-            None
-        };
-
-        let (tx, rx) = oneshot::channel();
-
-        let handle = tokio::spawn(async move {
-            tracing::info!(%chat_id, reasons = ?events_reasons, "Agent woke up");
-            if let Some(p) = &prompt {
-                tracing::info!(%chat_id, "Agent task message:\n{p}");
-            }
-
-            let _hb = proxy::HeartbeatTask::spawn(bot, chat_id);
-            let result = engine.run(&ctx, payload.prompt).await;
-
-            match result {
-                Ok(output) => {
-                    if !payload.message_ids.is_empty()
-                        && let Err(e) = ctx
-                            .app
-                            .db
-                            .srv
-                            .message
-                            .mark_unread_seen(&payload.message_ids)
-                            .await
-                    {
-                        tracing::error!(%chat_id, "Failed to mark messages seen: {e}");
-                    }
-                    let _ = tx.send(Some(Round {
-                        segment: payload.segment,
-                        tool_calls: output.tool_calls,
-                        since_id: payload.since_id,
-                    }));
-                }
-                Err(e) => {
-                    tracing::error!(%chat_id, "Agent run failed: {e}");
-                    let _ = tx.send(None);
-                }
-            }
-        });
-
-        (handle, rx)
     }
 }

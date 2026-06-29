@@ -18,9 +18,8 @@ use crate::{
 
 #[derive(Debug, Serialize, Deserialize, ToolInput)]
 pub struct UpdateScratchpadArgs {
-    #[input(description = "chat_id")]
-    pub chat_id: i64,
     #[input(description = "新的内容")]
+    #[serde(default)]
     pub content: String,
 }
 
@@ -30,6 +29,7 @@ pub struct UpdateScratchpadArgs {
     input = UpdateScratchpadArgs,
 )]
 pub struct UpdateScratchpad {
+    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
@@ -40,7 +40,7 @@ impl ToolRuntime for UpdateScratchpad {
 
         self.services
             .scratchpad
-            .save(ChatId::from(args.chat_id), &args.content)
+            .save(self.chat_id, &args.content)
             .await
             .into_tool_err()?;
 
@@ -50,6 +50,7 @@ impl ToolRuntime for UpdateScratchpad {
 
 pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
     vec![Arc::new(UpdateScratchpad {
+        chat_id: ctx.chat_id,
         services: ctx.db.clone(),
     })]
 }

@@ -124,7 +124,7 @@ impl MultimodalService {
             let model = tts_cfg.model.clone().unwrap_or_else(|| "tts-1".into());
             providers.build_agent(provider, &model)
         } else {
-            RawAgent::new(RawClient::new("", ""), "")
+            RawAgent::new(RawClient::new(None, ""), "")
         };
 
         Self(Arc::new(MultimodalServiceInner {
@@ -146,13 +146,16 @@ impl MultimodalService {
     pub async fn analyze_image(
         &self,
         image: impl Into<MediaInput>,
-        prompt: Option<&str>,
+        custom: Option<&str>,
     ) -> Result<String> {
-        let prompt = prompt.unwrap_or(&self.0.image.default_prompt);
+        let prompt = match custom {
+            Some(c) => format!("{}。聚焦：{}", self.0.image.default_prompt, c),
+            None => self.0.image.default_prompt.to_string(),
+        };
         let url = image.into().into_image_url();
         let content = json!([
             {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": url, "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": url}},
         ]);
         self.completion(&self.0.image, content, "vision").await
     }
@@ -161,7 +164,7 @@ impl MultimodalService {
         let url = image.into().into_image_url();
         let content = json!([
             {"type": "text", "text": DEFAULT_OCR_PROMPT},
-            {"type": "image_url", "image_url": {"url": url, "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": url}},
         ]);
         self.completion(&self.0.image, content, "vision").await
     }
@@ -169,9 +172,12 @@ impl MultimodalService {
     pub async fn analyze_video(
         &self,
         video: impl Into<MediaInput>,
-        prompt: Option<&str>,
+        custom: Option<&str>,
     ) -> Result<String> {
-        let prompt = prompt.unwrap_or(&self.0.video.default_prompt);
+        let prompt = match custom {
+            Some(c) => format!("{}。聚焦：{}", self.0.video.default_prompt, c),
+            None => self.0.video.default_prompt.to_string(),
+        };
         let video = video.into();
         let format = video.format.map(|c| c.api_format()).unwrap_or("mp4");
         let content = json!([
@@ -184,9 +190,12 @@ impl MultimodalService {
     pub async fn analyze_audio(
         &self,
         audio: impl Into<MediaInput>,
-        prompt: Option<&str>,
+        custom: Option<&str>,
     ) -> Result<String> {
-        let prompt = prompt.unwrap_or(&self.0.audio.default_prompt);
+        let prompt = match custom {
+            Some(c) => format!("{}。聚焦：{}", self.0.audio.default_prompt, c),
+            None => self.0.audio.default_prompt.to_string(),
+        };
         let audio = audio.into();
         let format = audio.format.map(|c| c.api_format()).unwrap_or("wav");
         tracing::debug!(format, "analyze_audio");

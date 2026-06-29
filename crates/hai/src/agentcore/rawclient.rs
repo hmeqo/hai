@@ -8,12 +8,12 @@ use crate::error::{AppResultExt, ErrorKind, OptionAppExt, Result};
 #[derive(Debug)]
 struct RawClientInner {
     base_url: String,
-    api_key: String,
+    api_key: Option<String>,
     client: Client,
 }
 
 impl RawClientInner {
-    fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+    fn new(api_key: Option<&str>, base_url: impl Into<String>) -> Self {
         let client = Client::builder()
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(std::time::Duration::from_secs(30))
@@ -22,7 +22,7 @@ impl RawClientInner {
 
         Self {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: api_key.map(String::from).filter(|k| !k.is_empty()),
             client,
         }
     }
@@ -34,18 +34,20 @@ pub struct RawClient {
 }
 
 impl RawClient {
-    pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+    pub fn new(api_key: Option<&str>, base_url: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(RawClientInner::new(api_key, base_url)),
         }
     }
 
     pub fn openrouter(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, "https://openrouter.ai/api/v1")
+        let k = api_key.into();
+        Self::new(Some(&k), "https://openrouter.ai/api/v1")
     }
 
     pub fn openai(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, "https://api.openai.com/v1")
+        let k = api_key.into();
+        Self::new(Some(&k), "https://api.openai.com/v1")
     }
 
     pub fn agent(&self, model: impl Into<String>) -> RawAgent {
@@ -53,17 +55,18 @@ impl RawClient {
     }
 
     async fn request(&self, sub_url: &str, body: &Value) -> Result<Value> {
-        Ok(self
+        let mut req = self
             .inner
             .client
             .post(format!("{}{}", self.inner.base_url, sub_url))
-            .header("Authorization", format!("Bearer {}", self.inner.api_key))
             .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await?
-            .json::<Value>()
-            .await?)
+            .json(body);
+
+        if let Some(key) = &self.inner.api_key {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+
+        Ok(req.send().await?.json::<Value>().await?)
     }
 
     pub async fn request_bytes(&self, sub_url: &str, body: &Value) -> Result<Vec<u8>> {
@@ -76,15 +79,18 @@ impl RawClient {
         sub_url: &str,
         body: &Value,
     ) -> Result<(Vec<u8>, String)> {
-        let resp = self
+        let mut req = self
             .inner
             .client
             .post(format!("{}{}", self.inner.base_url, sub_url))
-            .header("Authorization", format!("Bearer {}", self.inner.api_key))
             .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await?;
+            .json(body);
+
+        if let Some(key) = &self.inner.api_key {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let resp = req.send().await?;
 
         let status = resp.status();
         if !status.is_success() {

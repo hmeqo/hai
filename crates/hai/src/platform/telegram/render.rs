@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     agentcore::render::elements::Node,
-    domain::{entity::Perception, vo::TelegramContentPart},
+    domain::{model::Perception, vo::TelegramContentPart},
 };
 
 pub fn render_content(

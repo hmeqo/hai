@@ -9,7 +9,7 @@ use crate::{
     },
     config::AppConfig,
     domain::{
-        entity::{Account, Message, Perception, Topic},
+        model::{Account, Message, Perception, Topic},
         service::DbServices,
         vo::{ChatId, resource_id_from_file_id},
     },
@@ -20,7 +20,7 @@ use crate::{
 pub async fn load_chat(
     services: &DbServices,
     chat_id: ChatId,
-) -> Result<crate::domain::entity::Chat> {
+) -> Result<crate::domain::model::Chat> {
     services
         .platform
         .get_chat_by_id(chat_id)
@@ -45,7 +45,15 @@ pub async fn load_reply_context(
     if missing.is_empty() {
         return Ok(Vec::new());
     }
-    services.message.get_messages_by_ids(&missing).await
+    services
+        .message
+        .get_messages_by_ids(
+            &missing
+                .iter()
+                .map(|id| crate::domain::vo::MessageId(*id))
+                .collect::<Vec<_>>(),
+        )
+        .await
 }
 
 /// 收集消息中所有 account（含 identity 关联的 sibling account）
@@ -57,9 +65,17 @@ pub async fn collect_accounts(services: &DbServices, messages: &[Message]) -> Re
         if account_map.contains_key(&id) {
             continue;
         }
-        if let Some(account) = services.platform.get_account_by_id(id).await? {
+        if let Some(account) = services
+            .platform
+            .get_account_by_id(crate::domain::vo::AccountId(id))
+            .await?
+        {
             if let Some(identity_id) = account.identity_id {
-                for sibling in services.platform.get_identity_accounts(identity_id).await? {
+                for sibling in services
+                    .platform
+                    .get_identity_accounts(crate::domain::vo::IdentityId(identity_id))
+                    .await?
+                {
                     account_map.insert(sibling.id, sibling);
                 }
             } else {
@@ -229,27 +245,69 @@ pub async fn search_related_context(
         });
     }
 
-    let vector = pgvector::Vector::from(
-        services
-            .multimodal
-            .generate_embedding(&search_query)
-            .await?,
-    );
+    let embedding = services
+        .multimodal
+        .generate_embedding(&search_query)
+        .await?;
     let ctx_cfg = &cfg.agent.context;
-    let (memories, mut related_topics) = tokio::try_join!(
+    let (memories, mut related_topics) = match tokio::try_join!(
         services
             .memory
-            .search_related_memories(chat_id, &vector, ctx_cfg.related_memory_limit),
+            .search_related(chat_id, &embedding, ctx_cfg.related_memory_limit),
         services
             .topic
-            .search_related_topics(chat_id, &vector, ctx_cfg.related_topic_limit),
-    )?;
+            .search_related_topics(chat_id, &embedding, ctx_cfg.related_topic_limit),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(%chat_id, "Vector search failed (try clearing old embeddings?): {e}");
+            (Vec::new(), Vec::new())
+        }
+    };
 
     let active_ids: HashSet<Uuid> = topics.iter().map(|t| t.id).collect();
     related_topics.retain(|r| !active_ids.contains(&r.topic.id));
     Ok(SearchResult {
         memories,
         topics: related_topics,
+    })
+}
+
+/// 检索相关内容，排除已展示项。后续轮自动按 2/3 缩减（5→3, 3→2）。
+pub async fn search_related_dedup(
+    services: &DbServices,
+    cfg: &AppConfig,
+    chat_id: ChatId,
+    topics: &[Topic],
+    parsed: &[ParsedContent],
+    perceptions: &[Perception],
+    shown_memory_ids: &HashSet<Uuid>,
+    shown_topic_ids: &HashSet<Uuid>,
+) -> Result<SearchResult> {
+    let SearchResult { memories, topics } =
+        search_related_context(services, cfg, chat_id, topics, parsed, perceptions).await?;
+
+    // 首轮（空 set）全量返回
+    if shown_memory_ids.is_empty() && shown_topic_ids.is_empty() {
+        return Ok(SearchResult { memories, topics });
+    }
+
+    // 后续轮：过滤已展示，按原有 limit 的 2/3 缩减
+    let cfg = &cfg.agent.context;
+    let ml = (cfg.related_memory_limit * 2 / 3) as usize;
+    let tl = (cfg.related_topic_limit * 2 / 3) as usize;
+
+    Ok(SearchResult {
+        memories: memories
+            .into_iter()
+            .filter(|m| !shown_memory_ids.contains(&m.id.0))
+            .take(ml)
+            .collect(),
+        topics: topics
+            .into_iter()
+            .filter(|t| !shown_topic_ids.contains(&t.topic.id))
+            .take(tl)
+            .collect(),
     })
 }
 

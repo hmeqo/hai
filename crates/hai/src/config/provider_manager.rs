@@ -53,7 +53,7 @@ impl ProviderManager {
 
     pub fn build_client(&self, provider: &str) -> RawClient {
         let resolved = self.get_checked(provider).expect("provider configured");
-        RawClient::new(&resolved.config.api_key, &resolved.base_url)
+        RawClient::new(resolved.config.api_key.as_deref(), &resolved.base_url)
     }
 
     pub fn build_agent(&self, provider: &str, model: &str) -> RawAgent {

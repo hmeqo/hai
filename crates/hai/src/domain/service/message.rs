@@ -1,215 +1,350 @@
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     agentcore::token::count_json_tokens,
     domain::{
-        entity::{Message, MessageStatus},
-        repo::message::{CreateMessage, MessageRepo},
-        vo::{AgentMessageMeta, ChatId, MessageMeta, TelegramContentPart},
+        model::{Message, MessageStatus},
+        vo::{AgentMessageMeta, ChatId, MessageId, MessageMeta, TelegramContentPart},
     },
     error::Result,
 };
 
-/// 保存用户消息所需参数
-pub struct NewUserMessage<'a> {
+pub struct NewUserMessage {
     pub chat_id: ChatId,
     pub account_id: i64,
     pub content: serde_json::Value,
-    pub external_id: &'a str,
+    pub external_id: String,
     pub reply_to_id: Option<i64>,
     pub meta: MessageMeta,
-    pub sent_at: Option<jiff_sqlx::Timestamp>,
+    pub sent_at: Option<jiff::Timestamp>,
 }
 
-/// 保存 Agent 消息所需参数
-pub struct NewAgentMessage<'a> {
+pub struct NewAgentMessage {
     pub chat_id: ChatId,
     pub account_id: Option<i64>,
     pub content: serde_json::Value,
-    pub model: &'a str,
-    /// 调用方已知 token 数时传入（0 表示自动估算）
+    pub model: String,
     pub tokens: i32,
     pub reply_to_id: Option<i64>,
-    pub external_id: Option<&'a str>,
-    pub sent_at: Option<jiff_sqlx::Timestamp>,
+    pub external_id: Option<String>,
+    pub sent_at: Option<jiff::Timestamp>,
 }
 
-/// 消息管理服务
 #[derive(Debug)]
 pub struct MessageService {
-    pool: PgPool,
+    db: toasty::Db,
 }
 
 impl MessageService {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: toasty::Db) -> Self {
+        Self { db }
     }
 
-    /// 估算 JSON 内容的 token 数量
     fn estimate_tokens(content: &serde_json::Value) -> Result<i32> {
         Ok(count_json_tokens(content) as i32)
     }
 
-    /// 保存用户发送的消息
-    pub async fn save_user_message(&self, msg: NewUserMessage<'_>) -> Result<Message> {
-        let token_count = Self::estimate_tokens(&msg.content)?;
+    async fn upsert_by_external_id(
+        &self,
+        chat_id: i64,
+        external_id: Option<&str>,
+        role: &str,
+        content: toasty::Json<serde_json::Value>,
+        account_id: Option<i64>,
+        interaction_status: &str,
+        reply_to_id: Option<i64>,
+        meta: toasty::Json<serde_json::Value>,
+        token_count: Option<i32>,
+        sent_at: Option<jiff::Timestamp>,
+        topic_id: Option<Uuid>,
+    ) -> Result<Message> {
+        let mut db = self.db.clone();
+        if let Some(ext_id) = external_id {
+            if let Some(mut existing) = Message::filter(
+                Message::fields()
+                    .chat_id()
+                    .eq(chat_id)
+                    .and(Message::fields().external_id().eq(Some(ext_id.to_string()))),
+            )
+            .first()
+            .exec(&mut db)
+            .await?
+            {
+                toasty::update!(existing {
+                    content,
+                    meta,
+                    interaction_status,
+                })
+                .exec(&mut db)
+                .await?;
+                return Ok(existing);
+            }
+        }
+        toasty::create!(Message {
+            chat_id,
+            account_id,
+            role,
+            content,
+            topic_id,
+            interaction_status,
+            reply_to_id,
+            external_id: external_id.map(String::from),
+            meta,
+            token_count,
+            sent_at,
+        })
+        .exec(&mut db)
+        .await
+        .map_err(Into::into)
+    }
 
-        MessageRepo::create(
-            &self.pool,
-            CreateMessage {
-                chat_id: msg.chat_id,
-                account_id: Some(msg.account_id),
-                role: "user",
-                content: msg.content,
-                topic_id: None,
-                interaction_status: Some(MessageStatus::Unread.into()),
-                reply_to_id: msg.reply_to_id,
-                external_id: Some(msg.external_id),
-                meta: serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null),
-                token_count: Some(token_count),
-                sent_at: msg.sent_at,
-            },
+    pub async fn save_user_message(&self, msg: NewUserMessage) -> Result<Message> {
+        let token_count = Self::estimate_tokens(&msg.content)?;
+        self.upsert_by_external_id(
+            msg.chat_id.0,
+            Some(&msg.external_id),
+            "user",
+            toasty::Json(msg.content),
+            Some(msg.account_id),
+            MessageStatus::Unread.as_str(),
+            msg.reply_to_id,
+            toasty::Json(serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null)),
+            Some(token_count),
+            msg.sent_at,
+            None,
         )
         .await
     }
 
-    /// 保存 Agent 发送的消息
-    pub async fn save_agent_message(&self, msg: NewAgentMessage<'_>) -> Result<Message> {
-        // 若调用方未提供 token 数，则自行估算
+    pub async fn save_agent_message(&self, msg: NewAgentMessage) -> Result<Message> {
         let token_count = if msg.tokens > 0 {
             msg.tokens
         } else {
             Self::estimate_tokens(&msg.content)?
         };
-
-        let meta = AgentMessageMeta {
-            model: msg.model.to_string(),
-        };
-
-        MessageRepo::create(
-            &self.pool,
-            CreateMessage {
-                chat_id: msg.chat_id,
-                account_id: msg.account_id,
-                role: "assistant",
-                content: msg.content,
-                topic_id: None,
-                interaction_status: Some(MessageStatus::Seen.into()),
-                reply_to_id: msg.reply_to_id,
-                external_id: msg.external_id,
-                meta: serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null),
-                token_count: Some(token_count),
-                sent_at: msg.sent_at,
-            },
+        let meta = AgentMessageMeta { model: msg.model };
+        self.upsert_by_external_id(
+            msg.chat_id.0,
+            msg.external_id.as_deref(),
+            "assistant",
+            toasty::Json(msg.content),
+            msg.account_id,
+            MessageStatus::Seen.as_str(),
+            msg.reply_to_id,
+            toasty::Json(serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null)),
+            Some(token_count),
+            msg.sent_at,
+            None,
         )
         .await
     }
 
-    /// 获取指定 ID 之后（或最新）的消息，有界窗口查询
+    pub async fn get_context_messages(
+        &self,
+        chat_id: ChatId,
+        limit: i64,
+        history_limit: i64,
+    ) -> Result<(Vec<Message>, i64)> {
+        let mut db = self.db.clone();
+        let cid = chat_id.0;
+
+        let mut unread: Vec<Message> = Message::filter(
+            Message::fields()
+                .chat_id()
+                .eq(cid)
+                .and(Message::fields().interaction_status().eq("unread")),
+        )
+        .order_by(Message::fields().id().desc())
+        .limit(limit as usize)
+        .exec(&mut db)
+        .await?;
+
+        if (unread.len() as i64) < history_limit {
+            let need = history_limit as usize - unread.len();
+            let known: std::collections::HashSet<i64> = unread.iter().map(|m| m.id).collect();
+            let history: Vec<Message> = Message::filter(
+                Message::fields()
+                    .chat_id()
+                    .eq(cid)
+                    .and(Message::fields().interaction_status().ne("unread")),
+            )
+            .order_by(Message::fields().id().desc())
+            .limit(need as usize)
+            .exec(&mut db)
+            .await?;
+            for m in history.into_iter().rev() {
+                if !known.contains(&m.id) {
+                    unread.push(m);
+                }
+            }
+        }
+
+        unread.sort_by_key(|m| m.id);
+        let last_id = unread.last().map(|m| m.id).unwrap_or(-1);
+        Ok((unread, last_id))
+    }
+
     pub async fn get_messages_window(
         &self,
         chat_id: ChatId,
         since_id: Option<i64>,
         limit: i64,
     ) -> Result<Vec<Message>> {
-        MessageRepo::get_messages_window(&self.pool, chat_id.0, since_id, limit).await
+        Message::filter(
+            Message::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Message::fields().id().gt(since_id.unwrap_or(-1))),
+        )
+        .order_by(Message::fields().id().asc())
+        .limit(limit as usize)
+        .exec(&mut self.db.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// 获取 agent 上下文消息：先取全量 pending，再用剩余配额补到 limit 条已处理消息
-    ///
-    /// 返回 `(messages, total_pending)` —— `total_pending` 可能大于 messages 中实际
-    /// pending 数，表示还有更多 pending 超出渲染窗口，agent 可通过工具获取。
-    pub async fn get_messages(
-        &self,
-        chat_id: ChatId,
-        min_count: i64,
-    ) -> Result<(Vec<Message>, Option<i64>)> {
-        MessageRepo::get_messages(&self.pool, chat_id.0, min_count).await
-    }
-
-    /// 获取最新的未读消息，上限 `limit` 条
     pub async fn get_unread_messages(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
-        MessageRepo::get_unread_messages(&self.pool, chat_id.0, limit).await
+        let mut msgs: Vec<Message> = Message::filter(
+            Message::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Message::fields().interaction_status().eq("unread")),
+        )
+        .order_by(Message::fields().id().desc())
+        .limit(limit as usize)
+        .exec(&mut self.db.clone())
+        .await?;
+        msgs.reverse();
+        Ok(msgs)
     }
 
-    /// 获取最新的非未读消息（用于上下文填充），上限 `limit` 条
     pub async fn get_read_messages(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
-        MessageRepo::get_read_messages(&self.pool, chat_id.0, limit).await
+        let mut msgs: Vec<Message> = Message::filter(
+            Message::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Message::fields().interaction_status().ne("unread")),
+        )
+        .order_by(Message::fields().id().desc())
+        .limit(limit as usize)
+        .exec(&mut self.db.clone())
+        .await?;
+        msgs.reverse();
+        Ok(msgs)
     }
 
-    /// 通过内部消息 ID 获取消息
-    pub async fn get_message_by_id(&self, id: i64) -> Result<Option<Message>> {
-        MessageRepo::find_by_id(&self.pool, id).await
+    pub async fn get_message_by_id(&self, id: MessageId) -> Result<Option<Message>> {
+        Message::get_by_id(&mut self.db.clone(), &id.0)
+            .await
+            .map(Some)
+            .or_else(|_| Ok(None))
     }
 
-    /// 批量按 ID 获取消息
-    pub async fn get_messages_by_ids(&self, ids: &[i64]) -> Result<Vec<Message>> {
-        MessageRepo::find_by_ids(&self.pool, ids).await
+    pub async fn get_messages_by_ids(&self, ids: &[MessageId]) -> Result<Vec<Message>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        Message::filter(Message::fields().id().in_list(raw))
+            .exec(&mut self.db.clone())
+            .await
+            .map_err(Into::into)
     }
 
-    /// 通过平台原始消息 ID 查找内部消息 ID
-    pub async fn find_id_by_external_id(
+    pub async fn get_message_id_by_external_id(
         &self,
         chat_id: ChatId,
         external_id: &str,
-    ) -> Result<Option<i64>> {
-        let msg = MessageRepo::find_by_external_id(&self.pool, chat_id.0, external_id).await?;
-        Ok(msg.map(|m| m.id))
+    ) -> Result<Option<MessageId>> {
+        let msg = Message::filter(
+            Message::fields().chat_id().eq(chat_id.0).and(
+                Message::fields()
+                    .external_id()
+                    .eq(Some(external_id.to_string())),
+            ),
+        )
+        .first()
+        .exec(&mut self.db.clone())
+        .await?;
+        Ok(msg.map(|m| MessageId(m.id)))
     }
 
-    /// 获取 chat 中未读消息数
-    pub async fn count_unread_by_chat(&self, chat_id: ChatId) -> Result<i64> {
-        MessageRepo::count_unread_by_chat(&self.pool, chat_id.0).await
+    pub async fn count_unread_by_chat(&self, chat_id: ChatId) -> Result<u64> {
+        Message::filter(
+            Message::fields()
+                .chat_id()
+                .eq(chat_id.0)
+                .and(Message::fields().interaction_status().eq("unread")),
+        )
+        .count()
+        .exec(&mut self.db.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// 标记指定消息中未标记的为已阅（自动过滤已标记的）
-    pub async fn mark_unread_seen(&self, message_ids: &[i64]) -> Result<u64> {
-        MessageRepo::mark_unread_seen(&self.pool, message_ids).await
+    pub async fn mark_replied(&self, ids: &[MessageId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let raw: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        Message::filter(Message::fields().id().in_list(raw))
+            .update()
+            .interaction_status(MessageStatus::Replied.as_str())
+            .exec(&mut self.db.clone())
+            .await?;
+        Ok(())
     }
 
-    /// 更新消息的 meta 字段
-    pub async fn update_message_meta(
-        &self,
-        message_id: i64,
-        meta: Option<serde_json::Value>,
-    ) -> Result<()> {
-        MessageRepo::update_meta(&self.pool, message_id, meta).await
+    pub async fn mark_unread_seen(&self, ids: &[MessageId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let raw: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        Message::filter(
+            Message::fields()
+                .id()
+                .in_list(raw)
+                .and(Message::fields().interaction_status().eq("unread")),
+        )
+        .update()
+        .interaction_status(MessageStatus::Seen.as_str())
+        .exec(&mut self.db.clone())
+        .await?;
+        Ok(())
     }
 
-    /// 通过 attachment_id 查找对应的消息及匹配的内容部分
-    ///
-    /// 扫描 content JSONB 数组，找到含有指定 attachment_id 的 part。
-    /// 返回 `(message, matched_part)`，找不到返回 `None`。
-    /// 通过 attachment_id 查找对应的消息及匹配的内容部分。
+    pub async fn update_meta(&self, id: MessageId, meta: Option<serde_json::Value>) -> Result<()> {
+        let mut db = self.db.clone();
+        Message::filter_by_id(id.0)
+            .update()
+            .meta(meta.map(toasty::Json))
+            .exec(&mut db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn find_attachment(
         &self,
         attachment_id: Uuid,
     ) -> Result<Option<(Message, TelegramContentPart)>> {
-        // attachment_id 是 UUID，每条消息最多对应一个，fetch_optional 即可
-        let msg = sqlx::query_as::<_, Message>(
-            r#"
-            SELECT
-                id, chat_id, account_id, role, content,
-                topic_id,
-                interaction_status,
-                reply_to_id, external_id, meta,
-                token_count, sent_at,
-                created_at, updated_at
-            FROM message
-            WHERE content @> $1::jsonb
-            "#,
-        )
-        .bind(serde_json::json!([{"attachment_id": attachment_id}]))
-        .fetch_optional(&self.pool)
-        .await?;
+        let messages: Vec<Message> = Message::all()
+            .order_by(Message::fields().id().desc())
+            .limit(200)
+            .exec(&mut self.db.clone())
+            .await?;
 
-        let Some(msg) = msg else { return Ok(None) };
-
-        let part = serde_json::from_value::<Vec<TelegramContentPart>>(msg.content.clone())?
-            .into_iter()
-            .find(|p| p.attachment_id() == Some(attachment_id));
-
-        Ok(part.map(|p| (msg, p)))
+        for msg in messages {
+            if let Ok(parts) =
+                serde_json::from_value::<Vec<TelegramContentPart>>(msg.content.0.clone())
+            {
+                if let Some(part) = parts
+                    .into_iter()
+                    .find(|p| p.attachment_id() == Some(attachment_id))
+                {
+                    return Ok(Some((msg, part)));
+                }
+            }
+        }
+        Ok(None)
     }
 }

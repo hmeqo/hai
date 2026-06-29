@@ -8,7 +8,7 @@ use crate::{
     agentcore::render::elements::Node,
     config::schema::SandboxConfig,
     domain::{
-        entity::{Account, Chat, Message, Perception, Topic},
+        model::{Account, Chat, Message, Perception, Topic},
         service::memory::RelatedMemory,
         vo::TopicSearchResult,
     },
@@ -138,6 +138,17 @@ impl RenderContext {
 
     pub fn sender_name(&self, msg: &Message) -> String {
         let aid = msg.account_id.unwrap_or(0);
+
+        // Bot 账号直接用 BotProfile（name + username），不依赖 Account 表 meta
+        if aid == self.bot.account_id {
+            let n = &self.bot;
+            return if n.username.is_empty() {
+                n.name.clone()
+            } else {
+                format!("{} (@{})", n.name, n.username)
+            };
+        }
+
         display_name(self.get_account(aid), aid)
     }
 

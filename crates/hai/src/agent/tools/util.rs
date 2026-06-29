@@ -1,6 +1,7 @@
 use std::fmt;
 
 use autoagents::core::tool::ToolCallError;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::AppError;
@@ -131,4 +132,26 @@ where
     }
 
     d.deserialize_option(OptVisitor)
+}
+
+/// Lenient deserialization for `Option<u64>` — accepts number, string, or null.
+pub fn deserialize_option_lenient_u64<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| serde::de::Error::custom("expected u64"))
+            .map(Some),
+        serde_json::Value::String(s) if s.is_empty() => Ok(None),
+        serde_json::Value::String(s) => {
+            s.parse::<u64>().map(Some).map_err(serde::de::Error::custom)
+        }
+        _ => Err(serde::de::Error::custom(
+            "expected a number or string representing u64",
+        )),
+    }
 }

@@ -34,20 +34,16 @@ arc-swap = "1.7"
 derive_more = { version = "2", features = ["full"] }
 tap = "1"
 jiff = { version = "0.2", features = ["serde"] }
-sqlx = { version = "0.8", features = [
-    "runtime-tokio",
-    "postgres",
-    "uuid",
-    "json",
-] }
-jiff-sqlx = { version = "0.1", features = ["postgres"] }
-pgvector = { version = "0.4", features = ["sqlx"] }
+toasty = { version = "0.7", features = ["postgresql", "jiff", "serde"] }
+toasty-cli = "0.7"
+anyhow = "1"
+
 uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 strum = { version = "0.28", features = ["derive"] }
 struct-patch = "0.12"
-tiktoken-rs = "0.11"
+tiktoken-rs = "0.12"
 toml = "1.0.4"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "color"] }
 thiserror = "2.0.18"
 rand = { version = "0.10" }
 indexmap = { version = "2", features = ["serde"] }
@@ -58,6 +54,7 @@ linkify = "0.11"
 timeago = "0.6"
 sanitize-filename = "0.6"
 quick-xml = "0.40"
+indicatif = "0.18"
 
 [profile.release]
 panic = "abort"

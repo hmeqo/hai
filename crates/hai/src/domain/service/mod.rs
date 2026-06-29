@@ -15,7 +15,6 @@ pub use message::{MessageService, NewAgentMessage, NewUserMessage};
 pub use perception::PerceptionService;
 pub use platform::PlatformService;
 pub use scratchpad::ScratchpadService;
-use sqlx::PgPool;
 pub use topic::TopicService;
 
 use crate::agent::node::MultimodalService;
@@ -36,14 +35,14 @@ pub struct DbServicesInner {
 }
 
 impl DbServices {
-    pub fn new(pool: PgPool, multimodal: MultimodalService) -> Self {
-        let platform = PlatformService::new(pool.clone());
-        let identity = IdentityService::new(pool.clone());
-        let message = MessageService::new(pool.clone());
-        let scratchpad = ScratchpadService::new(pool.clone());
-        let topic = TopicService::new(pool.clone(), multimodal.clone());
-        let memory = MemoryService::new(pool.clone(), multimodal.clone());
-        let perception = PerceptionService::new(pool.clone(), multimodal.clone());
+    pub fn new(db: toasty::Db, multimodal: MultimodalService) -> Self {
+        let platform = PlatformService::new(db.clone());
+        let identity = IdentityService::new(db.clone());
+        let message = MessageService::new(db.clone());
+        let scratchpad = ScratchpadService::new(db.clone());
+        let topic = TopicService::new(db.clone(), multimodal.clone());
+        let memory = MemoryService::new(db.clone(), multimodal.clone());
+        let perception = PerceptionService::new(db.clone(), multimodal.clone());
 
         Self(Arc::new(DbServicesInner {
             platform,

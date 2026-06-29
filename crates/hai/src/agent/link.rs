@@ -12,6 +12,9 @@ pub struct BuiltContext {
     pub rendered_prompt: String,
     /// 需要标记为已读的消息 ID 列表
     pub message_ids: Vec<i64>,
+    /// 本轮已展示的记忆和话题 ID，用于后续轮 dedup
+    pub shown_memory_ids: Vec<Uuid>,
+    pub shown_topic_ids: Vec<Uuid>,
 }
 
 /// 唯一标识一个 bot 实例

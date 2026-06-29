@@ -15,7 +15,7 @@ use crate::{
     agentcore::{provider::LlmBuildConfig, skills::SkillManager},
     app::AppContext,
     config::AppConfig,
-    domain::entity::ChatType,
+    domain::model::ChatType,
     error::{AppResultExt, ErrorKind, Result},
 };
 
@@ -58,7 +58,7 @@ impl AgentEngine {
         let effort = agent_config.reasoning_effort()?;
 
         let build_cfg = LlmBuildConfig {
-            api_key: provider.config.api_key.clone(),
+            api_key: provider.config.api_key.clone().unwrap_or_default(),
             base_url: provider.base_url.clone(),
             model: agent_config.model.clone(),
             reasoning: agent_config.reasoning,

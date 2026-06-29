@@ -1,115 +1,160 @@
-use pgvector::Vector;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     agent::node::MultimodalService,
     domain::{
-        entity::{Memory, MemoryType},
-        repo::MemoryRepo,
-        vo::{ChatId, MemoryInput},
+        model::{Memory, MemoryType},
+        vo::{ChatId, MemoryId, MemoryInput},
     },
-    error::{ErrorKind, OptionAppExt, Result},
+    error::{ErrorKind, Result},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RelatedMemory {
-    pub id: Uuid,
+    pub id: MemoryId,
     pub content: String,
     pub account_id: Option<i64>,
     pub distance: f64,
     pub created_at: jiff::Timestamp,
 }
 
-/// 记忆管理服务
 #[derive(Debug)]
 pub struct MemoryService {
-    pool: PgPool,
+    db: toasty::Db,
     embedding: MultimodalService,
 }
 
 impl MemoryService {
-    pub fn new(pool: PgPool, embedding: MultimodalService) -> Self {
-        Self { pool, embedding }
+    pub fn new(db: toasty::Db, embedding: MultimodalService) -> Self {
+        Self { db, embedding }
     }
 
-    /// 根据 content 字符串计算 embedding（当 memory_type 需要时）
-    async fn compute_embedding_if_needed(
+    async fn compute_embedding(
         &self,
         memory_type: MemoryType,
         content: &str,
-    ) -> Result<Option<Vector>> {
+    ) -> Result<Option<toasty::Json<Vec<f32>>>> {
         if memory_type.needs_embedding() {
             let e = self.embedding.generate_embedding(content).await?;
-            Ok(Some(Vector::from(e)))
+            Ok(Some(toasty::Json(e)))
         } else {
             Ok(None)
         }
     }
 
-    /// 统一保存记忆接口 (新增/修改/覆盖)
     pub async fn save_memory(&self, input: MemoryInput) -> Result<Memory> {
-        let memory_type = input.memory_type();
+        let mut db = self.db.clone();
+        let cid = |c: ChatId| c.0;
 
         match input {
-            // --- Create Variants ---
             MemoryInput::CreateUserFact {
                 account_id,
                 chat_id,
                 content,
             } => {
-                if MemoryRepo::find_user_fact(&self.pool, account_id, chat_id, &content)
-                    .await?
-                    .is_some()
+                if Memory::filter(
+                    Memory::fields()
+                        .mem_type()
+                        .eq("user_fact")
+                        .and(Memory::fields().chat_id().eq(Some(cid(chat_id))))
+                        .and(Memory::fields().account_id().eq(Some(account_id)))
+                        .and(Memory::fields().content().eq(&content)),
+                )
+                .first()
+                .exec(&mut db)
+                .await?
+                .is_some()
                 {
                     return Err(ErrorKind::AlreadyExists.msg(
                         "UserFact already exists for this account and chat with the same content",
                     ));
                 }
                 let embedding = self
-                    .compute_embedding_if_needed(memory_type, &content)
+                    .compute_embedding(MemoryType::UserFact, &content)
                     .await?;
-                let mut memory = Memory::new(memory_type, content);
-                memory.account_id = Some(account_id);
-                memory.chat_id = Some(chat_id);
-                memory.embedding = embedding;
-                MemoryRepo::create(&self.pool, memory).await
+                toasty::create!(Memory {
+                    id: Uuid::now_v7(),
+                    mem_type: "user_fact",
+                    account_id: Some(account_id),
+                    chat_id: Some(cid(chat_id)),
+                    content,
+                    embedding,
+                    importance: 1,
+                    last_accessed_at: jiff::Timestamp::now(),
+                    created_at: jiff::Timestamp::now(),
+                    updated_at: jiff::Timestamp::now(),
+                })
+                .exec(&mut db)
+                .await
+                .map_err(Into::into)
             }
+
             MemoryInput::CreateAgentNote {
                 chat_id,
                 references,
                 content,
             } => {
-                if MemoryRepo::find_agent_note(&self.pool, chat_id, &content)
-                    .await?
-                    .is_some()
+                if Memory::filter(
+                    Memory::fields()
+                        .mem_type()
+                        .eq("agent_note")
+                        .and(Memory::fields().chat_id().eq(Some(cid(chat_id))))
+                        .and(Memory::fields().content().eq(&content)),
+                )
+                .first()
+                .exec(&mut db)
+                .await?
+                .is_some()
                 {
                     return Err(ErrorKind::AlreadyExists
                         .msg("AgentNote already exists for this chat with the same content"));
                 }
-                let mut memory = Memory::new(memory_type, content);
-                memory.chat_id = Some(chat_id);
-                memory.references = references;
-                MemoryRepo::create(&self.pool, memory).await
+                let mut create = Memory::create()
+                    .mem_type("agent_note")
+                    .chat_id(Some(cid(chat_id)))
+                    .content(&content)
+                    .importance(1);
+                if let Some(refs) = references {
+                    create = create.references(toasty::Json(refs));
+                }
+                create.exec(&mut db).await.map_err(Into::into)
             }
+
             MemoryInput::CreateKnowledge { chat_id, content } => {
-                if MemoryRepo::find_knowledge(&self.pool, chat_id, &content)
-                    .await?
-                    .is_some()
+                if Memory::filter(
+                    Memory::fields()
+                        .mem_type()
+                        .eq("knowledge")
+                        .and(Memory::fields().chat_id().eq(Some(cid(chat_id))))
+                        .and(Memory::fields().content().eq(&content)),
+                )
+                .first()
+                .exec(&mut db)
+                .await?
+                .is_some()
                 {
                     return Err(ErrorKind::AlreadyExists
                         .msg("Knowledge already exists for this chat with the same content"));
                 }
                 let embedding = self
-                    .compute_embedding_if_needed(memory_type, &content)
+                    .compute_embedding(MemoryType::Knowledge, &content)
                     .await?;
-                let mut memory = Memory::new(memory_type, content);
-                memory.chat_id = Some(chat_id);
-                memory.embedding = embedding;
-                MemoryRepo::create(&self.pool, memory).await
+                toasty::create!(Memory {
+                    id: Uuid::now_v7(),
+                    mem_type: "knowledge",
+                    chat_id: Some(cid(chat_id)),
+                    content,
+                    embedding,
+                    importance: 1,
+                    last_accessed_at: jiff::Timestamp::now(),
+                    created_at: jiff::Timestamp::now(),
+                    updated_at: jiff::Timestamp::now(),
+                })
+                .exec(&mut db)
+                .await
+                .map_err(Into::into)
             }
 
-            // --- Update Variants ---
             MemoryInput::UpdateUserFact {
                 id,
                 content,
@@ -125,55 +170,59 @@ impl MemoryService {
                 content,
                 importance,
             } => {
-                let embedding = if let Some(new_content) = &content {
-                    self.compute_embedding_if_needed(memory_type, new_content)
-                        .await?
+                let existing = Memory::get_by_id(&mut db, &id)
+                    .await
+                    .map_err(|_| ErrorKind::NotFound.msg(format!("Memory not found: {id}")))?;
+                let embedding = if let Some(ref c) = content {
+                    self.compute_embedding(existing.memory_type(), c)
+                        .await
+                        .unwrap_or(None)
                 } else {
                     None
                 };
-
-                MemoryRepo::update(
-                    &self.pool,
-                    id,
-                    content.as_deref(),
-                    importance,
-                    None,
-                    embedding,
-                    None,
-                )
-                .await?
-                .ok_or_err_msg(ErrorKind::NotFound, format!("Memory not found: {}", id))
+                let mut builder = Memory::filter_by_id(id).update();
+                if let Some(ref c) = content {
+                    builder = builder.content(c);
+                }
+                if let Some(imp) = importance {
+                    builder = builder.importance(imp);
+                }
+                builder = builder.embedding(embedding);
+                builder.exec(&mut db).await?;
+                Ok(existing)
             }
 
-            // --- Upsert Variants ---
             MemoryInput::UpsertChatRule { chat_id, content } => {
-                if let Some(existing) =
-                    MemoryRepo::find_by_type_and_chat(&self.pool, memory_type.into(), chat_id)
-                        .await?
+                if let Some(mut existing) = Memory::filter(
+                    Memory::fields()
+                        .mem_type()
+                        .eq("rule")
+                        .and(Memory::fields().chat_id().eq(Some(cid(chat_id)))),
+                )
+                .first()
+                .exec(&mut db)
+                .await?
                 {
-                    return MemoryRepo::update(
-                        &self.pool,
-                        existing.id,
-                        Some(&content),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?
-                    .ok_or_err_msg(ErrorKind::Internal, "Failed to update rule");
+                    toasty::update!(existing { content }).exec(&mut db).await?;
+                    return Ok(existing);
                 }
-
-                let mut memory = Memory::new(memory_type, content);
-                memory.chat_id = Some(chat_id);
-                memory.importance = 10;
-
-                MemoryRepo::create(&self.pool, memory).await
+                toasty::create!(Memory {
+                    id: Uuid::now_v7(),
+                    mem_type: "rule",
+                    chat_id: Some(cid(chat_id)),
+                    content,
+                    importance: 10,
+                    last_accessed_at: jiff::Timestamp::now(),
+                    created_at: jiff::Timestamp::now(),
+                    updated_at: jiff::Timestamp::now(),
+                })
+                .exec(&mut db)
+                .await
+                .map_err(Into::into)
             }
         }
     }
 
-    /// 语义搜索知识
     pub async fn search_knowledge(
         &self,
         chat_id: ChatId,
@@ -181,37 +230,49 @@ impl MemoryService {
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {
         let embedding = self.embedding.generate_embedding(query).await?;
-        let vector = pgvector::Vector::from(embedding);
-
-        self.search_related_memories(chat_id, &vector, limit).await
+        self.search_related(chat_id, &embedding, limit).await
     }
 
-    /// 综合检索相关记忆
-    pub async fn search_related_memories(
+    pub async fn search_related(
         &self,
         chat_id: ChatId,
-        query_vector: &Vector,
+        query: &[f32],
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {
-        let results = MemoryRepo::search(&self.pool, chat_id, query_vector, limit).await?;
+        let memories: Vec<Memory> = Memory::filter(
+            Memory::fields()
+                .chat_id()
+                .eq(Some(chat_id.0))
+                .and(Memory::fields().mem_type().ne("rule")),
+        )
+        .exec(&mut self.db.clone())
+        .await?;
 
-        Ok(results
+        let mut scored: Vec<RelatedMemory> = memories
             .into_iter()
-            .map(|r| {
-                let created_at = r.memory.created_at();
-                RelatedMemory {
-                    id: r.memory.id,
-                    content: r.memory.content,
-                    account_id: r.memory.account_id,
-                    distance: r.distance,
-                    created_at,
-                }
+            .filter_map(|m| {
+                let vec = m.embedding.as_ref()?;
+                let dist = 1.0 - crate::util::vector::cosine_similarity(query, &vec.0)?;
+                Some(RelatedMemory {
+                    id: MemoryId(m.id),
+                    content: m.content,
+                    account_id: m.account_id,
+                    distance: dist,
+                    created_at: m.created_at,
+                })
             })
-            .collect())
+            .collect();
+        scored.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(limit as usize);
+        Ok(scored)
     }
 
-    /// 删除记忆
-    pub async fn delete(&self, id: Uuid) -> Result<u64> {
-        MemoryRepo::delete(&self.pool, id).await
+    pub async fn delete(&self, id: MemoryId) -> Result<()> {
+        Memory::delete_by_id(&mut self.db.clone(), id.0).await?;
+        Ok(())
     }
 }

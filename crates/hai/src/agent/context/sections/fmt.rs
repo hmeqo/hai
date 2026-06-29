@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use jiff::{Timestamp, tz::TimeZone};
 use timeago::Formatter;
 
-use crate::domain::{entity::Account, vo::PlatformAccountMeta};
+use crate::domain::{model::Account, vo::PlatformAccountMeta};
 
 /// 显示名称
 pub fn display_name(account: Option<&Account>, fallback_id: i64) -> String {
@@ -13,7 +13,7 @@ pub fn display_name(account: Option<&Account>, fallback_id: i64) -> String {
     let meta = account
         .meta
         .clone()
-        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v).ok());
+        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v.0).ok());
 
     let Some(meta) = meta else {
         return format!("User{}", fallback_id);
