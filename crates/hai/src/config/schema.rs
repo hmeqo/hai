@@ -141,8 +141,8 @@ pub struct ContextConfig {
     pub related_topic_limit: i64,
     /// 话题闲置时间（小时），超过此时间的话题标记为 need-close
     pub topic_idle_hours: i64,
-    /// 会话模式：single-round（单轮对话）或 continuous（跨轮次累积）
-    pub session: SessionConfig,
+    /// 会话模式：ephemeral（单次执行）或 persistent（跨轮次累积）
+    pub conversation_mode: ConversationMode,
     /// 会话空闲超时（秒），窗口关闭后超过此时无活动则重建 session
     pub session_idle_timeout_secs: u64,
     /// ReAct 循环最大轮次（默认 10）
@@ -171,7 +171,7 @@ impl Default for ContextConfig {
             related_memory_limit: 5,
             related_topic_limit: 3,
             topic_idle_hours: 3,
-            session: SessionConfig::default(),
+            conversation_mode: ConversationMode::default(),
             session_idle_timeout_secs: 300,
             max_turns: 10,
         }
@@ -181,12 +181,12 @@ impl Default for ContextConfig {
 /// 会话模式
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum SessionConfig {
-    /// 每次唤醒使用全新对话
-    SingleRound,
-    /// 跨 wake 保持上下文累积
+pub enum ConversationMode {
+    /// 每次执行使用全新对话，不保留上下文
+    Ephemeral,
+    /// 跨执行保留上下文累积
     #[default]
-    Continuous,
+    Persistent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]

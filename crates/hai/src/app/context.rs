@@ -4,7 +4,7 @@ use arc_swap::ArcSwap;
 use derive_more::Deref;
 
 use crate::{
-    agent::node::{ModelService, MultimodalService},
+    agent::multimodal::{ModelService, MultimodalService},
     config::{AppConfig, AppConfigManager, ProviderManager},
     domain::{db, service::DbServices},
     error::Result,

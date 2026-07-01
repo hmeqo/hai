@@ -124,11 +124,11 @@ domain/              领域层（数据模型 + 业务逻辑）
   vo/                  值对象
 config/              配置系统
 agent/               业务逻辑层
+  node/               agent 节点定义（每个类型一个目录）
+    main/              MainAgent 节点（SystemPromptBuilder + 入口）
   tool_ctx.rs          ToolContext（工具层窄上下文）
-  system_prompt.rs     SystemPromptBuilder（链式组装）
   tools/              工具实现（每个模块一个工厂函数 tools(&ToolContext)）
-  runtime/            ReactLoop + SessionLoop + 调度器
-  node/               AgentNode trait + MainAgent
+  runtime/            AgentEngine + AgentSession + ReactLoop
   context/            提示词渲染
 platform/            平台集成
   telegram/dispatcher.rs          teloxide 路由薄层

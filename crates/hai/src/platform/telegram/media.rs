@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use super::TelegramService;
 use crate::{
-    agent::node::MediaInput,
+    agent::multimodal::MediaInput,
     app::AppContext,
     domain::{
         model::Platform,

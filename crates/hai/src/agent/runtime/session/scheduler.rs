@@ -1,12 +1,12 @@
 use tokio::time::{Duration, Instant};
 
-use super::{
-    attention::{Heat, Window},
-    wake::WakeEvent,
-};
+use super::attention::{Heat, Window};
+use crate::agent::event::WakeEvent;
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 热度不足后的重试间隔。一次 retry 后仍不够则丢弃 batch。
+const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 调度器轮询结果
 pub enum PollOutcome {
@@ -53,16 +53,23 @@ impl EventBatch {
         self.has_rapid = false;
         std::mem::take(&mut self.events)
     }
+
+    fn discard(&mut self) {
+        self.has_rapid = false;
+        self.events.clear();
+    }
 }
 
 // ─── 事件调度器 ───────────────────────────────────────────────────────────────
 
-/// per-session，管理 batch + 热度 + 窗口 + 防抖 + 过期。
+/// per-session，管理 batch + 热度 + 窗口 + 防抖 + 单次重试。
 pub struct EventScheduler {
     batch: EventBatch,
     heat: Heat,
     window: Window,
     debounce_until: Option<Instant>,
+    /// heat 检查失败后的重试时间点。已存在此值时再次失败则丢弃 batch。
+    retry_at: Option<Instant>,
 }
 
 impl EventScheduler {
@@ -72,6 +79,7 @@ impl EventScheduler {
             heat: Heat::new(base_heat),
             window: Window::new(window_secs),
             debounce_until: None,
+            retry_at: None,
         }
     }
 
@@ -79,8 +87,7 @@ impl EventScheduler {
         self.heat.decay(self.window.closes_at());
     }
 
-    /// 事件入队。被明确指向的事件刷新窗口+热量。
-    /// rapid 事件清除防抖（等待 caller 立即 dispatch），其余设置 500ms 防抖。
+    /// 事件入队。
     pub fn push(&mut self, event: WakeEvent) {
         self.refresh_heat();
 
@@ -95,23 +102,20 @@ impl EventScheduler {
             self.debounce_until = Some(Instant::now() + DEBOUNCE_DURATION);
         }
 
+        // 新事件到达，情况已变化，取消 pending 重试
+        self.retry_at = None;
+
         self.batch.push(event);
     }
 
     /// 返回下次应该 poll 的时间。
-    /// - 防抖 pending → 防抖 deadline
-    /// - batch 有事件 → 立即（now）或轮询间隔（防抖已过但未 dispatch）
-    /// - window 激活且 batch 空 → window + idle_timeout
-    /// - 否则 → None
     pub fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
-        let now = Instant::now();
-
         if let Some(d) = self.debounce_until {
             return Some(d);
         }
 
-        if !self.batch.is_empty() {
-            return Some(now + POLL_INTERVAL);
+        if let Some(r) = self.retry_at {
+            return Some(r);
         }
 
         if let Some(close) = self.window.closes_at() {
@@ -157,7 +161,24 @@ impl EventScheduler {
             return PollOutcome::Dispatch(self.batch.flush());
         }
 
-        PollOutcome::Wait
+        // 热度不够：安排单次重试或丢弃
+        if self.retry_at.is_none() {
+            self.retry_at = Some(now + RETRY_INTERVAL);
+            tracing::debug!(
+                heat = %self.heat.value,
+                "Heat too low, will retry in 30s",
+            );
+            PollOutcome::Wait
+        } else {
+            tracing::debug!(
+                heat = %self.heat.value,
+                pending = self.batch.len(),
+                "Heat still too low after retry, discarding batch",
+            );
+            self.batch.discard();
+            self.retry_at = None;
+            PollOutcome::Wait
+        }
     }
 
     pub fn snapshot(&mut self) -> SchedulerStatus {

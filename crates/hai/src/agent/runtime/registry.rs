@@ -5,10 +5,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{AgentEngine, session::ChatSessionHandle, shell::ShellRuntime};
+use super::{AgentEngine, session::SessionHandle, shell::ShellRuntime};
 use crate::{agent::link::BotHandle, domain::vo::ChatId};
 
-pub struct ChatSessionManager {
+pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<ChatId, SessionEntry>>>,
     cleanup_tx: mpsc::UnboundedSender<ChatId>,
     bot: BotHandle,
@@ -16,11 +16,11 @@ pub struct ChatSessionManager {
 }
 
 struct SessionEntry {
-    handle: ChatSessionHandle,
+    handle: SessionHandle,
     task: JoinHandle<()>,
 }
 
-impl ChatSessionManager {
+impl SessionManager {
     pub fn new(bot: BotHandle, engine: AgentEngine) -> Self {
         let (cleanup_tx, mut cleanup_rx) = mpsc::unbounded_channel::<ChatId>();
         let sessions: Arc<RwLock<HashMap<ChatId, SessionEntry>>> =
@@ -47,7 +47,7 @@ impl ChatSessionManager {
         }
     }
 
-    pub async fn get_or_create(&self, chat_id: ChatId) -> ChatSessionHandle {
+    pub async fn get_or_create(&self, chat_id: ChatId) -> SessionHandle {
         if let Some(entry) = self.sessions.read().await.get(&chat_id) {
             if entry.handle.is_alive() {
                 return entry.handle.clone();
@@ -72,7 +72,7 @@ impl ChatSessionManager {
         let shell =
             std::sync::Arc::new(Mutex::new(ShellRuntime::new(&self.engine.app.cfg.sandbox)));
 
-        let handle = ChatSessionHandle {
+        let handle = SessionHandle {
             chat_id,
             wake_tx,
             status_tx,
@@ -85,7 +85,7 @@ impl ChatSessionManager {
             let engine = self.engine.clone();
             let bot = self.bot.clone();
             async move {
-                super::session::SessionLoop::new(
+                super::session::AgentSession::new(
                     engine,
                     chat_id,
                     bot,

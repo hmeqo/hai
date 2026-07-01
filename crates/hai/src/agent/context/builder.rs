@@ -19,7 +19,7 @@ use crate::{
             },
         },
         link::BuiltContext,
-        runtime::ctx::RoundContext,
+        runtime::context::RunContext,
     },
     agentcore::render::{Format, Node, render_pretty},
     domain::model::Message,
@@ -28,7 +28,7 @@ use crate::{
 
 // ── Shared data ──────────────────────────────────────────────────────────────
 
-struct RoundData {
+struct RunData {
     all_messages: Vec<Message>,
     message_ids: Vec<i64>,
     parsed: Vec<crate::agent::context::types::ParsedContent>,
@@ -38,7 +38,7 @@ struct RoundData {
     chat: crate::domain::model::Chat,
 }
 
-async fn prepare_round_data(ctx: &RoundContext, messages: &[Message]) -> Result<RoundData> {
+async fn prepare_run_data(ctx: &RunContext, messages: &[Message]) -> Result<RunData> {
     let services = &ctx.app.db.srv;
     let parser = ctx.bot.handler.content_parser();
     let chat_id = ctx.chat_id;
@@ -53,7 +53,7 @@ async fn prepare_round_data(ctx: &RoundContext, messages: &[Message]) -> Result<
     let accounts = collect_accounts(services, &all_messages).await?;
     let chat = load_chat(services, chat_id).await?;
 
-    Ok(RoundData {
+    Ok(RunData {
         all_messages,
         message_ids,
         parsed,
@@ -80,8 +80,8 @@ async fn prepare_messages(
 // ── Builder ─────────────────────────────────────────────────────────────────
 
 /// 首轮全量上下文渲染（含感知、话题、记忆等完整信息）
-pub async fn build_first_round_prompt(
-    ctx: &RoundContext,
+pub async fn build_first_run_prompt(
+    ctx: &RunContext,
     messages: &[Message],
 ) -> Result<BuiltContext> {
     let services = &ctx.app.db.srv;
@@ -89,7 +89,7 @@ pub async fn build_first_round_prompt(
     let parser = ctx.bot.handler.content_parser();
     let chat_id = ctx.chat_id;
 
-    let data = prepare_round_data(ctx, messages).await?;
+    let data = prepare_run_data(ctx, messages).await?;
     let search = search_related_context(
         services,
         cfg,
@@ -134,8 +134,8 @@ pub async fn build_first_round_prompt(
 }
 
 /// 后续轮次增量上下文渲染（<new> 块）
-pub async fn build_next_round_prompt(
-    ctx: &RoundContext,
+pub async fn build_next_run_prompt(
+    ctx: &RunContext,
     messages: &[Message],
     shown_memory_ids: &HashSet<Uuid>,
     shown_topic_ids: &HashSet<Uuid>,
@@ -155,7 +155,7 @@ pub async fn build_next_round_prompt(
         });
     }
 
-    let data = prepare_round_data(ctx, messages).await?;
+    let data = prepare_run_data(ctx, messages).await?;
 
     let perception_map = build_attachment_maps(services, parser, &data.all_messages).await?;
     let renderer = parser.create_renderer(&perception_map);

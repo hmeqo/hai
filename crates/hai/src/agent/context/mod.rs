@@ -1,6 +1,6 @@
 //! 上下文模块
 //!
-//! - `builder`：上下文渲染编排（`build_first_round_prompt`, `build_next_round_prompt`）
+//! - `builder`：上下文渲染编排（`build_first_run_prompt`, `build_next_run_prompt`）
 //! - `types`：共享类型（`ContentParser`, `PreviousRound` 等）
 //! - `helpers`：DB 查询辅助函数
 //! - `render_context`：`RenderContext` 数据结构与渲染入口
@@ -12,7 +12,7 @@ pub mod render_context;
 pub mod sections;
 pub mod types;
 
-pub(crate) use builder::{build_first_round_prompt, build_next_round_prompt};
+pub(crate) use builder::{build_first_run_prompt, build_next_run_prompt};
 pub(crate) use render_context::RenderContext;
 pub(crate) use sections::{
     account::account_element,

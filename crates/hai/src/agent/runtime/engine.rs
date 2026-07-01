@@ -4,7 +4,6 @@ use derive_more::Deref;
 use genai::Client;
 
 use crate::{
-    agent::{node::MainAgent, system_prompt::SystemPromptBuilder},
     agentcore::{mcp::McpManager, provider, skills::SkillManager},
     app::AppContext,
     error::Result,
@@ -42,25 +41,5 @@ impl AgentEngine {
             mcp_manager,
             skill_manager,
         })))
-    }
-
-    /// 根据 chat_type 构建 MainAgent（每轮调用）。
-    /// 不缓存节点，每次 build 都重新组装 system prompt。
-    pub fn build_node(&self, chat_type: crate::domain::model::ChatType) -> MainAgent {
-        let cfg = &self.0.app.cfg.agent;
-        let max_turns = cfg.context.max_turns;
-        let system_prompt = SystemPromptBuilder::new()
-            .personality(cfg)
-            .system_prompt(cfg)
-            .chat_type(cfg, chat_type)
-            .skills(&self.0.skill_manager)
-            .build();
-
-        MainAgent::new(
-            self.0.client.clone(),
-            self.0.model.clone(),
-            system_prompt,
-            max_turns,
-        )
     }
 }

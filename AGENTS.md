@@ -23,15 +23,31 @@ cargo run --bin toasty-cli -- migration apply       # 执行迁移
 ```
 hai/src/
 ├── agent/               agent 业务逻辑
-│   ├── runtime/         AgentEngine + ReactLoop + SessionLoop + EventScheduler
-│   │   ├── tool_ctx.rs  ToolContext（工具层窄上下文，不含 AppContext）
-│   │   └── registry.rs  ChatSessionManager（background mpsc 自动清理僵尸 session）
-│   ├── tools/           工具实现（每个文件一个工具集，工厂函数 tools(&ToolContext)）
-│   ├── node/            AgentNode trait + MainAgent 实现
-│   ├── context/         提示词上下文渲染（XML → prompt string）
-│   ├── link.rs          BotHandle + PlatformHandler trait
-│   ├── system_prompt.rs SystemPromptBuilder（链式组装系统提示词）
-│   └── personality/     性格配置渲染
+│   ├── node/               agent 节点定义（每个类型一个目录）
+│   │   └── main/           MainAgent 节点（SystemPromptBuilder + build_react_config）
+│   ├── runtime/            共享：AgentEngine + AgentSession + ReactLoop
+│   │   ├── context.rs       RunContext + ToolContext
+│   │   ├── types.rs         Run / RunOutput / ToolCallResult 类型
+│   │   ├── react.rs         run_react_loop（纯函数，node 无关）
+│   │   ├── engine.rs        AgentEngine（共享单例）
+│   │   ├── registry.rs      SessionManager（background mpsc 自动清理）
+│   │   ├── shell.rs         ShellRuntime（沙箱 shell）
+│   │   ├── event/           WakeEvent / WakeReason（跨层事件类型）
+│   │   │   └── wake.rs
+│   │   └── session/         AgentSession（状态机 + 调度器）
+│   │       ├── mod.rs        AgentSession + ActiveRun + event loop
+│   │       ├── proxy.rs      SessionHandle
+│   │       ├── dispatch.rs   事件调度 + 派发
+│   │       ├── run.rs        spawn_run_task + assemble_run
+│   │       ├── messages.rs   消息收集
+│   │       ├── context.rs    build_run_context 工厂
+│   │       ├── scheduler.rs  EventScheduler（热度 + 窗口 + 防抖 + 重试）
+│   │       └── attention.rs  Heat + Window（调度器数学原语）
+│   ├── tools/              工具实现（每个文件一个工具集）
+│   ├── context/            提示词上下文渲染（XML → prompt string）
+│   ├── link.rs             BotHandle + PlatformHandler trait
+│   ├── personality/        性格配置渲染
+│   └── multimodal/         多媒体服务
 ├── agentcore/           基础设施层（不依赖 agent/domain）
 │   ├── tool.rs          AgentTool trait + ToolError + 辅助函数
 │   ├── mcp.rs           McpManager + McpServerHandle（基于 rmcp）
@@ -56,30 +72,31 @@ hai/src/
 ## 通信模型
 
 ```
-Dispatcher ──handle.wake(WakeEvent)──► ChatSessionHandle.wake_tx
-                                           │
-                                     SessionLoop::run()
-                                           │
-                                Idle: select! { wake_rx, status_rx, deadline }
-                                Running: RunningRound::poll() { wake_rx, status_rx, result_rx }
-                                           │
-                                     dispatch_with() → assemble_round() + spawn_round_task()
+Dispatcher ──handle.wake(WakeEvent)──► SessionHandle.wake_tx
+                                            │
+                                      AgentSession::run()
+                                            │
+                                 match state { Idle, Active(ActiveRun) }
+                                 Idle → poll_idle() → select! { wake_rx, status_rx, deadline }
+                                 Active → active.poll() { wake_rx, status_rx, result_rx }
+                                            │
+                                      try_dispatch() → dispatch_with()
                                                          │ (tokio::spawn + oneshot)
-                                                     engine.run()
+                                                     node.run()
                                                          │
-                                                     Round ◄─────── result_rx
-                                           │
-                                     on_round_complete() → self.rounds.push + schedule.refresh
+                                                     Run ◄──────── result_rx
+                                            │
+                                      on_run_complete() → self.runs.push + schedule.refresh
 ```
 
 - **Platform → agent**：dispatcher → `registry.get_or_create(ChatId)` → `handle.wake(WakeEvent)`
-- **Agent round 执行**：`dispatch_with()` → `spawn_round_task()`（自由函数）→ Result 通过 per-round oneshot 返回
+- **Agent run 执行**：`dispatch_with()` → `spawn_run_task()`（自由函数）→ Result 通过 per-run oneshot 返回
 - **状态查询**：`handle.status()`（mpsc 通道）
 - **内部命令**走 `self.bot.send_message()`，不经会话
 
 ## Session 生命周期
 
-- `ChatSessionManager` 在 `agent/runtime/registry.rs`，管理所有 chat session 的创建与清理
+- `SessionManager` 在 `agent/runtime/registry.rs`，管理所有 agent session 的创建与清理
 - `get_or_create(ChatId)` → 读锁快速查找，写锁 double-check 后插入
 - 后台 task 监听 `mpsc::UnboundedReceiver<ChatId>`，收到退出信号后 `is_finished()` 确认 → 自动移除
 - session task 退出时通过 `cleanup_tx.send(chat_id)` 通知清理，无需 `sweep()` 轮询
@@ -116,7 +133,7 @@ pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
 }
 ```
 
-`get_main_agent_tools()` 在 `tools/mod.rs` 中合并所有模块的工具列表，`spawn_round_task()` 再与 MCP 工具合并后传入 `ReactLoop`。
+`get_main_agent_tools()` 在 `tools/mod.rs` 中合并所有模块的工具列表，`spawn_run_task()` 再与 MCP 工具合并后传入 `ReactLoop`。
 
 ## MCP
 

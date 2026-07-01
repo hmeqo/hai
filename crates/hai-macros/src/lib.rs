@@ -6,8 +6,9 @@ use syn::{
     parse_macro_input,
 };
 
-struct ToolArgs {
-    args_type: syn::Type,
+enum ToolArgs {
+    None_,
+    Type(syn::Type),
 }
 
 impl Parse for ToolArgs {
@@ -17,8 +18,18 @@ impl Parse for ToolArgs {
             return Err(syn::Error::new(ident.span(), "expected `args`"));
         }
         let _: Token![=] = input.parse()?;
+
+        if input.peek(Ident) {
+            let lookahead = input.fork();
+            let id: Ident = lookahead.parse()?;
+            if id == "none" {
+                input.parse::<Ident>()?;
+                return Ok(Self::None_);
+            }
+        }
+
         let args_type: syn::Type = input.parse()?;
-        Ok(Self { args_type })
+        Ok(Self::Type(args_type))
     }
 }
 
@@ -61,48 +72,66 @@ fn camel_to_snake(name: &str) -> String {
 
 #[proc_macro_attribute]
 pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args_opt = if attr.is_empty() {
-        None
-    } else {
-        Some(parse_macro_input!(attr as ToolArgs))
-    };
-
     let input = parse_macro_input!(item as ItemStruct);
-    let struct_name = &input.ident;
-    let attrs = &input.attrs;
-
-    let description = first_doc_comment(attrs);
-
+    let struct_name = input.ident.clone();
     let name_lit = camel_to_snake(&struct_name.to_string());
+    let description = first_doc_comment(&input.attrs);
 
-    let args_type = match args_opt {
-        Some(ref a) => a.args_type.clone(),
-        None => {
+    match syn::parse::<ToolArgs>(attr) {
+        Ok(ToolArgs::None_) => {
+            let expanded = quote! {
+                #[derive(::std::fmt::Debug)]
+                #input
+
+                #[::async_trait::async_trait]
+                impl AgentTool for #struct_name {
+                    fn name(&self) -> &str { #name_lit }
+                    fn description(&self) -> &str { #description }
+                    fn schema(&self) -> ::std::option::Option<::serde_json::Value> { None }
+                    async fn execute(
+                        &self,
+                        _args: ::serde_json::Value,
+                    ) -> ::std::result::Result<::serde_json::Value, ToolError> {
+                        self.exec().await
+                    }
+                }
+            };
+            TokenStream::from(expanded)
+        }
+        Ok(ToolArgs::Type(args_type)) => {
+            expand_with_args(&struct_name, name_lit, description, input, args_type)
+        }
+        Err(_) => {
             let args_name_str = format!("{}Args", struct_name);
             let args_ident = Ident::new(&args_name_str, struct_name.span());
-            syn::parse2::<syn::Type>(quote!(#args_ident)).expect("failed to construct args type")
+            let args_type = syn::parse2::<syn::Type>(quote!(#args_ident))
+                .expect("failed to construct args type");
+            expand_with_args(&struct_name, name_lit, description, input, args_type)
         }
-    };
+    }
+}
 
+fn expand_with_args(
+    struct_name: &Ident,
+    name_lit: String,
+    description: String,
+    input: ItemStruct,
+    args_type: syn::Type,
+) -> TokenStream {
     let expanded = quote! {
         #[derive(::std::fmt::Debug)]
         #input
 
         #[::async_trait::async_trait]
         impl AgentTool for #struct_name {
-            fn name(&self) -> &str {
-                #name_lit
+            fn name(&self) -> &str { #name_lit }
+            fn description(&self) -> &str { #description }
+            fn schema(&self) -> ::std::option::Option<::serde_json::Value> {
+                let s = ::serde_json::to_value(
+                    ::schemars::schema_for!(#args_type)
+                ).expect("valid schema");
+                Some(s)
             }
-
-            fn description(&self) -> &str {
-                #description
-            }
-
-            fn schema(&self) -> ::serde_json::Value {
-                ::serde_json::to_value(::schemars::schema_for!(#args_type))
-                    .expect("valid schema")
-            }
-
             async fn execute(
                 &self,
                 args: ::serde_json::Value,
@@ -112,6 +141,5 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     };
-
     TokenStream::from(expanded)
 }

@@ -6,7 +6,7 @@ use teloxide::{
     dispatching::{HandlerExt, UpdateFilterExt, dialogue::InMemStorage},
     dptree,
     prelude::*,
-    types::{Me, Message, ParseMode, Update},
+    types::{Me, Message, Update},
     utils::command::BotCommands,
 };
 
@@ -19,7 +19,7 @@ use crate::{
     agent::{
         event::{WakeEvent, WakeReason},
         link::{BotHandle, BotId},
-        runtime::registry::ChatSessionManager,
+        runtime::registry::SessionManager,
     },
     app::AppContext,
     domain::vo::ChatId,
@@ -40,7 +40,7 @@ impl TelegramDispatcher {
         bot_id: BotId,
         bot: Bot,
         ctx: AppContext,
-        registry: ChatSessionManager,
+        registry: SessionManager,
         handle: BotHandle,
         allowed_chat_ids: Vec<i64>,
     ) -> Result<Self> {
@@ -178,33 +178,47 @@ impl TelegramDispatcher {
                 {
                     Some(s) => {
                         let sched = &s.scheduler;
-                        let running = match s.round_elapsed_secs {
-                            Some(secs) => format!("🟢 运行 `{secs:.1}s`"),
-                            None => "⚪ 空闲".into(),
-                        };
-                        let window = if sched.window_active {
-                            let secs = sched.window_closes_in_secs.unwrap_or(0.0) as i64;
-                            format!("🪟 `{secs}s`")
+                        let mut lines = vec![format!("model   {}", s.model)];
+
+                        // runs line
+                        let runs_line = if let Some(secs) = s.run_elapsed_secs {
+                            format!("runs    {} · active {:.1}s", s.runs_completed, secs)
                         } else {
-                            "🪟 —".into()
+                            format!("runs    {}", s.runs_completed)
                         };
-                        format!(
-                            "🤖 Agent · {}轮次 · `{}`\n{}\n🔥 `{:.2}` / `{:.2}`\n{}\n📥 `{}`",
-                            s.rounds_completed,
-                            s.model,
-                            running,
-                            sched.heat_value,
-                            sched.heat_base,
-                            window,
-                            sched.pending_events,
-                        )
+                        lines.push(runs_line);
+
+                        // tokens line（最后一轮输入）
+                        if let Some(turns) = &s.last_run_turns {
+                            if let Some(turn) = turns.last() {
+                                let prompt = turn.usage.prompt_tokens.unwrap_or(0) as u32;
+                                if prompt > 0 {
+                                    lines.push(format!("tokens  {}", fmt_tokens(prompt)));
+                                }
+                            }
+                        }
+
+                        // heat line
+                        let heat =
+                            format!("heat    {:.2} / {:.2}", sched.heat_value, sched.heat_base);
+                        let heat_line = if sched.window_active {
+                            let secs = sched.window_closes_in_secs.unwrap_or(0.0) as i64;
+                            format!("{} · window {}s", heat, secs)
+                        } else {
+                            heat
+                        };
+                        lines.push(heat_line);
+
+                        // queue
+                        if sched.pending_events > 0 {
+                            lines.push(format!("queue   {}", sched.pending_events));
+                        }
+
+                        lines.join("\n")
                     }
-                    None => "🤖 Agent 状态\n获取失败".into(),
+                    None => "model   (no session)".into(),
                 };
-                self.bot
-                    .send_message(msg.chat.id, status_msg)
-                    .parse_mode(ParseMode::MarkdownV2)
-                    .await?;
+                self.bot.send_message(msg.chat.id, status_msg).await?;
             }
             Command::OrganizeMemory => {
                 let inner_chat_id = self.msg_handler.get_internal_chat_id(&msg).await?;
@@ -221,6 +235,15 @@ impl TelegramDispatcher {
             }
         }
         Ok(())
+    }
+}
+
+/// 格式化 token 数字：1500 → "1.5k"
+fn fmt_tokens(n: u32) -> String {
+    if n >= 1000 {
+        format!("{}.{}k", n / 1000, (n % 1000) / 100)
+    } else {
+        n.to_string()
     }
 }
 

@@ -6,7 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    agent::{context::related_memories_section, runtime::tool_ctx::ToolContext},
+    agent::{context::related_memories_section, runtime::context::ToolContext},
     agentcore::{
         render::render_json,
         tool::{AgentTool, MapToolErr, ToolError, tool_data, tool_err, tool_ok},

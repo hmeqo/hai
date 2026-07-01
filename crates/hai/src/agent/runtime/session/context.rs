@@ -1,10 +1,10 @@
-//! RoundContext 工厂 —— 从 events 构建执行上下文。
+//! RunContext 工厂 —— 从 events 构建执行上下文。
 
-use super::SessionLoop;
-use crate::agent::{event::WakeEvent, runtime::ctx::RoundContext};
+use super::AgentSession;
+use crate::agent::{event::WakeEvent, runtime::context::RunContext};
 
-impl SessionLoop {
-    pub(super) fn build_round_context(&self, events: Vec<WakeEvent>) -> RoundContext {
+impl AgentSession {
+    pub(super) fn build_run_context(&self, events: Vec<WakeEvent>) -> RunContext {
         let mut seen = std::collections::HashSet::new();
         let events: Vec<WakeEvent> = events
             .into_iter()
@@ -17,7 +17,7 @@ impl SessionLoop {
             })
             .collect();
 
-        RoundContext {
+        RunContext {
             app: self.engine.app.clone(),
             chat_id: self.chat_id,
             chat_type: self.chat_type,

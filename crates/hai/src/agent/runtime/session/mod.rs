@@ -1,42 +1,44 @@
+mod attention;
 mod context;
+mod conversation;
 mod dispatch;
 mod messages;
 mod proxy;
-mod round;
+mod run;
+mod scheduler;
 
 use std::sync::Arc;
 
-use genai::chat::ChatMessage;
-pub use proxy::ChatSessionHandle;
+pub use proxy::SessionHandle;
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
     time::{Duration, Instant},
 };
 
-use super::{
-    AgentEngine,
-    event::{WakeEvent, scheduler::EventScheduler},
-    round::Round,
-    shell::ShellRuntime,
+use self::{
+    conversation::Conversation,
+    scheduler::{EventScheduler, PollOutcome},
 };
+use super::{AgentEngine, event::WakeEvent, shell::ShellRuntime, types::RunOutput};
 use crate::{
     agent::link::BotHandle,
+    config::schema::ConversationMode,
     domain::{
         model::ChatType,
         vo::{AttachmentParser, ChatId},
     },
 };
 
-// ── 运行中的轮次 ─────────────────────────────────────────────────────────────
+// ── Active Run ─────────────────────────────────────────────────────────────
 
-struct RunningRound {
+struct ActiveRun {
     handle: JoinHandle<()>,
-    result_rx: oneshot::Receiver<proxy::RoundSignal>,
+    result_rx: oneshot::Receiver<proxy::RunSignal>,
     started_at: Instant,
 }
 
-impl RunningRound {
+impl ActiveRun {
     async fn poll(
         &mut self,
         wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
@@ -59,23 +61,46 @@ impl RunningRound {
     }
 }
 
-// ── select! 轮询结果 ─────────────────────────────────────────────────────────
+// ── Poll Outcome ──────────────────────────────────────────────────────────
 
 enum RunningOutcome {
     Wake(WakeEvent),
     Status(oneshot::Sender<proxy::SessionStatus>),
-    Success(Round),
+    Success(RunOutput),
     Failed,
     Cancelled,
 }
 
-// ── Session 状态机 ───────────────────────────────────────────────────────────
+// ── Session State ─────────────────────────────────────────────────────────
 
-pub(super) struct SessionLoop {
+enum SessionState {
+    Idle,
+    Active(ActiveRun),
+}
+
+impl SessionState {
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::Idle)
+    }
+}
+
+// ── Idle Step ─────────────────────────────────────────────────────────────
+
+enum IdleStep {
+    Wake(WakeEvent),
+    Status(oneshot::Sender<proxy::SessionStatus>),
+    Dispatch(Vec<WakeEvent>),
+    Wait,
+    Expired,
+    Closed,
+}
+
+// ── AgentSession ──────────────────────────────────────────────────────────
+
+pub(super) struct AgentSession {
     schedule: EventScheduler,
-    messages: Vec<ChatMessage>,
-    rounds: Vec<Round>,
-    running: Option<RunningRound>,
+    conversation: Option<Conversation>,
+    state: SessionState,
     engine: AgentEngine,
     enabled_parsers: Vec<&'static str>,
     tts_enabled: bool,
@@ -85,7 +110,7 @@ pub(super) struct SessionLoop {
     shell: Arc<Mutex<ShellRuntime>>,
 }
 
-impl SessionLoop {
+impl AgentSession {
     pub(super) async fn new(
         engine: AgentEngine,
         chat_id: ChatId,
@@ -115,11 +140,17 @@ impl SessionLoop {
             }
         };
 
+        let conversation =
+            if engine.app.cfg.agent.context.conversation_mode == ConversationMode::Persistent {
+                Some(Conversation::new())
+            } else {
+                None
+            };
+
         Self {
             schedule: EventScheduler::new(base_heat, window_secs),
-            messages: Vec::new(),
-            rounds: Vec::new(),
-            running: None,
+            conversation,
+            state: SessionState::Idle,
             engine,
             chat_id,
             chat_type,
@@ -131,100 +162,110 @@ impl SessionLoop {
     }
 }
 
-// ── 事件循环 ─────────────────────────────────────────────────────────────────
+// ── Event Loop ────────────────────────────────────────────────────────────
 
-impl SessionLoop {
+impl AgentSession {
     pub(super) async fn run(
         &mut self,
         mut wake_rx: mpsc::UnboundedReceiver<WakeEvent>,
         mut status_rx: mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
     ) {
         loop {
-            if self.running.is_some() {
-                self.step_running(&mut wake_rx, &mut status_rx).await;
-            } else if !self.step_idle(&mut wake_rx, &mut status_rx).await {
-                break;
+            match self.state.take() {
+                SessionState::Idle => match self.poll_idle(&mut wake_rx, &mut status_rx).await {
+                    IdleStep::Wake(wake) => {
+                        let is_rapid = wake.reason.is_rapid();
+                        self.schedule.push(wake);
+                        if is_rapid {
+                            self.try_dispatch().await;
+                        } else {
+                            self.state = SessionState::Idle;
+                        }
+                    }
+                    IdleStep::Status(query) => {
+                        self.answer_status(query);
+                        self.state = SessionState::Idle;
+                    }
+                    IdleStep::Dispatch(events) => self.dispatch_with(events).await,
+                    IdleStep::Wait => self.state = SessionState::Idle,
+                    IdleStep::Expired | IdleStep::Closed => break,
+                },
+                SessionState::Active(mut active) => {
+                    let outcome = active.poll(&mut wake_rx, &mut status_rx).await;
+                    match outcome {
+                        RunningOutcome::Wake(wake) => {
+                            let is_rapid = wake.reason.is_rapid();
+                            let is_addressed = wake.reason.is_addressed();
+                            self.schedule.push(wake);
+                            if is_rapid
+                                || (is_addressed
+                                    && active.started_at.elapsed() < Duration::from_secs(3))
+                            {
+                                active.abort();
+                                self.try_dispatch().await;
+                            } else {
+                                self.state = SessionState::Active(active);
+                            }
+                        }
+                        RunningOutcome::Status(query) => {
+                            self.answer_status(query);
+                            self.state = SessionState::Active(active);
+                        }
+                        RunningOutcome::Success(output) => {
+                            let run = output.run;
+                            self.on_run_complete(run, output.messages).await;
+                            self.try_dispatch().await;
+                        }
+                        RunningOutcome::Failed => {
+                            tracing::warn!(
+                                %self.chat_id,
+                                elapsed_secs = %active.started_at.elapsed().as_secs_f64(),
+                                "Run failed",
+                            );
+                            self.try_dispatch().await;
+                        }
+                        RunningOutcome::Cancelled => {
+                            tracing::warn!(
+                                %self.chat_id,
+                                elapsed_secs = %active.started_at.elapsed().as_secs_f64(),
+                                "Run panicked",
+                            );
+                            self.try_dispatch().await;
+                        }
+                    }
+                }
             }
         }
     }
 
-    async fn step_idle(
+    async fn poll_idle(
         &mut self,
         wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
         status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
-    ) -> bool {
+    ) -> IdleStep {
         let timeout = self.idle_timeout();
         match self.schedule.next_deadline(timeout) {
             Some(t) => {
                 tokio::select! {
-                    Some(wake) = wake_rx.recv() => self.on_wake(wake).await,
-                    Some(query) = status_rx.recv() => self.answer_status(query, false, None),
-                    _ = tokio::time::sleep_until(t) => return self.handle_deadline().await,
-                    else => return false,
+                    Some(wake) = wake_rx.recv() => IdleStep::Wake(wake),
+                    Some(query) = status_rx.recv() => IdleStep::Status(query),
+                    _ = tokio::time::sleep_until(t) => match self.schedule.poll(timeout) {
+                        PollOutcome::Dispatch(events) => IdleStep::Dispatch(events),
+                        PollOutcome::Expired => {
+                            tracing::info!(chat_id = %self.chat_id, "Session expired, shutting down");
+                            IdleStep::Expired
+                        }
+                        PollOutcome::Wait => IdleStep::Wait,
+                    },
+                    else => IdleStep::Closed,
                 }
             }
             None => {
                 tokio::select! {
-                    Some(wake) = wake_rx.recv() => self.on_wake(wake).await,
-                    Some(query) = status_rx.recv() => self.answer_status(query, false, None),
-                    else => return false,
+                    Some(wake) = wake_rx.recv() => IdleStep::Wake(wake),
+                    Some(query) = status_rx.recv() => IdleStep::Status(query),
+                    else => IdleStep::Closed,
                 }
-            }
-        }
-        true
-    }
-
-    async fn step_running(
-        &mut self,
-        wake_rx: &mut mpsc::UnboundedReceiver<WakeEvent>,
-        status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
-    ) {
-        let mut round = match self.running.take() {
-            Some(r) => r,
-            None => return,
-        };
-
-        let outcome = round.poll(wake_rx, status_rx).await;
-
-        match outcome {
-            RunningOutcome::Wake(wake) => {
-                let is_rapid = wake.reason.is_rapid();
-                let is_addressed = wake.reason.is_addressed();
-                self.schedule.push(wake);
-                if is_rapid {
-                    round.abort();
-                    self.try_dispatch_next().await;
-                } else if is_addressed && round.started_at.elapsed() < Duration::from_secs(3) {
-                    round.abort();
-                } else {
-                    self.running = Some(round);
-                }
-            }
-            RunningOutcome::Status(query) => {
-                self.answer_status(query, true, Some(round.started_at));
-                self.running = Some(round);
-            }
-            RunningOutcome::Success(output) => {
-                self.on_round_complete(output).await;
-                self.try_dispatch_next().await;
-            }
-            RunningOutcome::Failed => {
-                let elapsed = round.started_at.elapsed();
-                tracing::warn!(
-                    %self.chat_id,
-                    elapsed_secs = %elapsed.as_secs_f64(),
-                    "Round failed",
-                );
-                self.try_dispatch_next().await;
-            }
-            RunningOutcome::Cancelled => {
-                let elapsed = round.started_at.elapsed();
-                tracing::warn!(
-                    %self.chat_id,
-                    elapsed_secs = %elapsed.as_secs_f64(),
-                    "Round panicked",
-                );
-                self.try_dispatch_next().await;
             }
         }
     }

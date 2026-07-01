@@ -29,7 +29,7 @@ impl From<serde_json::Error> for ToolError {
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn schema(&self) -> Value;
+    fn schema(&self) -> Option<Value>;
     async fn execute(&self, args: Value) -> Result<Value, ToolError>;
 }
 

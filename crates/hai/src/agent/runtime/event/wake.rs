@@ -104,7 +104,7 @@ pub struct WakeEventInner {
     pub reason: WakeReason,
 }
 
-/// 平台 → ChatSession 的一条唤醒通知
+/// 平台 → AgentSession 的一条唤醒通知
 #[derive(Debug, Clone, Deref)]
 pub struct WakeEvent(Arc<WakeEventInner>);
 

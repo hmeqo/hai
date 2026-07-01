@@ -7,7 +7,7 @@ use rmcp::{
     service::RunningService,
     transport::child_process::TokioChildProcess,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -174,8 +174,14 @@ impl AgentTool for McpAgentTool {
         self.tool.description.as_deref().unwrap_or("")
     }
 
-    fn schema(&self) -> Value {
-        serde_json::to_value(&*self.tool.input_schema).unwrap_or(json!({"type": "object"}))
+    fn schema(&self) -> Option<Value> {
+        match serde_json::to_value(&*self.tool.input_schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(tool = %self.name(), error = %e, "MCP tool schema serialization failed");
+                None
+            }
+        }
     }
 
     async fn execute(&self, args: Value) -> std::result::Result<Value, ToolError> {

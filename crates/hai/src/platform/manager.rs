@@ -5,7 +5,7 @@ use teloxide::{Bot, prelude::Requester};
 use crate::{
     agent::{
         link::{BotHandle, BotId, BotProfile},
-        runtime::{AgentEngine, registry::ChatSessionManager},
+        runtime::{AgentEngine, registry::SessionManager},
     },
     app::AppContext,
     config::schema::{BotConfig, BotPlatform},
@@ -41,7 +41,7 @@ pub async fn spawn_bots(ctx: &AppContext, engine: &AgentEngine) -> Result<()> {
                     bot_id.clone(),
                     bot,
                     ctx.clone(),
-                    ChatSessionManager::new(handle.clone(), engine.clone()),
+                    SessionManager::new(handle.clone(), engine.clone()),
                     handle,
                     resolved.allowed_chat_ids,
                 )

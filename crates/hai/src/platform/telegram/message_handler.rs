@@ -4,7 +4,7 @@ use super::util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type};
 use crate::{
     agent::{
         event::{WakeEvent, WakeReason},
-        runtime::{ChatSessionHandle, registry::ChatSessionManager},
+        runtime::{SessionHandle, registry::SessionManager},
     },
     app::AppContext,
     domain::{
@@ -17,15 +17,15 @@ use crate::{
 /// 消息处理层：账号解析、消息持久化、Agent 事件分发。
 pub(super) struct MessageHandler {
     ctx: AppContext,
-    registry: ChatSessionManager,
+    registry: SessionManager,
 }
 
 impl MessageHandler {
-    pub fn new(ctx: AppContext, registry: ChatSessionManager) -> Self {
+    pub fn new(ctx: AppContext, registry: SessionManager) -> Self {
         Self { ctx, registry }
     }
 
-    pub(super) async fn session(&self, chat_id: ChatId) -> ChatSessionHandle {
+    pub(super) async fn session(&self, chat_id: ChatId) -> SessionHandle {
         self.registry.get_or_create(chat_id).await
     }
 

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::{
     agent::{
         link::{BotHandle, SendMessageReq},
-        runtime::tool_ctx::ToolContext,
+        runtime::context::ToolContext,
         tools::util::deserialize_option_lenient_i64_vec,
     },
     agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_data},

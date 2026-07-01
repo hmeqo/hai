@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    agent::runtime::tool_ctx::ToolContext,
+    agent::runtime::context::ToolContext,
     agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_ok},
     domain::{service::DbServices, vo::ChatId},
 };

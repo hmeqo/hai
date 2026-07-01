@@ -3,27 +3,29 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::super::event::scheduler::SchedulerStatus;
+use self::super::scheduler::SchedulerStatus;
+use super::super::types::{RunOutput, Turn};
 use crate::{agent::event::WakeEvent, domain::vo::ChatId};
 
-pub(super) type RoundSignal = Option<super::super::round::Round>;
+pub(super) type RunSignal = Option<RunOutput>;
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,
-    pub rounds_completed: usize,
-    pub round_running: bool,
-    pub round_elapsed_secs: Option<f64>,
+    pub runs_completed: usize,
+    pub run_in_progress: bool,
+    pub run_elapsed_secs: Option<f64>,
     pub model: String,
+    pub last_run_turns: Option<Vec<Turn>>,
 }
 
 #[derive(Clone)]
-pub struct ChatSessionHandle {
+pub struct SessionHandle {
     pub chat_id: ChatId,
     pub wake_tx: mpsc::UnboundedSender<WakeEvent>,
     pub status_tx: mpsc::UnboundedSender<oneshot::Sender<SessionStatus>>,
 }
 
-impl ChatSessionHandle {
+impl SessionHandle {
     pub fn wake(&self, event: WakeEvent) {
         if let Err(e) = self.wake_tx.send(event) {
             tracing::error!(chat_id = %self.chat_id, "Failed to send wake event: {e}");

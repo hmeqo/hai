@@ -1,26 +1,17 @@
 use tokio::time::Duration;
 
-use super::SessionLoop;
+use super::AgentSession;
 use crate::domain::model::Message;
 
-impl SessionLoop {
+impl AgentSession {
     pub(super) async fn gather_messages(&self) -> (Vec<Message>, i64) {
         let cfg = &self.engine.app.cfg.agent.context;
         let msg_srv = &self.engine.app.db.srv.message;
 
-        if self.rounds.is_empty() {
-            match msg_srv
-                .get_context_messages(self.chat_id, cfg.history_cap, cfg.message_history_limit)
-                .await
-            {
-                Ok((msgs, last_id)) => (msgs, last_id),
-                Err(e) => {
-                    tracing::error!(%self.chat_id, "Failed to fetch context messages: {e}");
-                    (Vec::new(), -1)
-                }
-            }
-        } else {
-            let since_id = self.rounds.last().unwrap().since_id;
+        if let Some(conv) = &self.conversation
+            && let Some(last) = conv.last_run()
+        {
+            let since_id = last.since_id;
             match msg_srv
                 .get_messages_window(self.chat_id, Some(since_id), cfg.history_cap)
                 .await
@@ -32,6 +23,17 @@ impl SessionLoop {
                 Err(e) => {
                     tracing::error!(%self.chat_id, "Failed to gather messages: {e}");
                     (Vec::new(), since_id)
+                }
+            }
+        } else {
+            match msg_srv
+                .get_context_messages(self.chat_id, cfg.history_cap, cfg.message_history_limit)
+                .await
+            {
+                Ok((msgs, last_id)) => (msgs, last_id),
+                Err(e) => {
+                    tracing::error!(%self.chat_id, "Failed to fetch context messages: {e}");
+                    (Vec::new(), -1)
                 }
             }
         }

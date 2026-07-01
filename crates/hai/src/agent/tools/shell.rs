@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     agent::{
-        runtime::{shell::ShellRuntime, tool_ctx::ToolContext},
+        runtime::{context::ToolContext, shell::ShellRuntime},
         tools::util::deserialize_option_lenient_u64,
     },
     agentcore::{
@@ -47,8 +47,8 @@ impl AgentTool for RunShell {
         &self.description
     }
 
-    fn schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(ShellArgs)).expect("valid schema")
+    fn schema(&self) -> Option<Value> {
+        Some(serde_json::to_value(schemars::schema_for!(ShellArgs)).expect("valid schema"))
     }
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
@@ -85,7 +85,7 @@ pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     let description = if ctx.sandbox_enabled {
         format!(
             "执行 shell 命令。运行在容器中（镜像: {}）。可通过 skill 参数自动挂载 skill 目录。",
-            ctx.sandbox_image,
+            ctx.sandbox_image.as_deref().unwrap_or("unknown"),
         )
     } else {
         "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into()

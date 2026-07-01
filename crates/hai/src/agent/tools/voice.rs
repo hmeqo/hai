@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::{
     agent::{
         link::{BotHandle, SendVoiceReq},
-        node::MultimodalService,
-        runtime::tool_ctx::ToolContext,
+        multimodal::MultimodalService,
+        runtime::context::ToolContext,
     },
     agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_ok},
     domain::vo::ChatId,

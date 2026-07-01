@@ -7,7 +7,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    agent::{link::PlatformHandler, runtime::tool_ctx::ToolContext},
+    agent::{link::PlatformHandler, runtime::context::ToolContext},
     agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_data, tool_err},
 };
 
@@ -42,8 +42,11 @@ impl AgentTool for AnalyzeAttachment {
     fn description(&self) -> &str {
         &self.description
     }
-    fn schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(AnalyzeAttachmentArgs)).expect("valid schema")
+    fn schema(&self) -> Option<Value> {
+        Some(
+            serde_json::to_value(schemars::schema_for!(AnalyzeAttachmentArgs))
+                .expect("valid schema"),
+        )
     }
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
