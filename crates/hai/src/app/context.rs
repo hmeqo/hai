@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, Guard};
+use arc_swap::ArcSwap;
 use derive_more::Deref;
 
 use crate::{
@@ -30,8 +30,8 @@ impl AppContext {
         let providers = ProviderManager::new(&cfg)?;
         let multimodal = MultimodalService::from_config(&cfg, &providers);
 
-        let db_handle = db::init_db(&cfg.database).await?;
-        let db_srv = DbServices::new(db_handle.clone(), multimodal.clone());
+        let (db_handle, pool) = db::init_db(&cfg.database).await?;
+        let db_srv = DbServices::new(db_handle.clone(), pool, multimodal.clone());
 
         let provider = ProviderContext {
             provider: providers,
@@ -75,8 +75,8 @@ pub struct AgentContext {
 }
 
 impl AgentContext {
-    pub fn current_model(&self) -> Guard<Arc<String>> {
-        self.current_model.load()
+    pub fn current_model(&self) -> Arc<String> {
+        self.current_model.load().clone()
     }
 
     pub fn set_current_model(&self, model: String) {

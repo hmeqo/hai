@@ -1,38 +1,7 @@
 use std::fmt;
 
-use autoagents::core::tool::ToolCallError;
 use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::error::AppError;
-
-impl From<AppError> for ToolCallError {
-    fn from(e: AppError) -> Self {
-        ToolCallError::RuntimeError(Box::new(e))
-    }
-}
-
-pub fn tool_ok() -> Result<Value, ToolCallError> {
-    Ok(json!({ "ok": true }))
-}
-
-pub fn tool_data(data: Value) -> Result<Value, ToolCallError> {
-    Ok(json!({ "ok": true, "data": data }))
-}
-
-pub fn tool_err(msg: impl Into<String>) -> ToolCallError {
-    ToolCallError::RuntimeError(msg.into().into())
-}
-
-pub trait MapToolErr<T> {
-    fn into_tool_err(self) -> Result<T, ToolCallError>;
-}
-
-impl<T> MapToolErr<T> for Result<T, AppError> {
-    fn into_tool_err(self) -> Result<T, ToolCallError> {
-        self.map_err(|e| ToolCallError::RuntimeError(Box::new(e)))
-    }
-}
+use serde_json::Value;
 
 // ---------------------------------------------------------------------------
 // Lenient deserialization for Vec<i64> — accepts array, single number, or "x,y" string
@@ -125,7 +94,7 @@ where
 
         fn visit_some<D2>(self, d2: D2) -> Result<Self::Value, D2::Error>
         where
-            D2: serde::Deserializer<'de>,
+            D2: serde::de::Deserializer<'de>,
         {
             d2.deserialize_any(LenientI64Visitor).map(Some)
         }
@@ -139,17 +108,15 @@ pub fn deserialize_option_lenient_u64<'de, D>(d: D) -> Result<Option<u64>, D::Er
 where
     D: serde::Deserializer<'de>,
 {
-    let v = serde_json::Value::deserialize(d)?;
+    let v = Value::deserialize(d)?;
     match v {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::Number(n) => n
+        Value::Null => Ok(None),
+        Value::Number(n) => n
             .as_u64()
             .ok_or_else(|| serde::de::Error::custom("expected u64"))
             .map(Some),
-        serde_json::Value::String(s) if s.is_empty() => Ok(None),
-        serde_json::Value::String(s) => {
-            s.parse::<u64>().map(Some).map_err(serde::de::Error::custom)
-        }
+        Value::String(s) if s.is_empty() => Ok(None),
+        Value::String(s) => s.parse::<u64>().map(Some).map_err(serde::de::Error::custom),
         _ => Err(serde::de::Error::custom(
             "expected a number or string representing u64",
         )),

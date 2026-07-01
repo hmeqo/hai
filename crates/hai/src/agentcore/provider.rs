@@ -1,13 +1,9 @@
-use std::sync::Arc;
-
-use autoagents::{
-    llm::{LLMProvider, backends, chat::ReasoningEffort},
-    prelude::LLMBuilder,
-};
+use genai::{Client, resolver::AuthData};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
-use crate::error::{AppResultExt, ErrorKind, Result};
+use crate::{config::schema::ProviderConfig, error::Result};
 
+/// Provider 类型枚举。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter, IntoStaticStr)]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
 pub enum ProviderBackend {
@@ -23,16 +19,6 @@ pub enum ProviderBackend {
     MiniMax,
     Phind,
     Requesty,
-}
-
-pub struct LlmBuildConfig {
-    pub api_key: String,
-    pub base_url: String,
-    pub model: String,
-    pub reasoning: bool,
-    pub reasoning_effort: ReasoningEffort,
-    pub temperature: f32,
-    pub max_tokens: Option<u32>,
 }
 
 impl ProviderBackend {
@@ -63,41 +49,37 @@ impl ProviderBackend {
             .unwrap_or_else(|| self.default_base_url().to_string())
     }
 
-    pub fn build(self, cfg: LlmBuildConfig) -> Result<Arc<dyn LLMProvider>> {
-        macro_rules! build_provider {
-            ($ty:ty) => {{
-                let mut builder: LLMBuilder<$ty> = LLMBuilder::new()
-                    .api_key(&cfg.api_key)
-                    .base_url(&cfg.base_url)
-                    .model(&cfg.model)
-                    .reasoning(cfg.reasoning)
-                    .reasoning_effort(cfg.reasoning_effort)
-                    .temperature(cfg.temperature);
-                if let Some(v) = cfg.max_tokens {
-                    builder = builder.max_tokens(v);
-                }
-                builder
-                    .build()
-                    .map(|arc| arc as Arc<dyn LLMProvider>)
-                    .err_kind(ErrorKind::Internal)
-            }};
-        }
-
+    fn genai_model_prefix(&self) -> &'static str {
         match self {
-            Self::OpenRouter => build_provider!(backends::openrouter::OpenRouter),
-            Self::OpenAI | Self::Requesty => {
-                build_provider!(backends::openai::OpenAI)
-            }
-            Self::Anthropic => build_provider!(backends::anthropic::Anthropic),
-            Self::Google => build_provider!(backends::google::Google),
-            Self::DeepSeek => build_provider!(backends::deepseek::DeepSeek),
-            Self::Groq => build_provider!(backends::groq::Groq),
-            Self::Ollama => build_provider!(backends::ollama::Ollama),
-            Self::XAI => build_provider!(backends::xai::XAI),
-            other => Err(ErrorKind::InvalidParameter.msg(format!(
-                "LLM provider '{other}' is not yet supported. Supported: {}",
-                Self::supported_types().join(", ")
-            ))),
+            Self::OpenRouter => "open_router::",
+            Self::OpenAI => "",
+            Self::Anthropic => "",
+            Self::Google => "",
+            Self::DeepSeek => "deepseek::",
+            Self::Groq => "groq::",
+            Self::Ollama => "",
+            Self::XAI => "xai::",
+            Self::AzureOpenAI => "",
+            Self::MiniMax => "minimax::",
+            Self::Phind => "phind::",
+            Self::Requesty => "",
         }
     }
+}
+
+pub fn genai_model_name(provider: &ProviderBackend, model: &str) -> String {
+    let prefix = provider.genai_model_prefix();
+    format!("{prefix}{model}")
+}
+
+/// 创建 genai Client 并配置 API key。
+/// 用 `AuthResolver` 而非 `set_var`，避免 unsafe。
+pub fn create_genai_client(provider_config: &ProviderConfig) -> Result<Client> {
+    let api_key = provider_config.api_key.clone().unwrap_or_default();
+    let client = Client::builder()
+        .with_auth_resolver_fn(move |_model_iden: genai::ModelIden| {
+            Ok(Some(AuthData::from_single(api_key.clone())))
+        })
+        .build();
+    Ok(client)
 }

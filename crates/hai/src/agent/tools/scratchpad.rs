@@ -1,43 +1,31 @@
 use std::sync::Arc;
 
-use autoagents::{
-    async_trait,
-    core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
-};
-use autoagents_derive::{ToolInput, tool};
-use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    agent::{
-        runtime::ctx::RoundContext,
-        tools::util::{MapToolErr, tool_ok},
-    },
+    agent::runtime::tool_ctx::ToolContext,
+    agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_ok},
     domain::{service::DbServices, vo::ChatId},
 };
 
-#[derive(Debug, Serialize, Deserialize, ToolInput)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateScratchpadArgs {
-    #[input(description = "新的内容")]
+    /// 新的内容
     #[serde(default)]
     pub content: String,
 }
 
-#[tool(
-    name = "update_scratchpad",
-    description = "更新你的主观工作记忆（草稿板），用于跨轮次延续思考进度。每次处理消息时先回顾再更新，已完成的及时清理。",
-    input = UpdateScratchpadArgs,
-)]
+/// 更新你的主观工作记忆（草稿板），用于跨轮次延续思考进度。每次处理消息时先回顾再更新，已完成的及时清理。
+#[hai_macros::tool]
 pub struct UpdateScratchpad {
     pub chat_id: ChatId,
     pub services: DbServices,
 }
 
-#[async_trait]
-impl ToolRuntime for UpdateScratchpad {
-    async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
-        let args: UpdateScratchpadArgs = serde_json::from_value(args)?;
-
+impl UpdateScratchpad {
+    async fn exec(&self, args: UpdateScratchpadArgs) -> Result<Value, ToolError> {
         self.services
             .scratchpad
             .save(self.chat_id, &args.content)
@@ -48,7 +36,7 @@ impl ToolRuntime for UpdateScratchpad {
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     vec![Arc::new(UpdateScratchpad {
         chat_id: ctx.chat_id,
         services: ctx.db.clone(),

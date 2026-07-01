@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use derive_more::Deref;
 use strum::{EnumString, IntoStaticStr};
@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::domain::vo::ChatId;
 
 /// 定时/后台任务的具体负载
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct TaskPayload {
     pub task_id: Option<Uuid>,
     pub description: String,
@@ -31,8 +31,7 @@ impl TaskPayload {
 ///
 /// 只描述"为什么唤醒了 Agent"，**不包含行为指令**。
 /// Agent 根据自身人格自主决定如何响应。
-#[derive(Debug, Clone, Default, PartialEq, Eq, EnumString, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
 pub enum WakeReason {
     #[default]
     /// 注意力系统监测到新消息
@@ -45,6 +44,18 @@ pub enum WakeReason {
     Scheduled(TaskPayload),
     /// 用户显式指令
     Command(String),
+}
+
+impl fmt::Display for WakeReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Observe => write!(f, "observe"),
+            Self::Direct => write!(f, "direct"),
+            Self::Mention => write!(f, "mention"),
+            Self::Scheduled(p) => write!(f, "scheduled({})", p.description),
+            Self::Command(c) => write!(f, "command({c})"),
+        }
+    }
 }
 
 impl WakeReason {

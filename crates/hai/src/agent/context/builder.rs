@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use genai::chat::ChatMessage;
 use uuid::Uuid;
 
 use crate::{
@@ -10,11 +11,11 @@ use crate::{
                 build_attachment_maps, collect_accounts, load_chat, load_perceptions,
                 load_reply_context, search_related_context, search_related_dedup,
             },
-            render_context::{RenderContextData, SandboxInfo},
+            render_context::RenderContextData,
             render_main_context,
             sections::{
                 chat::render_chat_info, memory::related_memories_section,
-                message::conversation_element, topic::topic_element_static,
+                message::conversation_element, related_topics_section,
             },
         },
         link::BuiltContext,
@@ -105,8 +106,6 @@ pub async fn build_first_round_prompt(
     let scratchpad = services.scratchpad.get(chat_id).await?.map(|s| s.content);
     let total_unread = services.message.count_unread_by_chat(chat_id).await?;
 
-    let sandbox_info = Some(SandboxInfo::from(&cfg.sandbox));
-
     let context_data = RenderContextData {
         bot: ctx.bot.profile.clone(),
         chat: data.chat,
@@ -120,13 +119,13 @@ pub async fn build_first_round_prompt(
         perceptions: data.perception.items,
         scratchpad,
         topic_idle_hours: cfg.agent.context.topic_idle_hours,
-        sandbox_info,
     };
     let renderer = parser.create_renderer(&data.perception.map);
     let render_ctx = RenderContext::new(context_data, renderer);
     let rendered_prompt = render_main_context(&render_ctx, build_situation_section(&ctx.events));
 
     Ok(BuiltContext {
+        messages: vec![ChatMessage::user(&rendered_prompt)],
         rendered_prompt,
         message_ids: data.message_ids,
         shown_memory_ids,
@@ -149,6 +148,7 @@ pub async fn build_next_round_prompt(
     if messages.is_empty() {
         return Ok(BuiltContext {
             rendered_prompt: String::new(),
+            messages: vec![],
             message_ids: vec![],
             shown_memory_ids: Vec::new(),
             shown_topic_ids: Vec::new(),
@@ -173,7 +173,6 @@ pub async fn build_next_round_prompt(
             perceptions: vec![],
             scratchpad: None,
             topic_idle_hours: cfg.agent.context.topic_idle_hours,
-            sandbox_info: None,
         },
         renderer,
     );
@@ -226,17 +225,13 @@ pub async fn build_next_round_prompt(
         ));
     }
     if !search.topics.is_empty() {
-        let topic_nodes: Vec<Node> = search
-            .topics
-            .iter()
-            .map(|r| topic_element_static(&r.topic).attr("relevance", format!("{:.4}", r.distance)))
-            .collect();
-        elements.push(Node::tag("related_topics").children(topic_nodes));
+        elements.push(related_topics_section(&search.topics));
     }
 
     let new = render_pretty(Node::tag("new").children(elements), Format::Xml);
 
     Ok(BuiltContext {
+        messages: vec![ChatMessage::user(&new)],
         rendered_prompt: new,
         message_ids: data.message_ids,
         shown_memory_ids: new_shown_memory_ids,

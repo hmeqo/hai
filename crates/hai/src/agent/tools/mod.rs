@@ -1,9 +1,3 @@
-use std::sync::Arc;
-
-use autoagents::prelude::ToolT;
-
-use crate::agent::runtime::ctx::RoundContext;
-
 pub mod account;
 pub mod memory;
 pub mod message;
@@ -15,7 +9,11 @@ pub mod topic;
 pub mod util;
 pub mod voice;
 
-pub fn get_main_agent_tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+use std::sync::Arc;
+
+use crate::{agent::runtime::tool_ctx::ToolContext, agentcore::tool::AgentTool};
+
+pub fn get_main_agent_tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     [
         account::tools,
         message::tools,

@@ -14,7 +14,6 @@ cargo run --bin toasty-cli -- migration apply       # 执行迁移
 
 - ORM: `toasty`（tokio 团队，0.7），模型定义在 `domain/model/`
 - schema 由 `toasty-cli` 管理：`migration generate` → 审查 SQL → `migration apply`
-- `db.push_schema()` 已移除，表结构完全由 toasty 迁移控制
 - JSONB 列用 `toasty::Json<T>` 包装
 - `jiff::Timestamp` 原生支持（toasty jiff feature）
 - 类型安全 PK：`domain/vo/id.rs`（`ChatId`、`MessageId` 等），模型字段用裸类型保持 ORM 兼容
@@ -22,32 +21,36 @@ cargo run --bin toasty-cli -- migration apply       # 执行迁移
 ## 架构
 
 ```
-hai/src/agent/runtime/session/
-├── mod.rs       状态机（Idle/Running 两阶段 + 事件循环）
-├── proxy.rs     ChatSessionHandle + spawn_chat_session + HeartbeatTask
-├── dispatch.rs  事件入队 + 调度 dispatch
-├── round.rs     轮次组装 + 完成回调 + spawn_round_task（自由函数）
-├── messages.rs  消息获取（首轮 get_context_messages + 后续 get_messages_window）
-└── context.rs   RoundContext 工厂（从 events 构建执行上下文）
-
-hai/src/agent/runtime/
-├── event/
-│   ├── scheduler.rs   EventScheduler（batch + heat + window + debounce 0.5s + 过期）
-│   ├── wake.rs        WakeEvent（Arc<WakeEventInner>）+ WakeReason
-│   └── attention.rs   Heat + Window（内部实现）
-├── round.rs           Round + RoundTaskPayload（纯数据，含 shown_*_ids 去重字段）
-├── ctx.rs             RoundContext
-├── engine.rs          AgentEngine（LLM + agent 组装）
-├── shell.rs           ContainerGuard（RAII，Drop 自动 docker rm -f）
-└── registry.rs        ChatSessionManager（管理 ChatSessionHandle）
-```
-
-```
-domain/
-├── model/          #[derive(toasty::Model)] 模型定义
-├── service/        业务逻辑，直接调 toasty ORM（无 repo 层）
-├── vo/             值对象（ChatId、MemoryInput、Source 等）
-└── db.rs           init_db() → toasty::Db
+hai/src/
+├── agent/               agent 业务逻辑
+│   ├── runtime/         AgentEngine + ReactLoop + SessionLoop + EventScheduler
+│   │   ├── tool_ctx.rs  ToolContext（工具层窄上下文，不含 AppContext）
+│   │   └── registry.rs  ChatSessionManager（background mpsc 自动清理僵尸 session）
+│   ├── tools/           工具实现（每个文件一个工具集，工厂函数 tools(&ToolContext)）
+│   ├── node/            AgentNode trait + MainAgent 实现
+│   ├── context/         提示词上下文渲染（XML → prompt string）
+│   ├── link.rs          BotHandle + PlatformHandler trait
+│   ├── system_prompt.rs SystemPromptBuilder（链式组装系统提示词）
+│   └── personality/     性格配置渲染
+├── agentcore/           基础设施层（不依赖 agent/domain）
+│   ├── tool.rs          AgentTool trait + ToolError + 辅助函数
+│   ├── mcp.rs           McpManager + McpServerHandle（基于 rmcp）
+│   ├── embedding.rs     EmbeddingService trait
+│   ├── provider.rs      ProviderBackend + genai Client 工厂
+│   ├── skills/          SkillManager
+│   ├── render/          渲染引擎（XML/JSON/MD）
+│   └── token.rs         计数
+├── util/                工具函数
+│   └── pgvector.rs      pgvector 搜索/写入封装
+├── domain/              领域层（model + service + vo）
+│   ├── service/         直接调 toasty ORM + sqlx（pgvector 查询）
+│   └── model/           toasty 模型定义（无 embedding 字段，由 rebuild 管理）
+├── platform/            Telegram 平台集成
+│   └── telegram/
+│       ├── dispatcher.rs      teloxide 路由（薄层）
+│       └── message_handler.rs  消息处理（账号解析 + 持久化 + 事件分发）
+├── config/              配置系统
+└── app/                 应用上下文 + 启动
 ```
 
 ## 通信模型
@@ -73,7 +76,15 @@ Dispatcher ──handle.wake(WakeEvent)──► ChatSessionHandle.wake_tx
 - **Agent round 执行**：`dispatch_with()` → `spawn_round_task()`（自由函数）→ Result 通过 per-round oneshot 返回
 - **状态查询**：`handle.status()`（mpsc 通道）
 - **内部命令**走 `self.bot.send_message()`，不经会话
-- 无 kameo actor 框架，纯 tokio mpsc + oneshot + select!
+
+## Session 生命周期
+
+- `ChatSessionManager` 在 `agent/runtime/registry.rs`，管理所有 chat session 的创建与清理
+- `get_or_create(ChatId)` → 读锁快速查找，写锁 double-check 后插入
+- 后台 task 监听 `mpsc::UnboundedReceiver<ChatId>`，收到退出信号后 `is_finished()` 确认 → 自动移除
+- session task 退出时通过 `cleanup_tx.send(chat_id)` 通知清理，无需 `sweep()` 轮询
+- Session 退出后如果同 chat 又来消息，会在 `get_or_create` 创建新 session
+- 所有 session 共用 `AgentEngine`（LLM client + MCP + skills），通过 `Arc` 共享
 
 ## 调度策略
 
@@ -87,16 +98,42 @@ Dispatcher ──handle.wake(WakeEvent)──► ChatSessionHandle.wake_tx
 
 ## Tools 层
 
-- `chat_id` 来自 `self.chat_id`（`struct` 字段，不从 LLM 参数获取）
+- 定义在 `agentcore::tool`：`AgentTool` trait（name / description / schema / execute）
+- 工具实现放 `agent/tools/`，每个模块一个 `pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>>` 工厂
+- 无 `ToolBridge` / 无 `ToolT` / 无 autoagents — 全部用本地 `AgentTool` trait
+- 大部分工具用 `#[hai_macros::tool]` 宏自动生成 `impl AgentTool`（name 从 struct 名推导，description 从 doc comment 取，schema 从 `schemars::schema_for!` 生成，execute 反序列化后委托给 `self.exec(typed)`）
+- RunShell / AnalyzeAttachment 因动态 description 保留手动 `impl AgentTool`
+- `chat_id` 来自 struct 字段（round 创建时注入）
 - `#[serde(deserialize_with = "deserialize_option_lenient_u64")]` 处理字符串/数字混用
-- 所有 tool 错误统一用 `tool_ok()` / `tool_data()` / `tool_err()` / `MapToolErr`
-- `pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>>` 工厂模式
+- args struct 用 `#[derive(Deserialize, JsonSchema)]` + doc comments → `schemars` 自动生成 JSON Schema
+- 辅助函数：`tool_ok()` / `tool_data()` / `tool_err()` / `MapToolErr`（在 `agentcore::tool`）
+
+## Tools 工厂
+
+```rust
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
+    vec![Arc::new(MyTool { field: ctx.some_field.clone() })]
+}
+```
+
+`get_main_agent_tools()` 在 `tools/mod.rs` 中合并所有模块的工具列表，`spawn_round_task()` 再与 MCP 工具合并后传入 `ReactLoop`。
+
+## MCP
+
+- 基于 `rmcp`（官方 MCP Rust SDK）
+- `McpManager` 在启动时加载所有 MCP server 配置，每个 server 对应一个 `McpServerHandle`
+- 子进程 stderr 被 pipe 到 `tracing::debug!(target: "hai::mcp")`，由 `[logging] level` 控制显隐
+- rmcp 内部日志被全局 EnvFilter 限制到 `warn`（在 `app/mod.rs` 设置）
 
 ## Embedding
 
-- JSONB 列存 `Vec<f32>` 序列化数组，无固定维度
-- `util::vector::cosine_similarity()` + `util::vector::embedding_from_json()`
-- `hai rebuild embeddings` 全量重生成（遍历 memory / topic / perception）
+- `agentcore::embedding::EmbeddingService` trait（`generate_embedding(&self, text) -> Result<Vec<f32>>`）
+- `MultimodalService` 实现该 trait
+- `domain/service/` 通过 `Arc<dyn EmbeddingService>` 注入，不直接依赖 agent 层
+- 向量存储在 PostgreSQL `embedding vector(N)` 列中，由 `pgvector` 扩展管理
+- 搜索走 `util::pgvector`（`search_embedding_vec` 用 `<->` 余弦距离 + IVFFlat 索引）
+- 业务层搜索：sqlx 查 `(id, distance)` → toasty `in_list` 加载完整对象
+- `hai rebuild embeddings` 读取 `[multimodal.embedding.dimension]`，自动 `ALTER COLUMN TYPE vector(N)` + 重算 + 建 IVFFlat 索引
 - `search_related_dedup()` 封装去重 + 2/3 缩减
 
 ## Bot 配置

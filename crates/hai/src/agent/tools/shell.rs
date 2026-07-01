@@ -1,32 +1,32 @@
 use std::sync::Arc;
 
-use autoagents::{
-    async_trait,
-    core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
-};
-use autoagents_derive::ToolInput;
-use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
     agent::{
-        runtime::{ctx::RoundContext, shell::ShellRuntime},
-        tools::util::{deserialize_option_lenient_u64, tool_data},
+        runtime::{shell::ShellRuntime, tool_ctx::ToolContext},
+        tools::util::deserialize_option_lenient_u64,
     },
-    agentcore::skills::SkillManager,
+    agentcore::{
+        skills::SkillManager,
+        tool::{AgentTool, ToolError, tool_data},
+    },
 };
 
-#[derive(Debug, Serialize, Deserialize, ToolInput)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ShellArgs {
-    #[input(description = "要执行的 shell 命令")]
+    /// 要执行的 shell 命令
     pub command: String,
-    #[input(description = "工作目录")]
+    /// 工作目录
     pub workdir: Option<String>,
-    #[input(description = "关联的 skill 名称")]
+    /// 关联的 skill 名称
     pub skill: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_lenient_u64")]
-    #[input(description = "超时秒数，默认 30")]
+    /// 超时秒数，默认 30
     pub timeout_secs: Option<u64>,
 }
 
@@ -37,7 +37,8 @@ pub struct RunShell {
     pub shell: Arc<Mutex<ShellRuntime>>,
 }
 
-impl ToolT for RunShell {
+#[async_trait]
+impl AgentTool for RunShell {
     fn name(&self) -> &str {
         "run_shell"
     }
@@ -46,14 +47,11 @@ impl ToolT for RunShell {
         &self.description
     }
 
-    fn args_schema(&self) -> Value {
-        serde_json::from_str(ShellArgs::io_schema()).expect("Failed to parse shell args schema")
+    fn schema(&self) -> Value {
+        serde_json::to_value(schemars::schema_for!(ShellArgs)).expect("valid schema")
     }
-}
 
-#[async_trait]
-impl ToolRuntime for RunShell {
-    async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
+    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
         let typed: ShellArgs = serde_json::from_value(args)?;
 
         let skill_dir = typed
@@ -72,7 +70,8 @@ impl ToolRuntime for RunShell {
                 skill_dir.as_deref(),
                 typed.timeout_secs,
             )
-            .await?;
+            .await
+            .map_err(|e| ToolError::Msg(e.to_string()))?;
 
         tool_data(json!({
             "stdout": output.stdout,
@@ -82,11 +81,11 @@ impl ToolRuntime for RunShell {
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
-    let description = if ctx.sandbox.enabled {
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
+    let description = if ctx.sandbox_enabled {
         format!(
             "执行 shell 命令。运行在容器中（镜像: {}）。可通过 skill 参数自动挂载 skill 目录。",
-            ctx.sandbox.image
+            ctx.sandbox_image,
         )
     } else {
         "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into()

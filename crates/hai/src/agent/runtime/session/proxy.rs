@@ -1,19 +1,12 @@
-use std::sync::Arc;
-
 use tokio::{
-    sync::{Mutex, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
-use super::super::{AgentEngine, event::scheduler::SchedulerStatus, shell::ShellRuntime};
-use crate::{
-    agent::{event::WakeEvent, link::BotHandle},
-    domain::vo::ChatId,
-};
+use super::super::event::scheduler::SchedulerStatus;
+use crate::{agent::event::WakeEvent, domain::vo::ChatId};
 
-type WakeSender = mpsc::UnboundedSender<WakeEvent>;
 pub(super) type RoundSignal = Option<super::super::round::Round>;
-type StatusSender = mpsc::UnboundedSender<oneshot::Sender<SessionStatus>>;
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,
@@ -26,8 +19,8 @@ pub struct SessionStatus {
 #[derive(Clone)]
 pub struct ChatSessionHandle {
     pub chat_id: ChatId,
-    wake_tx: WakeSender,
-    status_tx: StatusSender,
+    pub wake_tx: mpsc::UnboundedSender<WakeEvent>,
+    pub status_tx: mpsc::UnboundedSender<oneshot::Sender<SessionStatus>>,
 }
 
 impl ChatSessionHandle {
@@ -57,45 +50,10 @@ impl ChatSessionHandle {
     }
 }
 
-pub fn spawn_chat_session(
-    chat_id: ChatId,
-    bot: BotHandle,
-    engine: AgentEngine,
-    base_heat: f64,
-    window_secs: f64,
-) -> ChatSessionHandle {
-    let (wake_tx, wake_rx) = mpsc::unbounded_channel();
-    let (status_tx, status_rx) = mpsc::unbounded_channel();
-    let shell = Arc::new(Mutex::new(ShellRuntime::new(&engine.app.cfg.sandbox)));
-
-    let handle = ChatSessionHandle {
-        chat_id,
-        wake_tx,
-        status_tx,
-    };
-
-    tracing::info!(%chat_id, "Chat session started");
-
-    let session = tokio::spawn(async move {
-        super::SessionLoop::new(engine, chat_id, bot, shell, base_heat, window_secs)
-            .await
-            .run(wake_rx, status_rx)
-            .await;
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = session.await {
-            tracing::error!(chat_id = %chat_id, "Session loop panicked: {e}");
-        }
-    });
-
-    handle
-}
-
 pub(super) struct HeartbeatTask(JoinHandle<()>);
 
 impl HeartbeatTask {
-    pub fn spawn(bot: BotHandle, chat_id: ChatId) -> Self {
+    pub fn spawn(bot: crate::agent::link::BotHandle, chat_id: ChatId) -> Self {
         Self(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {

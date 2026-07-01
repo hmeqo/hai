@@ -1,12 +1,16 @@
+use std::{collections::HashMap, sync::Arc};
+
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agent::node::MultimodalService,
+    agentcore::embedding::EmbeddingService,
     domain::{
         model::{Memory, MemoryType},
         vo::{ChatId, MemoryId, MemoryInput},
     },
     error::{ErrorKind, Result},
+    util::pgvector,
 };
 
 #[derive(Debug)]
@@ -21,22 +25,27 @@ pub struct RelatedMemory {
 #[derive(Debug)]
 pub struct MemoryService {
     db: toasty::Db,
-    embedding: MultimodalService,
+    embedding: Arc<dyn EmbeddingService>,
+    pool: PgPool,
 }
 
 impl MemoryService {
-    pub fn new(db: toasty::Db, embedding: MultimodalService) -> Self {
-        Self { db, embedding }
+    pub fn new(db: toasty::Db, embedding: Arc<dyn EmbeddingService>, pool: PgPool) -> Self {
+        Self {
+            db,
+            embedding,
+            pool,
+        }
     }
 
     async fn compute_embedding(
         &self,
         memory_type: MemoryType,
         content: &str,
-    ) -> Result<Option<toasty::Json<Vec<f32>>>> {
+    ) -> Result<Option<Vec<f32>>> {
         if memory_type.needs_embedding() {
             let e = self.embedding.generate_embedding(content).await?;
-            Ok(Some(toasty::Json(e)))
+            Ok(Some(e))
         } else {
             Ok(None)
         }
@@ -46,7 +55,7 @@ impl MemoryService {
         let mut db = self.db.clone();
         let cid = |c: ChatId| c.0;
 
-        match input {
+        let (memory, emb_vec) = match input {
             MemoryInput::CreateUserFact {
                 account_id,
                 chat_id,
@@ -69,24 +78,23 @@ impl MemoryService {
                         "UserFact already exists for this account and chat with the same content",
                     ));
                 }
-                let embedding = self
+                let emb_vec = self
                     .compute_embedding(MemoryType::UserFact, &content)
                     .await?;
-                toasty::create!(Memory {
+                let memory = toasty::create!(Memory {
                     id: Uuid::now_v7(),
                     mem_type: "user_fact",
                     account_id: Some(account_id),
                     chat_id: Some(cid(chat_id)),
                     content,
-                    embedding,
                     importance: 1,
                     last_accessed_at: jiff::Timestamp::now(),
                     created_at: jiff::Timestamp::now(),
                     updated_at: jiff::Timestamp::now(),
                 })
                 .exec(&mut db)
-                .await
-                .map_err(Into::into)
+                .await?;
+                (memory, emb_vec)
             }
 
             MemoryInput::CreateAgentNote {
@@ -117,7 +125,8 @@ impl MemoryService {
                 if let Some(refs) = references {
                     create = create.references(toasty::Json(refs));
                 }
-                create.exec(&mut db).await.map_err(Into::into)
+                let memory = create.exec(&mut db).await?;
+                (memory, None)
             }
 
             MemoryInput::CreateKnowledge { chat_id, content } => {
@@ -136,23 +145,22 @@ impl MemoryService {
                     return Err(ErrorKind::AlreadyExists
                         .msg("Knowledge already exists for this chat with the same content"));
                 }
-                let embedding = self
+                let emb_vec = self
                     .compute_embedding(MemoryType::Knowledge, &content)
                     .await?;
-                toasty::create!(Memory {
+                let memory = toasty::create!(Memory {
                     id: Uuid::now_v7(),
                     mem_type: "knowledge",
                     chat_id: Some(cid(chat_id)),
                     content,
-                    embedding,
                     importance: 1,
                     last_accessed_at: jiff::Timestamp::now(),
                     created_at: jiff::Timestamp::now(),
                     updated_at: jiff::Timestamp::now(),
                 })
                 .exec(&mut db)
-                .await
-                .map_err(Into::into)
+                .await?;
+                (memory, emb_vec)
             }
 
             MemoryInput::UpdateUserFact {
@@ -173,10 +181,14 @@ impl MemoryService {
                 let existing = Memory::get_by_id(&mut db, &id)
                     .await
                     .map_err(|_| ErrorKind::NotFound.msg(format!("Memory not found: {id}")))?;
-                let embedding = if let Some(ref c) = content {
-                    self.compute_embedding(existing.memory_type(), c)
-                        .await
-                        .unwrap_or(None)
+                let emb_vec = if let Some(ref c) = content {
+                    match self.compute_embedding(existing.memory_type(), c).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(memory_id = %id, "Embedding update failed: {e}");
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -187,9 +199,12 @@ impl MemoryService {
                 if let Some(imp) = importance {
                     builder = builder.importance(imp);
                 }
-                builder = builder.embedding(embedding);
                 builder.exec(&mut db).await?;
-                Ok(existing)
+
+                if let Some(ref emb) = emb_vec {
+                    let _ = pgvector::upsert_embedding_vec(&self.pool, "memory", id, emb).await;
+                }
+                return Ok(existing);
             }
 
             MemoryInput::UpsertChatRule { chat_id, content } => {
@@ -206,7 +221,7 @@ impl MemoryService {
                     toasty::update!(existing { content }).exec(&mut db).await?;
                     return Ok(existing);
                 }
-                toasty::create!(Memory {
+                let memory = toasty::create!(Memory {
                     id: Uuid::now_v7(),
                     mem_type: "rule",
                     chat_id: Some(cid(chat_id)),
@@ -217,10 +232,15 @@ impl MemoryService {
                     updated_at: jiff::Timestamp::now(),
                 })
                 .exec(&mut db)
-                .await
-                .map_err(Into::into)
+                .await?;
+                (memory, None)
             }
+        };
+
+        if let Some(ref emb) = emb_vec {
+            let _ = pgvector::upsert_embedding_vec(&self.pool, "memory", memory.id, emb).await;
         }
+        Ok(memory)
     }
 
     pub async fn search_knowledge(
@@ -239,40 +259,37 @@ impl MemoryService {
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {
-        let memories: Vec<Memory> = Memory::filter(
-            Memory::fields()
-                .chat_id()
-                .eq(Some(chat_id.0))
-                .and(Memory::fields().mem_type().ne("rule")),
-        )
-        .exec(&mut self.db.clone())
-        .await?;
+        let filter = format!("chat_id = {} AND \"type\" != 'rule'", chat_id.0);
+        let rows =
+            pgvector::search_embedding_vec(&self.pool, "memory", query, &filter, limit).await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let mut scored: Vec<RelatedMemory> = memories
+        let ids: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
+        let memories: Vec<Memory> = Memory::filter(Memory::fields().id().in_list(ids))
+            .exec(&mut self.db.clone())
+            .await?;
+
+        let map: HashMap<Uuid, Memory> = memories.into_iter().map(|m| (m.id, m)).collect();
+
+        Ok(rows
             .into_iter()
-            .filter_map(|m| {
-                let vec = m.embedding.as_ref()?;
-                let dist = 1.0 - crate::util::vector::cosine_similarity(query, &vec.0)?;
-                Some(RelatedMemory {
+            .filter_map(|(id, dist)| {
+                map.get(&id).map(|m| RelatedMemory {
                     id: MemoryId(m.id),
-                    content: m.content,
+                    content: m.content.clone(),
                     account_id: m.account_id,
                     distance: dist,
                     created_at: m.created_at,
                 })
             })
-            .collect();
-        scored.sort_by(|a, b| {
-            a.distance
-                .partial_cmp(&b.distance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(limit as usize);
-        Ok(scored)
+            .collect())
     }
 
     pub async fn delete(&self, id: MemoryId) -> Result<()> {
         Memory::delete_by_id(&mut self.db.clone(), id.0).await?;
+        let _ = pgvector::clear_embedding_vec(&self.pool, "memory", id.0).await;
         Ok(())
     }
 }

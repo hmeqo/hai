@@ -6,7 +6,6 @@ use uuid::Uuid;
 use crate::{
     agent::{context::fmt::display_name, link::BotProfile},
     agentcore::render::elements::Node,
-    config::schema::SandboxConfig,
     domain::{
         model::{Account, Chat, Message, Perception, Topic},
         service::memory::RelatedMemory,
@@ -64,25 +63,6 @@ pub struct RenderContextData {
     // ── 配置 ──────────────────────────────────────────────────────────────────
     /// 话题闲置超时（小时），超过此时间的话题标记为 need-close
     pub topic_idle_hours: i64,
-    // ── 沙箱 ─────────────────────────────────────────────────────────────────
-    pub sandbox_info: Option<SandboxInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxInfo {
-    pub enabled: bool,
-    pub runtime: String,
-    pub image: String,
-}
-
-impl From<&SandboxConfig> for SandboxInfo {
-    fn from(cfg: &SandboxConfig) -> Self {
-        Self {
-            enabled: cfg.enabled,
-            runtime: cfg.runtime.to_string(),
-            image: cfg.image.clone(),
-        }
-    }
 }
 
 impl RenderContext {

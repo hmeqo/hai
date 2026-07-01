@@ -8,15 +8,17 @@ name = "hai"
 path = "src/main.rs"
 
 [dependencies]
+hai-macros = { workspace = true }
 tokio = { workspace = true }
 config = { workspace = true }
 dotenvy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-autoagents = { workspace = true }
-autoagents-derive = { workspace = true }
-autoagents-toolkit = { workspace = true }
+
+genai = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
 agent-skills = { workspace = true }
 teloxide = { workspace = true }
 tracing = { workspace = true }
@@ -51,3 +53,4 @@ timeago = { workspace = true }
 sanitize-filename = { workspace = true }
 quick-xml = { workspace = true }
 indicatif = { workspace = true }
+sqlx = { workspace = true }

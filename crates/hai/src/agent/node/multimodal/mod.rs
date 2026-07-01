@@ -3,6 +3,7 @@ pub mod tts;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use derive_more::Deref;
 pub use model::*;
@@ -10,7 +11,10 @@ use serde_json::{Value, json};
 pub use tts::*;
 
 use crate::{
-    agentcore::rawclient::{RawAgent, RawClient},
+    agentcore::{
+        embedding::EmbeddingService,
+        rawclient::{RawAgent, RawClient},
+    },
     config::{AppConfig, ProviderManager},
     domain::vo::MediaCodec,
     error::{OptionAppExt, Result},
@@ -95,6 +99,13 @@ pub struct MultimodalServiceInner {
 
 #[derive(Debug, Clone, Deref)]
 pub struct MultimodalService(Arc<MultimodalServiceInner>);
+
+#[async_trait]
+impl EmbeddingService for MultimodalService {
+    async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        self.0.embedding.embedding(text).await
+    }
+}
 
 impl MultimodalService {
     pub fn from_config(config: &AppConfig, providers: &ProviderManager) -> Self {

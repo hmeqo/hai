@@ -23,7 +23,6 @@ pub struct Memory {
     #[column("type")]
     pub mem_type: String,
     pub content: String,
-    pub embedding: Option<toasty::Json<Vec<f32>>>,
     pub importance: i32,
     pub subject: Option<String>,
     pub references: Option<toasty::Json<serde_json::Value>>,
@@ -44,7 +43,6 @@ impl Memory {
             chat_id: None,
             mem_type: type_.to_string(),
             content,
-            embedding: None,
             importance: 1,
             subject: None,
             references: None,

@@ -16,8 +16,10 @@ impl SessionLoop {
     pub(super) async fn on_wake(&mut self, wake: WakeEvent) {
         let is_rapid = wake.reason.is_rapid();
         self.schedule.push(wake);
-        if is_rapid && let PollOutcome::Dispatch(events) = self.schedule.poll(self.idle_timeout()) {
-            self.dispatch_with(events).await;
+        if is_rapid {
+            if let PollOutcome::Dispatch(events) = self.schedule.poll(self.idle_timeout()) {
+                self.dispatch_with(events).await;
+            }
         }
     }
 

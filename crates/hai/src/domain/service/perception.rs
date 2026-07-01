@@ -1,5 +1,4 @@
 use crate::{
-    agent::node::MultimodalService,
     domain::{model::Perception, vo::Source},
     error::Result,
 };
@@ -7,12 +6,11 @@ use crate::{
 #[derive(Debug)]
 pub struct PerceptionService {
     db: toasty::Db,
-    embedding: MultimodalService,
 }
 
 impl PerceptionService {
-    pub fn new(db: toasty::Db, embedding: MultimodalService) -> Self {
-        Self { db, embedding }
+    pub fn new(db: toasty::Db) -> Self {
+        Self { db }
     }
 
     pub async fn find(
@@ -102,18 +100,10 @@ impl PerceptionService {
         .await?
         {
             toasty::update!(existing { content }).exec(&mut db).await?;
-            if let Ok(embedding) = self.embedding.generate_embedding(content).await {
-                toasty::update!(existing {
-                    embedding: Some(toasty::Json(embedding))
-                })
-                .exec(&mut db)
-                .await
-                .ok();
-            }
             return Ok(existing);
         }
 
-        let mut perception = toasty::create!(Perception {
+        let perception = toasty::create!(Perception {
             id: uuid::Uuid::now_v7(),
             source: source_json,
             parser,
@@ -123,15 +113,6 @@ impl PerceptionService {
         })
         .exec(&mut db)
         .await?;
-
-        if let Ok(embedding) = self.embedding.generate_embedding(content).await {
-            toasty::update!(perception {
-                embedding: Some(toasty::Json(embedding))
-            })
-            .exec(&mut db)
-            .await
-            .ok();
-        }
 
         Ok(perception)
     }

@@ -15,15 +15,17 @@ pub use message::{MessageService, NewAgentMessage, NewUserMessage};
 pub use perception::PerceptionService;
 pub use platform::PlatformService;
 pub use scratchpad::ScratchpadService;
+use sqlx::PgPool;
 pub use topic::TopicService;
 
-use crate::agent::node::MultimodalService;
+use crate::{agent::node::MultimodalService, agentcore::embedding::EmbeddingService};
 
 #[derive(Debug, Clone, Deref)]
 pub struct DbServices(Arc<DbServicesInner>);
 
 #[derive(Debug)]
 pub struct DbServicesInner {
+    pub pool: PgPool,
     pub platform: PlatformService,
     pub identity: IdentityService,
     pub topic: TopicService,
@@ -35,16 +37,18 @@ pub struct DbServicesInner {
 }
 
 impl DbServices {
-    pub fn new(db: toasty::Db, multimodal: MultimodalService) -> Self {
+    pub fn new(db: toasty::Db, pool: PgPool, multimodal: MultimodalService) -> Self {
         let platform = PlatformService::new(db.clone());
         let identity = IdentityService::new(db.clone());
         let message = MessageService::new(db.clone());
         let scratchpad = ScratchpadService::new(db.clone());
-        let topic = TopicService::new(db.clone(), multimodal.clone());
-        let memory = MemoryService::new(db.clone(), multimodal.clone());
-        let perception = PerceptionService::new(db.clone(), multimodal.clone());
+        let embedding: Arc<dyn EmbeddingService> = Arc::new(multimodal.clone());
+        let topic = TopicService::new(db.clone(), Arc::clone(&embedding), pool.clone());
+        let memory = MemoryService::new(db.clone(), Arc::clone(&embedding), pool.clone());
+        let perception = PerceptionService::new(db.clone());
 
         Self(Arc::new(DbServicesInner {
+            pool,
             platform,
             identity,
             topic,

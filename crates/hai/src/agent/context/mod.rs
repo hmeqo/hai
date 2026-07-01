@@ -17,8 +17,6 @@ pub(crate) use render_context::RenderContext;
 pub(crate) use sections::{
     account::account_element,
     context::{build_situation_section, render_main_context},
-    fmt,
-    last_round::build_round_end_section,
-    related_memories_section, topic_section,
+    fmt, related_memories_section, topic_section,
 };
 pub use types::{Attachment, AttachmentPerceptionMap, ContentParser, ParsedContent};

@@ -1,6 +1,5 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
 
-use autoagents::llm::chat::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use struct_patch::Patch;
@@ -104,6 +103,13 @@ pub struct AgentConfig {
     pub attention: AttentionConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
 impl AgentConfig {
     pub fn reasoning_effort(&self) -> Result<ReasoningEffort> {
         match self.reasoning_effort.as_str() {
@@ -128,7 +134,6 @@ pub struct ContextConfig {
     pub group_prompt: String,
     /// 私聊专用 prompt（追加在 system_prompt 之后）
     pub private_prompt: String,
-    pub sliding_window_size: usize,
     pub message_history_limit: i64,
     /// 单次 round 最多加载的消息数
     pub history_cap: i64,
@@ -140,6 +145,8 @@ pub struct ContextConfig {
     pub session: SessionConfig,
     /// 会话空闲超时（秒），窗口关闭后超过此时无活动则重建 session
     pub session_idle_timeout_secs: u64,
+    /// ReAct 循环最大轮次（默认 10）
+    pub max_turns: usize,
 }
 
 impl Default for ContextConfig {
@@ -161,12 +168,12 @@ impl Default for ContextConfig {
             private_prompt: String::new(),
             message_history_limit: 10,
             history_cap: 100,
-            sliding_window_size: 50,
             related_memory_limit: 5,
             related_topic_limit: 3,
             topic_idle_hours: 3,
             session: SessionConfig::default(),
             session_idle_timeout_secs: 300,
+            max_turns: 10,
         }
     }
 }
@@ -262,6 +269,9 @@ pub struct EmbeddingConfig {
     /// 模型名称，为空时由 provider 决定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 向量维度，用于 pgvector 列定义（例如 1024、1536）。为空时 rebuild 使用默认值。
+    #[serde(default)]
+    pub dimension: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]

@@ -1,32 +1,28 @@
 use std::sync::Arc;
 
-use autoagents::{
-    async_trait,
-    core::tool::{ToolCallError, ToolInputT, ToolRuntime, ToolT},
-};
-use autoagents_derive::ToolInput;
-use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::{
-    link::PlatformHandler,
-    runtime::ctx::RoundContext,
-    tools::util::{MapToolErr, tool_data, tool_err},
+use crate::{
+    agent::{link::PlatformHandler, runtime::tool_ctx::ToolContext},
+    agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_data, tool_err},
 };
 
-#[derive(Serialize, Deserialize, ToolInput)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeAttachmentArgs {
-    #[input(description = "附件 ID")]
+    /// 附件 ID
     pub attachment_id: String,
-    #[input(description = "聚焦分析方向，留空默认全面分析")]
+    /// 聚焦分析方向，留空默认全面分析
     pub prompt: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct AnalyzeAttachment {
-    handler: Arc<dyn PlatformHandler>,
-    description: String,
+    pub handler: Arc<dyn PlatformHandler>,
+    pub description: String,
 }
 
 impl AnalyzeAttachment {
@@ -38,37 +34,32 @@ impl AnalyzeAttachment {
     }
 }
 
-impl ToolT for AnalyzeAttachment {
+#[async_trait]
+impl AgentTool for AnalyzeAttachment {
     fn name(&self) -> &str {
         "analyze_attachment"
     }
-
     fn description(&self) -> &str {
         &self.description
     }
-
-    fn args_schema(&self) -> Value {
-        serde_json::from_str(AnalyzeAttachmentArgs::io_schema())
-            .expect("Failed to parse parameters schema")
+    fn schema(&self) -> Value {
+        serde_json::to_value(schemars::schema_for!(AnalyzeAttachmentArgs)).expect("valid schema")
     }
-}
 
-#[async_trait]
-impl ToolRuntime for AnalyzeAttachment {
-    async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
-        let args: AnalyzeAttachmentArgs = serde_json::from_value(args)?;
-        let uuid = Uuid::parse_str(&args.attachment_id)
-            .map_err(|_| tool_err(format!("无效的 attachment_id: {}", args.attachment_id)))?;
+    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+        let typed: AnalyzeAttachmentArgs = serde_json::from_value(args)?;
+        let uuid = Uuid::parse_str(&typed.attachment_id)
+            .map_err(|_| tool_err(format!("无效的 attachment_id: {}", typed.attachment_id)))?;
         let result = self
             .handler
-            .analyze_attachment(uuid, args.prompt.as_deref())
+            .analyze_attachment(uuid, typed.prompt.as_deref())
             .await
             .into_tool_err()?;
         tool_data(serde_json::json!({ "content": result }))
     }
 }
 
-pub fn tools(ctx: &RoundContext) -> Vec<Arc<dyn ToolT>> {
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     if ctx.enabled_parsers.is_empty() {
         return vec![];
     }

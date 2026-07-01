@@ -1,23 +1,32 @@
+use std::{collections::HashMap, sync::Arc};
+
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    agent::node::MultimodalService,
+    agentcore::embedding::EmbeddingService,
     domain::{
         model::{Message, MessageStatus, Topic},
         vo::{ChatId, MessageId, TopicSearchResult},
     },
     error::Result,
+    util::pgvector,
 };
 
 #[derive(Debug)]
 pub struct TopicService {
     db: toasty::Db,
-    embedding: MultimodalService,
+    embedding: Arc<dyn EmbeddingService>,
+    pool: PgPool,
 }
 
 impl TopicService {
-    pub fn new(db: toasty::Db, embedding: MultimodalService) -> Self {
-        Self { db, embedding }
+    pub fn new(db: toasty::Db, embedding: Arc<dyn EmbeddingService>, pool: PgPool) -> Self {
+        Self {
+            db,
+            embedding,
+            pool,
+        }
     }
 
     pub async fn create_topic(
@@ -128,52 +137,50 @@ impl TopicService {
         let topic = Topic::get_by_id(&mut db, &topic_id).await?;
         topic.ensure_not_closed()?;
 
-        let embedding = self.embedding.generate_embedding(summary).await?;
+        let vec = self.embedding.generate_embedding(summary).await?;
+
         Topic::filter_by_id(topic_id)
             .update()
             .status("closed")
             .summary(summary)
-            .embedding(Some(toasty::Json(embedding)))
             .closed_at(Some(jiff::Timestamp::now()))
             .exec(&mut db)
             .await?;
+
+        let _ = pgvector::upsert_embedding_vec(&self.pool, "topic", topic_id, &vec).await;
+
         Ok(topic)
     }
 
     pub async fn search_related_topics(
         &self,
         chat_id: ChatId,
-        query_embedding: &[f32],
+        query: &[f32],
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
-        let topics: Vec<Topic> = Topic::filter(
-            Topic::fields()
-                .chat_id()
-                .eq(chat_id.0)
-                .and(Topic::fields().status().eq("active")),
-        )
-        .exec(&mut self.db.clone())
-        .await?;
+        let filter = format!("chat_id = {} AND status = 'closed'", chat_id.0);
+        let rows =
+            pgvector::search_embedding_vec(&self.pool, "topic", query, &filter, limit).await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let mut scored: Vec<TopicSearchResult> = topics
+        let ids: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
+        let topics: Vec<Topic> = Topic::filter(Topic::fields().id().in_list(ids))
+            .exec(&mut self.db.clone())
+            .await?;
+
+        let map: HashMap<Uuid, Topic> = topics.into_iter().map(|t| (t.id, t)).collect();
+
+        Ok(rows
             .into_iter()
-            .filter_map(|t| {
-                let emb = t.embedding.as_ref()?;
-                let dist = 1.0 - crate::util::vector::cosine_similarity(query_embedding, &emb.0)?;
-                Some(TopicSearchResult {
-                    topic: t,
+            .filter_map(|(id, dist)| {
+                map.get(&id).map(|t| TopicSearchResult {
+                    topic: t.clone(),
                     distance: dist,
                 })
             })
-            .collect();
-
-        scored.sort_by(|a, b| {
-            a.distance
-                .partial_cmp(&b.distance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(limit as usize);
-        Ok(scored)
+            .collect())
     }
 
     pub async fn get_active_topics(&self, chat_id: ChatId) -> Result<Vec<Topic>> {
@@ -220,6 +227,7 @@ impl TopicService {
 
     pub async fn delete_topic(&self, topic_id: Uuid) -> Result<()> {
         Topic::delete_by_id(&mut self.db.clone(), topic_id).await?;
+        let _ = pgvector::clear_embedding_vec(&self.pool, "topic", topic_id).await;
         Ok(())
     }
 }

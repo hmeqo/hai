@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use sqlx::PgPool;
 use toasty_cli::ToastyCli;
 use tracing::info;
 
@@ -8,14 +9,16 @@ use crate::{
     error::{ErrorKind, Result},
 };
 
-pub async fn init_db(config: &DatabaseConfig) -> Result<toasty::Db> {
+pub async fn init_db(config: &DatabaseConfig) -> Result<(toasty::Db, PgPool)> {
     let db = toasty::Db::builder()
         .models(toasty::models!(crate::*))
         .max_pool_size(config.max_connections as usize)
         .connect(&config.url)
         .await?;
 
-    Ok(db)
+    let pool = PgPool::connect(&config.url).await?;
+
+    Ok((db, pool))
 }
 
 pub async fn run_migrations(db: &toasty::Db) -> Result<()> {

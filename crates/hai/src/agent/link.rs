@@ -1,5 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
+use genai::chat::ChatMessage;
 use uuid::Uuid;
 
 pub use crate::agent::context::ContentParser;
@@ -10,6 +11,8 @@ use crate::{domain::vo::ChatId, error::Result};
 pub struct BuiltContext {
     /// 渲染好的 prompt 字符串
     pub rendered_prompt: String,
+    /// 分段消息列表（[System] + [User]）
+    pub messages: Vec<ChatMessage>,
     /// 需要标记为已读的消息 ID 列表
     pub message_ids: Vec<i64>,
     /// 本轮已展示的记忆和话题 ID，用于后续轮 dedup
@@ -89,7 +92,7 @@ pub trait PlatformHandler: Debug + Send + Sync + 'static {
 // ─── BotHandle ─────────────────────────────────────────────────────────────────
 
 /// Agent 侧持有的 bot 操作句柄
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct BotHandle {
     pub bot_id: BotId,
     pub profile: BotProfile,

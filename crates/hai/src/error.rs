@@ -274,4 +274,5 @@ register_errors! {
     jiff::Error                     => ErrorKind::Internal;
     toml::ser::Error                => ErrorKind::DataParse;
     tokio::task::JoinError          => ErrorKind::Internal;
+    sqlx::Error                     => ErrorKind::Internal;
 }

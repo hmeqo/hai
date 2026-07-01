@@ -52,11 +52,10 @@ impl TelegramMediaAnalyzer {
             .ok_or_err_msg(ErrorKind::BadRequest, "附件缺少 file_id")?
             .to_string();
 
-        tracing::info!(
+        tracing::debug!(
             attachment_uuid = %attachment_uuid,
             parser = %parser,
-            file_id = %file_id,
-            "analyze_attachment"
+            "analyze_attachment",
         );
 
         Ok((part, file_id, parser))

@@ -63,28 +63,7 @@ impl TelegramPlatformHandler {
         &self,
         platform_reply_to_id: Option<i64>,
     ) -> Result<Option<ReplyParameters>> {
-        let Some(msg_id) = platform_reply_to_id else {
-            return Ok(None);
-        };
-        let Some(msg) = self
-            .ctx
-            .db
-            .srv
-            .message
-            .get_message_by_id(crate::domain::vo::MessageId(msg_id))
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(id) = msg
-            .external_id
-            .map(|id| id.parse::<i32>())
-            .transpose()
-            .err_kind(ErrorKind::DataParse)?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(ReplyParameters::new(MessageId(id))))
+        resolve_reply_parameters(&self.ctx.db.srv, platform_reply_to_id).await
     }
 
     async fn persist_message(
@@ -255,4 +234,29 @@ impl PlatformHandler for TelegramPlatformHandler {
     fn content_parser(&self) -> &'static dyn ContentParser {
         &TelegramContentParser
     }
+}
+
+async fn resolve_reply_parameters(
+    services: &crate::domain::service::DbServices,
+    platform_reply_to_id: Option<i64>,
+) -> Result<Option<ReplyParameters>> {
+    let Some(msg_id) = platform_reply_to_id else {
+        return Ok(None);
+    };
+    let Some(msg) = services
+        .message
+        .get_message_by_id(crate::domain::vo::MessageId(msg_id))
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(id) = msg
+        .external_id
+        .map(|id| id.parse::<i32>())
+        .transpose()
+        .err_kind(ErrorKind::DataParse)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ReplyParameters::new(MessageId(id))))
 }

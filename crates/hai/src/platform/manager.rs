@@ -10,7 +10,7 @@ use crate::{
     app::AppContext,
     config::schema::{BotConfig, BotPlatform},
     error::Result,
-    platform::telegram::{TelegramDispather, TelegramPlatformHandler},
+    platform::telegram::{TelegramDispatcher, TelegramPlatformHandler},
 };
 
 /// 从配置启动所有 bot 实例
@@ -37,7 +37,7 @@ pub async fn spawn_bots(ctx: &AppContext, engine: &AgentEngine) -> Result<()> {
                     TelegramPlatformHandler::new(bot.clone(), bot_account.id, ctx.clone());
                 let handle = BotHandle::new(bot_id.clone(), profile, Arc::new(handler));
 
-                let dispatcher = TelegramDispather::new(
+                let dispatcher = TelegramDispatcher::new(
                     bot_id.clone(),
                     bot,
                     ctx.clone(),

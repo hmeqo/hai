@@ -98,17 +98,6 @@ impl<'a> ContextBuilder<'a> {
             ))));
         }
 
-        if let Some(sandbox) = &self.ctx.sandbox_info
-            && sandbox.enabled
-        {
-            env = env.child(
-                Node::tag("sandbox")
-                    .attr("enabled", "true")
-                    .attr("runtime", &sandbox.runtime)
-                    .attr("image", &sandbox.image),
-            );
-        }
-
         self.add(env)
     }
 

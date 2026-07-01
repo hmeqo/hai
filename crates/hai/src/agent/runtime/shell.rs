@@ -1,9 +1,11 @@
 use std::path::Path;
 
-use autoagents::core::tool::ToolCallError;
 use tokio::process::Command;
 
-use crate::config::schema::{ContainerRuntime, SandboxConfig};
+use crate::{
+    agentcore::tool::ToolError,
+    config::schema::{ContainerRuntime, SandboxConfig},
+};
 
 #[derive(Debug)]
 pub struct ContainerGuard {
@@ -12,39 +14,33 @@ pub struct ContainerGuard {
 }
 
 impl ContainerGuard {
-    pub async fn create(runtime: &str, image: &str) -> Result<Self, ToolCallError> {
+    pub async fn create(runtime: &str, image: &str) -> Result<Self, ToolError> {
         let output = Command::new(runtime)
             .args(["create", "--rm", image, "sleep", "infinity"])
             .output()
             .await
-            .map_err(|e| {
-                ToolCallError::RuntimeError(format!("Failed to run {runtime}: {e}").into())
-            })?;
+            .map_err(|e| ToolError::Msg(format!("Failed to run {runtime}: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ToolCallError::RuntimeError(
-                format!("Failed to create container: {stderr}").into(),
-            ));
+            return Err(ToolError::Msg(format!(
+                "Failed to create container: {stderr}"
+            )));
         }
 
         let id = String::from_utf8(output.stdout)
-            .map_err(|e| {
-                ToolCallError::RuntimeError(format!("Non-UTF-8 container ID: {e}").into())
-            })?
+            .map_err(|e| ToolError::Msg(format!("Non-UTF-8 container ID: {e}")))?
             .trim()
             .to_string();
         if id.is_empty() {
-            return Err(ToolCallError::RuntimeError("Empty container ID".into()));
+            return Err(ToolError::Msg("Empty container ID".into()));
         }
 
         Command::new(runtime)
             .args(["start", &id])
             .output()
             .await
-            .map_err(|e| {
-                ToolCallError::RuntimeError(format!("Failed to start container: {e}").into())
-            })?;
+            .map_err(|e| ToolError::Msg(format!("Failed to start container: {e}")))?;
 
         Ok(Self {
             id,
@@ -77,7 +73,7 @@ struct SandboxRuntime {
 }
 
 impl SandboxRuntime {
-    async fn ensure_container(&mut self) -> Result<&ContainerGuard, ToolCallError> {
+    async fn ensure_container(&mut self) -> Result<&ContainerGuard, ToolError> {
         if self.container.is_none() {
             self.container =
                 Some(ContainerGuard::create(self.runtime.as_str(), &self.image).await?);
@@ -104,17 +100,13 @@ impl ShellRuntime {
         }
     }
 
-    pub fn sandbox_enabled(&self) -> bool {
-        self.sandbox.is_some()
-    }
-
     pub async fn execute(
         &mut self,
         command: &str,
         workdir: Option<String>,
         skill_dir: Option<&Path>,
         timeout_secs: Option<u64>,
-    ) -> Result<ShellOutput, ToolCallError> {
+    ) -> Result<ShellOutput, ToolError> {
         let timeout = timeout_secs.unwrap_or(self.default_timeout);
 
         let Some(sb) = &mut self.sandbox else {
@@ -135,7 +127,7 @@ async fn exec_in_container(
     container_id: &str,
     command: &str,
     timeout_secs: u64,
-) -> Result<ShellOutput, ToolCallError> {
+) -> Result<ShellOutput, ToolError> {
     let mut cmd = Command::new(runtime);
     cmd.args([
         "exec",
@@ -154,20 +146,18 @@ async fn copy_to_container(
     container_id: &str,
     src: &Path,
     dest: &str,
-) -> Result<(), ToolCallError> {
+) -> Result<(), ToolError> {
     let src_str = src.display().to_string();
     let dest_str = format!("{}:{}", container_id, dest);
     let output = Command::new(runtime)
         .args(["cp", &src_str, &dest_str])
         .output()
         .await
-        .map_err(|e| ToolCallError::RuntimeError(format!("docker cp failed: {e}").into()))?;
+        .map_err(|e| ToolError::Msg(format!("docker cp failed: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ToolCallError::RuntimeError(
-            format!("docker cp failed: {stderr}").into(),
-        ));
+        return Err(ToolError::Msg(format!("docker cp failed: {stderr}")));
     }
     Ok(())
 }
@@ -182,7 +172,7 @@ async fn run_on_host(
     command: &str,
     workdir: Option<String>,
     timeout_secs: u64,
-) -> Result<ShellOutput, ToolCallError> {
+) -> Result<ShellOutput, ToolError> {
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(command);
     if let Some(dir) = &workdir {
@@ -191,16 +181,12 @@ async fn run_on_host(
     run_cmd(cmd, timeout_secs).await
 }
 
-async fn run_cmd(mut cmd: Command, timeout_secs: u64) -> Result<ShellOutput, ToolCallError> {
+async fn run_cmd(mut cmd: Command, timeout_secs: u64) -> Result<ShellOutput, ToolError> {
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
         .await
-        .map_err(|_| {
-            ToolCallError::RuntimeError(format!("Command timed out after {timeout_secs}s").into())
-        })?;
+        .map_err(|_| ToolError::Msg(format!("Command timed out after {timeout_secs}s")))?;
 
-    let output = result.map_err(|e| {
-        ToolCallError::RuntimeError(format!("Failed to execute command: {e}").into())
-    })?;
+    let output = result.map_err(|e| ToolError::Msg(format!("Failed to execute command: {e}")))?;
 
     Ok(ShellOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),

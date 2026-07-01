@@ -27,7 +27,6 @@ impl SessionLoop {
             db: self.engine.app.db.srv.clone(),
             shell: self.shell.clone(),
             multimodal: self.engine.app.provider.multimodal.clone(),
-            sandbox: self.engine.app.cfg.sandbox.clone(),
             enabled_parsers: self.enabled_parsers.clone(),
             tts_enabled: self.tts_enabled,
         }

@@ -1,13 +1,13 @@
 # 👋 hai
 
-Telegram 群聊机器人，拥有独立性格和长期记忆的数字生命。
+Telegram 聊天机器人，可配置性格和长期记忆。
 
-## 核心特性
+## 功能
 
-- **人格系统**：6 维性格参数（社恐/话痨、话量、坦诚度、幽默感、理性/感性、情绪稳定性），可灵活配置
-- **智能话题管理**：自动识别、归类、总结群聊话题
-- **长期记忆**：记住群友特征、爱好、群规，支持向量检索
-- **多模态**：图片生成、语音分析
+- **人格系统**：6 维性格参数（社交活跃度、话量、坦诚度、幽默感、理性/感性、情绪稳定性）
+- **话题管理**：自动归类、总结话题
+- **长期记忆**：记忆用户特征、知识、笔记、规则，向量检索
+- **多模态**：图片分析、语音合成
 
 ## 快速开始
 
@@ -53,36 +53,34 @@ mood = 0.1
 [multimodal.embedding]
 provider = "openrouter"
 model = "openai/text-embedding-3-small"
+dimension = 1536
 ```
 
-### 3. 运行
+### 3. 初始化 embedding（首次或换模型时执行）
 
 ```bash
-# 初始化 SQLx 查询缓存
-cargo sqlx prepare --workspace
+cargo run -- db rebuild embeddings
+```
 
-# 启动
+### 4. 运行
+
+```bash
 cargo run --bin hai
 ```
 
-### 4. 查看配置
+### 5. 查看配置
 
 ```bash
-# 查看当前配置（支持 toml/json 格式）
 cargo run --bin hai -- config --format toml
 ```
 
 ## 开发
 
 ```bash
-# 编译检查（离线模式）
-SQLX_OFFLINE=true cargo check
-
-# 运行
-cargo run --bin hai
-
-# 查看配置
-cargo run --bin hai -- config
+cargo check                # 编译检查
+cargo clippy --all-targets # lint
+cargo run --bin hai        # 运行
+cargo run --bin hai -- config  # 查看配置
 ```
 
 ## TODO

@@ -6,7 +6,8 @@ mod round;
 
 use std::sync::Arc;
 
-pub use proxy::{ChatSessionHandle, spawn_chat_session};
+use genai::chat::ChatMessage;
+pub use proxy::ChatSessionHandle;
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
@@ -70,8 +71,9 @@ enum RunningOutcome {
 
 // ── Session 状态机 ───────────────────────────────────────────────────────────
 
-struct SessionLoop {
+pub(super) struct SessionLoop {
     schedule: EventScheduler,
+    messages: Vec<ChatMessage>,
     rounds: Vec<Round>,
     running: Option<RunningRound>,
     engine: AgentEngine,
@@ -84,7 +86,7 @@ struct SessionLoop {
 }
 
 impl SessionLoop {
-    async fn new(
+    pub(super) async fn new(
         engine: AgentEngine,
         chat_id: ChatId,
         bot: BotHandle,
@@ -115,6 +117,7 @@ impl SessionLoop {
 
         Self {
             schedule: EventScheduler::new(base_heat, window_secs),
+            messages: Vec::new(),
             rounds: Vec::new(),
             running: None,
             engine,
@@ -131,7 +134,7 @@ impl SessionLoop {
 // ── 事件循环 ─────────────────────────────────────────────────────────────────
 
 impl SessionLoop {
-    async fn run(
+    pub(super) async fn run(
         &mut self,
         mut wake_rx: mpsc::UnboundedReceiver<WakeEvent>,
         mut status_rx: mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
@@ -212,6 +215,7 @@ impl SessionLoop {
                     elapsed_secs = %elapsed.as_secs_f64(),
                     "Round failed",
                 );
+                self.try_dispatch_next().await;
             }
             RunningOutcome::Cancelled => {
                 let elapsed = round.started_at.elapsed();
@@ -220,6 +224,7 @@ impl SessionLoop {
                     elapsed_secs = %elapsed.as_secs_f64(),
                     "Round panicked",
                 );
+                self.try_dispatch_next().await;
             }
         }
     }

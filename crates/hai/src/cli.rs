@@ -76,8 +76,8 @@ impl Cli {
                             db::create_database(&cfg.database.url).await?;
                         }
                         DbAction::Migrate => {
-                            let pool = db::init_db(&cfg.database).await?;
-                            db::run_migrations(&pool).await?;
+                            let (db, _pool) = db::init_db(&cfg.database).await?;
+                            db::run_migrations(&db).await?;
                         }
                         DbAction::Rebuild { target } => match target {
                             RebuildTarget::Embeddings => {

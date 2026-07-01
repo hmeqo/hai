@@ -12,7 +12,6 @@ pub struct Topic {
     pub chat_id: i64,
     pub title: Option<String>,
     pub summary: Option<String>,
-    pub embedding: Option<toasty::Json<Vec<f32>>>,
     pub status: String,
     pub parent_topic_id: Option<uuid::Uuid>,
     pub token_count: i32,

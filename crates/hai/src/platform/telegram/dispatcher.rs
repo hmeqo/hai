@@ -12,33 +12,30 @@ use teloxide::{
 
 use super::{
     command::{Command, MAJOR_HELP_TEXT},
-    util::{ExtractedTelegramMessage, is_mentioning_user, msg_chat_type},
+    message_handler::MessageHandler,
+    util::msg_chat_type,
 };
 use crate::{
     agent::{
         event::{WakeEvent, WakeReason},
         link::{BotHandle, BotId},
-        runtime::{ChatSessionHandle, registry::ChatSessionManager},
+        runtime::registry::ChatSessionManager,
     },
     app::AppContext,
-    domain::{
-        model::{Account, Chat, ChatType, Platform},
-        vo::{ChatId, PlatformAccountMeta, TelegramAccountMeta},
-    },
-    error::{AppError, AppResultExt, ErrorKind, Result},
+    domain::vo::ChatId,
+    error::{AppError, Result},
 };
 
 /// Telegram 分发器
-pub struct TelegramDispather {
+pub struct TelegramDispatcher {
     pub bot_id: BotId,
     pub bot: Bot,
-    pub ctx: AppContext,
     pub handle: BotHandle,
-    pub registry: ChatSessionManager,
     pub allowed_chat_ids: Vec<i64>,
+    msg_handler: MessageHandler,
 }
 
-impl TelegramDispather {
+impl TelegramDispatcher {
     pub async fn new(
         bot_id: BotId,
         bot: Bot,
@@ -51,10 +48,9 @@ impl TelegramDispather {
         Ok(Self {
             bot_id,
             bot,
-            ctx,
-            registry,
             handle,
             allowed_chat_ids,
+            msg_handler: MessageHandler::new(ctx, registry),
         })
     }
 
@@ -65,7 +61,7 @@ impl TelegramDispather {
             Update::filter_message()
                 .branch(
                     dptree::entry()
-                        .filter(|bot: Bot, msg: Message, dp: Arc<TelegramDispather>| {
+                        .filter(|bot: Bot, msg: Message, dp: Arc<TelegramDispatcher>| {
                             if !dp.is_allowed_chat(msg.chat.id) {
                                 tokio::spawn(async move {
                                     if let Err(err) = dp.handle_unauthorized_message(bot, msg).await
@@ -86,7 +82,7 @@ impl TelegramDispather {
                                 |bot: Bot,
                                  msg: Message,
                                  cmd: Command,
-                                 dp: Arc<TelegramDispather>| async move {
+                                 dp: Arc<TelegramDispatcher>| async move {
                                     if let Err(err) = dp.handle_command(bot, msg, cmd).await {
                                         tracing::error!("Failed to handle command: {err}");
                                     }
@@ -95,7 +91,7 @@ impl TelegramDispather {
                             ),
                         )
                         .endpoint(
-                            |msg: Message, me: Me, dp: Arc<TelegramDispather>| async move {
+                            |msg: Message, me: Me, dp: Arc<TelegramDispatcher>| async move {
                                 if let Err(err) = dp.handle_message(msg, me).await {
                                     tracing::error!("Failed to handle message: {}", err);
                                 }
@@ -104,7 +100,7 @@ impl TelegramDispather {
                         ),
                 )
                 .branch(dptree::entry().enter_dialogue::<Message, InMemStorage<State>, State>())
-                .endpoint(|_: Bot, _: Message, _: Arc<TelegramDispather>| async { Ok(()) });
+                .endpoint(|_: Bot, _: Message, _: Arc<TelegramDispatcher>| async { Ok(()) });
 
         Dispatcher::builder(this.bot.clone(), dispatcher_handler)
             .dependencies(dptree::deps![
@@ -138,26 +134,26 @@ impl TelegramDispather {
         Ok(())
     }
 
-    async fn session(&self, chat_id: ChatId) -> ChatSessionHandle {
-        self.registry.get_or_create(chat_id).await
-    }
-
     async fn handle_message(&self, msg: Message, me: Me) -> Result<()> {
         let Some(from) = msg.from.as_ref() else {
             return Ok(());
         };
-        tracing::info!(
+        tracing::debug!(
             chat_id = %msg.chat.id,
             from = %from.full_name(),
-            text = %msg.text().unwrap_or("<non-text>"),
             "Message received",
         );
         let chat_type = msg_chat_type(&msg);
 
-        let (chat, account) = self.resolve_chat_and_account(&msg, from, chat_type).await?;
-        self.persist_user_message(&msg, ChatId::from(chat.id), account.id)
+        let (chat, account) = self
+            .msg_handler
+            .resolve_chat_and_account(&msg, from, chat_type)
             .await?;
-        self.dispatch_agent_event(ChatId::from(chat.id), chat_type, &msg, &me)
+        self.msg_handler
+            .persist_user_message(&msg, ChatId::from(chat.id), account.id)
+            .await?;
+        self.msg_handler
+            .dispatch_agent_event(ChatId::from(chat.id), chat_type, &msg, &me)
             .await;
 
         Ok(())
@@ -177,8 +173,9 @@ impl TelegramDispather {
                     .await?;
             }
             Command::Status => {
-                let inner_chat_id = self.get_internal_chat_id(&msg).await?;
-                let status_msg = match self.session(inner_chat_id).await.status().await {
+                let inner_chat_id = self.msg_handler.get_internal_chat_id(&msg).await?;
+                let status_msg = match self.msg_handler.session(inner_chat_id).await.status().await
+                {
                     Some(s) => {
                         let sched = &s.scheduler;
                         let running = match s.round_elapsed_secs {
@@ -210,113 +207,22 @@ impl TelegramDispather {
                     .await?;
             }
             Command::OrganizeMemory => {
-                let inner_chat_id = self.get_internal_chat_id(&msg).await?;
-                self.session(inner_chat_id).await.wake(WakeEvent::new(
-                    inner_chat_id,
-                    WakeReason::Command(
-                        "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建".into(),
-                    ),
-                ));
+                let inner_chat_id = self.msg_handler.get_internal_chat_id(&msg).await?;
+                self.msg_handler
+                    .session(inner_chat_id)
+                    .await
+                    .wake(WakeEvent::new(
+                        inner_chat_id,
+                        WakeReason::Command(
+                            "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建"
+                                .into(),
+                        ),
+                    ));
             }
         }
         Ok(())
     }
-
-    async fn get_internal_chat_id(&self, msg: &Message) -> Result<ChatId> {
-        let Some(from) = msg.from.as_ref() else {
-            return Err(ErrorKind::BadRequest.msg("No sender"));
-        };
-        let (chat, _) = self
-            .resolve_chat_and_account(msg, from, msg_chat_type(msg))
-            .await?;
-        Ok(ChatId::from(chat.id))
-    }
-
-    async fn resolve_chat_and_account(
-        &self,
-        msg: &Message,
-        from: &teloxide::types::User,
-        chat_type: ChatType,
-    ) -> Result<(Chat, Account)> {
-        let account_meta = PlatformAccountMeta::Telegram(TelegramAccountMeta {
-            first_name: from.first_name.clone(),
-            last_name: from.last_name.clone(),
-            username: from.username.clone(),
-        });
-        self.ctx
-            .db
-            .srv
-            .platform
-            .ensure_chat_and_account(
-                Platform::Telegram,
-                &msg.chat.id.to_string(),
-                chat_type,
-                msg.chat.title(),
-                &from.id.to_string(),
-                Some(serde_json::to_value(account_meta)?),
-            )
-            .await
-            .err_kind(ErrorKind::Internal)
-    }
-
-    async fn persist_user_message(
-        &self,
-        msg: &Message,
-        chat_id: ChatId,
-        account_id: i64,
-    ) -> Result<()> {
-        let reply_to_id: Option<i64> = if let Some(reply) = msg.reply_to_message() {
-            self.ctx
-                .db
-                .srv
-                .message
-                .get_message_id_by_external_id(chat_id, &reply.id.0.to_string())
-                .await?
-                .map(|id| id.0)
-        } else {
-            None
-        };
-
-        let extracted = ExtractedTelegramMessage::extract(msg);
-        self.ctx
-            .db
-            .srv
-            .message
-            .save_user_message(crate::domain::service::NewUserMessage {
-                chat_id,
-                account_id,
-                content: serde_json::to_value(extracted.parts)?,
-                external_id: msg.id.to_string(),
-                reply_to_id,
-                meta: extracted.meta,
-                sent_at: Some(jiff::Timestamp::from_second(msg.date.timestamp())?.into()),
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn dispatch_agent_event(
-        &self,
-        chat_id: ChatId,
-        chat_type: ChatType,
-        msg: &Message,
-        me: &Me,
-    ) {
-        let reason = if chat_type == ChatType::Private {
-            WakeReason::Direct
-        } else if is_mentioning_user(msg, me.user.username.as_deref().unwrap_or("")) {
-            WakeReason::Mention
-        } else {
-            WakeReason::Observe
-        };
-        tracing::info!(%chat_id, reason = reason.label(), "Agent event dispatched");
-        self.session(chat_id)
-            .await
-            .wake(WakeEvent::new(chat_id, reason));
-    }
 }
-
-// ─── 状态 ──────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Default)]
 pub(crate) enum State {

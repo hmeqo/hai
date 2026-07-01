@@ -1,2 +1,2 @@
 pub mod path;
-pub mod vector;
+pub mod pgvector;

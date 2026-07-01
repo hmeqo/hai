@@ -10,7 +10,6 @@ pub struct Perception {
     pub parser: String,
     pub prompt: Option<String>,
     pub content: String,
-    pub embedding: Option<toasty::Json<Vec<f32>>>,
 
     #[auto]
     pub created_at: jiff::Timestamp,

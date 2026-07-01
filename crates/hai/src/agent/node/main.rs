@@ -1,104 +1,67 @@
 use std::sync::Arc;
 
-use autoagents::{
-    core::{
-        agent::{
-            AgentDeriveT, AgentHooks, AgentOutputT, Context, prebuilt::executor::ReActAgentOutput,
-        },
-        tool::{ToolCallResult, ToolT},
-    },
-    llm::ToolCall,
+use async_trait::async_trait;
+use genai::{
+    Client,
+    chat::{ChatMessage, ChatRole},
 };
-use autoagents_derive::AgentOutput;
-use autoagents_toolkit::mcp::McpToolWrapper;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-#[derive(Debug, Serialize, Deserialize, AgentOutput)]
-pub struct MainAgentOutput {
-    #[output()]
-    #[serde(skip)]
-    pub tool_calls: Vec<ToolCallResult>,
-    pub response: String,
+use super::{AgentNode, AgentOutput};
+use crate::{
+    agent::runtime::react::ReactLoop,
+    agentcore::tool::{AgentTool, ToolError},
+};
+
+pub struct MainAgent {
+    client: Client,
+    model: String,
+    system_prompt: String,
+    max_turns: usize,
 }
 
-impl From<ReActAgentOutput> for MainAgentOutput {
-    fn from(output: ReActAgentOutput) -> Self {
+impl MainAgent {
+    pub fn new(client: Client, model: String, system_prompt: String, max_turns: usize) -> Self {
         Self {
-            tool_calls: output.tool_calls,
-            response: output.response,
+            client,
+            model,
+            system_prompt,
+            max_turns,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MainAgent {
-    pub tools: Vec<Arc<dyn ToolT>>,
-    pub system_prompt: String,
-}
-
-impl AgentDeriveT for MainAgent {
-    type Output = MainAgentOutput;
-
+#[async_trait]
+impl AgentNode for MainAgent {
     fn name(&self) -> &str {
         "main_agent"
     }
 
-    fn description(&self) -> &str {
-        &self.system_prompt
-    }
+    async fn run(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<Arc<dyn AgentTool>>,
+    ) -> Result<AgentOutput, ToolError> {
+        let full_messages = std::iter::once(ChatMessage::system(&self.system_prompt))
+            .chain(messages)
+            .collect();
 
-    fn tools(&self) -> Vec<Box<dyn ToolT>> {
-        self.tools
-            .iter()
-            .map(|tool| Box::new(McpToolWrapper::new(Arc::clone(tool))) as Box<dyn ToolT>)
-            .collect()
-    }
+        let output = ReactLoop::new(self.client.clone(), &self.model, self.max_turns)
+            .run(full_messages, tools)
+            .await?;
 
-    fn output_schema(&self) -> Option<Value> {
-        Some(MainAgentOutput::output_schema().into())
-    }
-}
-
-#[autoagents::async_trait]
-impl AgentHooks for MainAgent {
-    async fn on_tool_start(&self, tool_call: &ToolCall, _ctx: &Context) {
-        tracing::info!(
-            tool = %tool_call.function.name,
-            args = %tool_call.function.arguments,
-            "tool call"
-        );
-    }
-
-    async fn on_tool_result(&self, _tool_call: &ToolCall, result: &ToolCallResult, _ctx: &Context) {
-        let result_str = result.result.to_string();
-        let result_len = result_str.len();
-        let truncated = if result_len > 500 {
-            format!("{}…(truncated, {result_len} chars)", &result_str[..500])
-        } else {
-            result_str
-        };
-        tracing::info!(
-            tool = %result.tool_name,
-            result = %truncated,
-            result_len,
-            "tool ok"
-        );
-        if result_len > 500 {
-            tracing::debug!(
-                tool = %result.tool_name,
-                result = %result.result,
-                "tool ok full"
-            );
+        // session 只存非 system 消息
+        let mut msgs = output.messages;
+        if msgs
+            .first()
+            .is_some_and(|m| matches!(m.role, ChatRole::System))
+        {
+            msgs.remove(0);
         }
-    }
 
-    async fn on_tool_error(&self, tool_call: &ToolCall, err: Value, _ctx: &Context) {
-        tracing::error!(
-            tool = %tool_call.function.name,
-            args = %tool_call.function.arguments,
-            error = %err,
-            "tool error"
-        );
+        Ok(AgentOutput {
+            tool_calls: output.tool_calls,
+            messages: msgs,
+            final_response: output.final_response.trim().to_owned(),
+        })
     }
 }

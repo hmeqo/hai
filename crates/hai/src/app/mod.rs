@@ -1,6 +1,7 @@
 pub mod context;
 
 pub use context::AppContext;
+use tracing_subscriber::EnvFilter;
 
 use crate::{
     agent::runtime::AgentEngine, config::AppConfigManager, error::Result,
@@ -19,8 +20,9 @@ impl App {
     pub async fn serve(config_mgr: AppConfigManager) -> Result<()> {
         let cfg = config_mgr.load();
 
+        let filter = EnvFilter::new(&format!("{},rmcp=warn", cfg.logging.level()));
         tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(cfg.logging.level())
+            .with_env_filter(filter)
             .init();
 
         App::new(config_mgr).run().await

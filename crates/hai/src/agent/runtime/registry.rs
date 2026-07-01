@@ -1,56 +1,106 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{Mutex, RwLock, mpsc},
+    task::JoinHandle,
+};
 
-use super::{AgentEngine, ChatSessionHandle};
+use super::{AgentEngine, session::ChatSessionHandle, shell::ShellRuntime};
 use crate::{agent::link::BotHandle, domain::vo::ChatId};
 
-/// 管理 ChatSession 的创建与复用
 pub struct ChatSessionManager {
-    sessions: RwLock<HashMap<ChatId, ChatSessionHandle>>,
+    sessions: Arc<RwLock<HashMap<ChatId, SessionEntry>>>,
+    cleanup_tx: mpsc::UnboundedSender<ChatId>,
     bot: BotHandle,
     engine: AgentEngine,
 }
 
+struct SessionEntry {
+    handle: ChatSessionHandle,
+    task: JoinHandle<()>,
+}
+
 impl ChatSessionManager {
     pub fn new(bot: BotHandle, engine: AgentEngine) -> Self {
+        let (cleanup_tx, mut cleanup_rx) = mpsc::unbounded_channel::<ChatId>();
+        let sessions: Arc<RwLock<HashMap<ChatId, SessionEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        let bg_sessions = Arc::clone(&sessions);
+        tokio::spawn(async move {
+            while let Some(chat_id) = cleanup_rx.recv().await {
+                let mut write = bg_sessions.write().await;
+                if let Some(entry) = write.get(&chat_id) {
+                    if entry.task.is_finished() {
+                        write.remove(&chat_id);
+                        tracing::debug!(%chat_id, "Session auto-cleaned");
+                    }
+                }
+            }
+        });
+
         Self {
-            sessions: RwLock::new(HashMap::new()),
+            sessions,
+            cleanup_tx,
             bot,
             engine,
         }
     }
 
     pub async fn get_or_create(&self, chat_id: ChatId) -> ChatSessionHandle {
-        // 读锁快速路径（微秒级释放）
-        if let Some(handle) = self.sessions.read().await.get(&chat_id)
-            && handle.is_alive()
-        {
-            return handle.clone();
+        if let Some(entry) = self.sessions.read().await.get(&chat_id) {
+            if entry.handle.is_alive() {
+                return entry.handle.clone();
+            }
         }
 
-        // 无锁创建新 session
+        let entry = self.spawn(chat_id).await;
+        let handle = entry.handle.clone();
+        let mut write = self.sessions.write().await;
+        write.insert(chat_id, entry);
+        handle
+    }
+
+    async fn spawn(&self, chat_id: ChatId) -> SessionEntry {
         let attention_cfg = &self.engine.app.cfg.agent.attention;
         let personality = &self.engine.app.cfg.agent.personality;
         let base_heat = personality.base_attention(attention_cfg);
         let window_secs = personality.attention_window_secs();
-        let handle = super::session::spawn_chat_session(
-            chat_id,
-            self.bot.clone(),
-            self.engine.clone(),
-            base_heat,
-            window_secs,
-        );
 
-        // 短暂写锁：double-check 后插入
-        let mut write = self.sessions.write().await;
-        if let Some(existing) = write.get(&chat_id) {
-            if existing.is_alive() {
-                return existing.clone();
+        let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        let shell =
+            std::sync::Arc::new(Mutex::new(ShellRuntime::new(&self.engine.app.cfg.sandbox)));
+
+        let handle = ChatSessionHandle {
+            chat_id,
+            wake_tx,
+            status_tx,
+        };
+
+        tracing::info!(%chat_id, "Chat session started");
+
+        let cleanup_tx = self.cleanup_tx.clone();
+        let task = tokio::spawn({
+            let engine = self.engine.clone();
+            let bot = self.bot.clone();
+            async move {
+                super::session::SessionLoop::new(
+                    engine,
+                    chat_id,
+                    bot,
+                    shell,
+                    base_heat,
+                    window_secs,
+                )
+                .await
+                .run(wake_rx, status_rx)
+                .await;
+
+                let _ = cleanup_tx.send(chat_id);
             }
-            write.remove(&chat_id);
-        }
-        write.insert(chat_id, handle.clone());
-        handle
+        });
+
+        SessionEntry { handle, task }
     }
 }
