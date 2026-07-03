@@ -4,7 +4,7 @@ version = 1
 
 [[schema.tables]]
 id = 0
-name = "perception"
+name = "identity"
 primary_key = { columns = [{ table = 0, index = 0 }], index = { table = 0, index = 0 } }
 
 [[schema.tables.columns]]
@@ -15,38 +15,33 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 0, index = 1 }
-name = "source"
-ty = "String"
-storage_ty = "Text"
-
-[[schema.tables.columns]]
-id = { table = 0, index = 2 }
-name = "parser"
-ty = "String"
-storage_ty = "Text"
-
-[[schema.tables.columns]]
-id = { table = 0, index = 3 }
-name = "prompt"
+name = "name"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
-id = { table = 0, index = 4 }
-name = "content"
+id = { table = 0, index = 2 }
+name = "meta"
 ty = "String"
 storage_ty = "Text"
+nullable = true
 
 [[schema.tables.columns]]
-id = { table = 0, index = 5 }
+id = { table = 0, index = 3 }
 name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 4 }
+name = "updated_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 0, index = 0 }
-name = "index_perception_by_id"
+name = "index_identity_by_id"
 on = 0
 columns = [{ column = { table = 0, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -162,63 +157,101 @@ primary_key = true
 
 [[schema.tables]]
 id = 3
-name = "account"
+name = "topic"
 primary_key = { columns = [{ table = 3, index = 0 }], index = { table = 3, index = 0 } }
 
 [[schema.tables.columns]]
 id = { table = 3, index = 0 }
 name = "id"
-ty = "I64"
-storage_ty = { Integer = 8 }
-auto_increment = true
+ty = "Uuid"
+storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 3, index = 1 }
-name = "identity_id"
+name = "chat_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 2 }
+name = "title"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 3 }
+name = "summary"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 4 }
+name = "status"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 5 }
+name = "parent_topic_id"
 ty = "Uuid"
 storage_ty = "Uuid"
 nullable = true
 
 [[schema.tables.columns]]
-id = { table = 3, index = 2 }
-name = "platform"
-ty = "String"
-storage_ty = "Text"
+id = { table = 3, index = 6 }
+name = "token_count"
+ty = "I32"
+storage_ty = { Integer = 4 }
 
 [[schema.tables.columns]]
-id = { table = 3, index = 3 }
-name = "external_id"
-ty = "String"
-storage_ty = "Text"
+id = { table = 3, index = 7 }
+name = "message_count"
+ty = "I32"
+storage_ty = { Integer = 4 }
 
 [[schema.tables.columns]]
-id = { table = 3, index = 4 }
+id = { table = 3, index = 8 }
 name = "meta"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
-id = { table = 3, index = 5 }
+id = { table = 3, index = 9 }
+name = "started_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 10 }
 name = "last_active_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.columns]]
-id = { table = 3, index = 6 }
+id = { table = 3, index = 11 }
+name = "closed_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 12 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.columns]]
-id = { table = 3, index = 7 }
+id = { table = 3, index = 13 }
 name = "updated_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 3, index = 0 }
-name = "index_account_by_id"
+name = "index_topic_by_id"
 on = 3
 columns = [{ column = { table = 3, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -226,54 +259,79 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 3, index = 1 }
-name = "index_account_by_identity_id"
+name = "index_topic_by_chat_id"
 on = 3
 columns = [{ column = { table = 3, index = 1 }, op = "Eq", scope = "Partition" }]
 
 [[schema.tables]]
 id = 4
-name = "identity"
+name = "account"
 primary_key = { columns = [{ table = 4, index = 0 }], index = { table = 4, index = 0 } }
 
 [[schema.tables.columns]]
 id = { table = 4, index = 0 }
 name = "id"
-ty = "Uuid"
-storage_ty = "Uuid"
+ty = "I64"
+storage_ty = { Integer = 8 }
+auto_increment = true
 
 [[schema.tables.columns]]
 id = { table = 4, index = 1 }
-name = "name"
-ty = "String"
-storage_ty = "Text"
+name = "identity_id"
+ty = "Uuid"
+storage_ty = "Uuid"
 nullable = true
 
 [[schema.tables.columns]]
 id = { table = 4, index = 2 }
+name = "platform"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 3 }
+name = "external_id"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 4 }
 name = "meta"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
-id = { table = 4, index = 3 }
+id = { table = 4, index = 5 }
+name = "last_active_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 6 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.columns]]
-id = { table = 4, index = 4 }
+id = { table = 4, index = 7 }
 name = "updated_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 4, index = 0 }
-name = "index_identity_by_id"
+name = "index_account_by_id"
 on = 4
 columns = [{ column = { table = 4, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
 primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 4, index = 1 }
+name = "index_account_by_identity_id"
+on = 4
+columns = [{ column = { table = 4, index = 1 }, op = "Eq", scope = "Partition" }]
 
 [[schema.tables]]
 id = 5
@@ -302,7 +360,7 @@ nullable = true
 
 [[schema.tables.columns]]
 id = { table = 5, index = 3 }
-name = "type"
+name = "kind"
 ty = "String"
 storage_ty = "Text"
 
@@ -320,39 +378,19 @@ storage_ty = { Integer = 4 }
 
 [[schema.tables.columns]]
 id = { table = 5, index = 6 }
-name = "subject"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 5, index = 7 }
-name = "references"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 5, index = 8 }
 name = "meta"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
-id = { table = 5, index = 9 }
-name = "last_accessed_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-
-[[schema.tables.columns]]
-id = { table = 5, index = 10 }
+id = { table = 5, index = 7 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.columns]]
-id = { table = 5, index = 11 }
+id = { table = 5, index = 8 }
 name = "updated_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
@@ -478,7 +516,7 @@ columns = [{ column = { table = 6, index = 1 }, op = "Eq", scope = "Partition" }
 
 [[schema.tables]]
 id = 7
-name = "topic"
+name = "perception"
 primary_key = { columns = [{ table = 7, index = 0 }], index = { table = 7, index = 0 } }
 
 [[schema.tables.columns]]
@@ -489,97 +527,39 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 7, index = 1 }
-name = "chat_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
+name = "source"
+ty = "String"
+storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 7, index = 2 }
-name = "title"
+name = "parser"
 ty = "String"
 storage_ty = "Text"
-nullable = true
 
 [[schema.tables.columns]]
 id = { table = 7, index = 3 }
-name = "summary"
+name = "prompt"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
 id = { table = 7, index = 4 }
-name = "status"
+name = "content"
 ty = "String"
 storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 7, index = 5 }
-name = "parent_topic_id"
-ty = "Uuid"
-storage_ty = "Uuid"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 7, index = 6 }
-name = "token_count"
-ty = "I32"
-storage_ty = { Integer = 4 }
-
-[[schema.tables.columns]]
-id = { table = 7, index = 7 }
-name = "message_count"
-ty = "I32"
-storage_ty = { Integer = 4 }
-
-[[schema.tables.columns]]
-id = { table = 7, index = 8 }
-name = "meta"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 7, index = 9 }
-name = "started_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-
-[[schema.tables.columns]]
-id = { table = 7, index = 10 }
-name = "last_active_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-
-[[schema.tables.columns]]
-id = { table = 7, index = 11 }
-name = "closed_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 7, index = 12 }
 name = "created_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-
-[[schema.tables.columns]]
-id = { table = 7, index = 13 }
-name = "updated_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 7, index = 0 }
-name = "index_topic_by_id"
+name = "index_perception_by_id"
 on = 7
 columns = [{ column = { table = 7, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
 primary_key = true
-
-[[schema.tables.indices]]
-id = { table = 7, index = 1 }
-name = "index_topic_by_chat_id"
-on = 7
-columns = [{ column = { table = 7, index = 1 }, op = "Eq", scope = "Partition" }]

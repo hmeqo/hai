@@ -1,33 +1,43 @@
-# 👋 hai
+# hai
 
-Telegram 聊天机器人，可配置性格和长期记忆。
+Telegram chatbot with personality system, long-term memory, MCP tool integration, and skill-based prompting.
 
-## 功能
+## Features
 
-- **人格系统**：6 维性格参数（社交活跃度、话量、坦诚度、幽默感、理性/感性、情绪稳定性）
-- **话题管理**：自动归类、总结话题
-- **长期记忆**：记忆用户特征、知识、笔记、规则，向量检索
-- **多模态**：图片分析、语音合成
+- **Personality system** — configurable sociability, verbosity, humor, and mood traits shape response style
+- **Long-term memory** — vector search across user facts, notes, and knowledge via pgvector
+- **Topic tracking** — automatic conversation topic detection, assignment, and summarization
+- **ReAct loop** — thinking-acting-observing cycle with full tool use, preemption, and turn management
+- **MCP support** — integrate any [Model Context Protocol](https://modelcontextprotocol.io/) server for additional tools
+- **Multi-platform** — Telegram (extensible via `PlatformHandler` trait)
+- **Sandbox execution** — optional Docker sandbox for shell tool execution
+- **Skills system** — loadable markdown skills with frontmatter for structured agent instructions
 
-## 快速开始
+## Prerequisites
 
-### 1. 环境准备
+- [Rust](https://rustup.rs/) nightly (edition 2024)
+- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- An LLM API key (OpenAI, Anthropic, OpenRouter, or local Ollama)
 
-- Rust nightly (edition 2024)
-- PostgreSQL + pgvector 扩展
-- Telegram Bot Token
-- LLM API Key（OpenRouter / OpenAI / Anthropic 等）
+## Quick Start
 
-### 2. 配置
+### 1. Configure PostgreSQL
 
-创建 `.hai/config.toml`：
+Create a database with pgvector:
+
+```bash
+createdb hai
+psql hai -c "CREATE EXTENSION vector;"
+```
+
+### 2. Configuration
+
+Create `.hai/config.toml`:
 
 ```toml
-[logging]
-level = "info"
-
 [database]
-url = "postgres://user:password@localhost:5433/hai"
+url = "postgres://user:password@localhost:5432/hai"
 
 [bot.main]
 type = "telegram"
@@ -35,7 +45,7 @@ bot-token = "your-bot-token"
 allowed-chat-ids = [123456789]
 
 [providers.openrouter]
-api_key = "your-api-key"
+api_key = "sk-or-v1-..."
 
 [agent]
 provider = "openrouter"
@@ -56,59 +66,100 @@ model = "openai/text-embedding-3-small"
 dimension = 1536
 ```
 
-### 3. 初始化 embedding（首次或换模型时执行）
+### 3. Setup database
 
 ```bash
-cargo run -- db rebuild embeddings
+cargo run -- db migrate           # apply ORM + embedding schema migrations
 ```
 
-### 4. 运行
+### 4. Start
 
 ```bash
 cargo run --bin hai
 ```
 
-### 5. 查看配置
+## Commands
 
 ```bash
-cargo run --bin hai -- config --format toml
+cargo run --bin hai               # start the bot
+cargo run --bin hai -- config     # print current config
+cargo run -- db create            # create database
+cargo run -- db migrate           # apply migrations + vector column
+cargo run -- db rebuild embeddings   # re-embed all memories
+cargo run --bin toasty-cli -- migration generate    # generate ORM migration
+cargo run --bin toasty-cli -- migration apply       # apply ORM migration
 ```
 
-## 开发
+## Configuration
+
+`.hai/config.toml` (or `~/.config/hai/config.toml`). Set `HAI_LOCAL_MODE=1` to force `.hai/` only.
+
+### LLM Providers
+
+Supported providers: `openai`, `anthropic`, `openrouter`, `ollama`, `gemini`, `deepseek`, `groq`.
+
+```toml
+[providers.openai]
+api_key = "sk-..."
+
+[providers.ollama]
+# api_key is optional for local providers
+```
+
+### Multimodal
+
+```toml
+[multimodal.embedding]
+provider = "openrouter"
+model = "openai/text-embedding-3-small"
+dimension = 1536
+
+[multimodal.input]
+audio = { model = "whisper-1" }
+image = { model = "gpt-4o" }
+video = { model = "gpt-4o" }
+
+[multimodal.tts]
+model = "tts-1"
+voice = "alloy"
+speed = 1.0
+```
+
+### Attention / Scheduling
+
+```toml
+[agent.attention]
+base_heat = 0.02          # base dispatch probability for Observe events
+window_secs = 120          # attention window after addressed event
+
+[agent.context]
+history_cap = 25           # max messages loaded per turn
+session_idle_timeout_secs = 7200
+preempt = true              # inject mid-processing events as turn interruptions
+conversation_mode = "persistent"   # or "ephemeral"
+```
+
+## Development
 
 ```bash
-cargo check                # 编译检查
-cargo clippy --all-targets # lint
-cargo run --bin hai        # 运行
-cargo run --bin hai -- config  # 查看配置
+cargo check
+cargo clippy --all-targets
+cargo test
 ```
 
-## TODO
+## Project Structure
 
-- [x] 基础能力
-  - [x] 记事板
-  - [x] 记忆
-  - [x] 智能话题管理
-  - [ ] 计划任务
-- [x] 人格系统
-  - [x] 基础人格系统
-- [x] 接收消息
-  - [x] 接收并存入数据库
-  - [x] 多模态分析
-    - [x] 图片
-    - [x] 视频
-    - [x] 语音
-- [x] 发送消息
-  - [x] 发送文本
-  - [ ] 发送和管理 sticky
-  - [x] 多模态
-    - [ ] 图片
-    - [ ] 视频
-    - [x] 语音
-- [x] 增强功能
-  - [x] MCP
-  - [x] Skills
-- [x] 多平台支持
-  - [x] Telegram
-  - [ ] Cli
-  - [ ] Qq
+```
+hai/src/
+├── agent/          agent logic (nodes, runtime, context, tools)
+├── agentcore/      infrastructure (tool trait, MCP, embedding, rendering)
+├── domain/         domain model + services (toasty ORM + sqlx)
+├── platform/       platform integrations (Telegram)
+├── config/         configuration system
+├── util/           shared utilities (pgvector)
+└── app/            application context + startup
+```
+
+## License
+
+MIT

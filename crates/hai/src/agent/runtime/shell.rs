@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct ContainerGuard {
+pub(crate) struct ContainerGuard {
     runtime: String,
     id: String,
 }
@@ -46,14 +46,6 @@ impl ContainerGuard {
             id,
             runtime: runtime.to_string(),
         })
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn runtime(&self) -> &str {
-        &self.runtime
     }
 }
 
@@ -116,40 +108,30 @@ impl ShellRuntime {
 
         let handle = sb.ensure_container().await?;
         if let Some(dir) = skill_dir {
-            copy_to_container(handle.runtime(), handle.id(), dir, "/workspace").await?;
+            copy_to_container(handle, dir, "/workspace").await?;
         }
-        exec_in_container(handle.runtime(), handle.id(), command, timeout).await
+        exec_in_container(handle, command, timeout).await
     }
 }
 
 async fn exec_in_container(
-    runtime: &str,
-    container_id: &str,
+    guard: &ContainerGuard,
     command: &str,
     timeout_secs: u64,
 ) -> Result<ShellOutput, ToolError> {
-    let mut cmd = Command::new(runtime);
-    cmd.args([
-        "exec",
-        "-w",
-        "/workspace",
-        container_id,
-        "bash",
-        "-c",
-        command,
-    ]);
+    let mut cmd = Command::new(&guard.runtime);
+    cmd.args(["exec", "-w", "/workspace", &guard.id, "bash", "-c", command]);
     run_cmd(cmd, timeout_secs).await
 }
 
 async fn copy_to_container(
-    runtime: &str,
-    container_id: &str,
+    guard: &ContainerGuard,
     src: &Path,
     dest: &str,
 ) -> Result<(), ToolError> {
     let src_str = src.display().to_string();
-    let dest_str = format!("{}:{}", container_id, dest);
-    let output = Command::new(runtime)
+    let dest_str = format!("{}:{}", guard.id, dest);
+    let output = Command::new(&guard.runtime)
         .args(["cp", &src_str, &dest_str])
         .output()
         .await

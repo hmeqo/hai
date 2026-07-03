@@ -5,7 +5,7 @@ use teloxide::{
     Bot,
     payloads::{SendMessageSetters, SendVoiceSetters},
     prelude::Requester,
-    types::{ChatAction, FileId, InputFile, MessageId, ParseMode, ReplyParameters},
+    types::{ChatAction, InputFile, MessageId, ParseMode, ReplyParameters},
 };
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ use crate::{
     app::AppContext,
     domain::{
         service::NewAgentMessage,
-        vo::{ChatId, TelegramContentPart, VoiceMeta},
+        vo::{ChatId, FileId, TelegramContentPart, VoiceMeta},
     },
     error::{AppResultExt, ErrorKind, OptionAppExt, Result},
 };
@@ -88,7 +88,7 @@ impl TelegramPlatformHandler {
                 tokens: 0,
                 reply_to_id,
                 external_id: Some(external_id.to_string()),
-                sent_at: Some(jiff::Timestamp::from_second(sent_at_ts)?.into()),
+                sent_at: Some(jiff::Timestamp::from_second(sent_at_ts)?),
             })
             .await?;
 
@@ -172,7 +172,7 @@ impl PlatformHandler for TelegramPlatformHandler {
 
         let file_id = sent_msg
             .voice()
-            .map(|v| v.file.id.clone())
+            .map(|v| FileId(v.file.id.0.to_string()))
             .unwrap_or_else(|| FileId(format!("tts_{}", Uuid::now_v7())));
         let content = serde_json::to_value(vec![TelegramContentPart::Voice {
             attachment_id: Uuid::now_v7(),

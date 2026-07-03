@@ -182,21 +182,18 @@ impl TelegramDispatcher {
 
                         // runs line
                         let runs_line = if let Some(secs) = s.run_elapsed_secs {
-                            format!("runs    {} · active {:.1}s", s.runs_completed, secs)
+                            format!("turns   {} · active {:.1}s", s.turns_count, secs)
                         } else {
-                            format!("runs    {}", s.runs_completed)
+                            format!("turns   {}", s.turns_count)
                         };
                         lines.push(runs_line);
 
-                        // tokens line（最后一轮输入）
-                        if let Some(turns) = &s.last_run_turns {
-                            if let Some(turn) = turns.last() {
-                                let prompt = turn.usage.prompt_tokens.unwrap_or(0) as u32;
-                                if prompt > 0 {
-                                    lines.push(format!("tokens  {}", fmt_tokens(prompt)));
-                                }
-                            }
+                        // tokens
+                        if s.prompt_tokens > 0 {
+                            lines.push(format!("tokens  {}", fmt_tokens(s.prompt_tokens)));
                         }
+
+                        lines.push(format!("conv    {} msgs", s.conversation_msgs));
 
                         // heat line
                         let heat =
@@ -209,11 +206,6 @@ impl TelegramDispatcher {
                         };
                         lines.push(heat_line);
 
-                        // queue
-                        if sched.pending_events > 0 {
-                            lines.push(format!("queue   {}", sched.pending_events));
-                        }
-
                         lines.join("\n")
                     }
                     None => "model   (no session)".into(),
@@ -225,20 +217,15 @@ impl TelegramDispatcher {
                 self.msg_handler
                     .session(inner_chat_id)
                     .await
-                    .wake(WakeEvent::new(
-                        inner_chat_id,
-                        WakeReason::Command(
-                            "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建"
-                                .into(),
-                        ),
-                    ));
+                    .wake(WakeEvent::new(WakeReason::Command(
+                        "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建".into(),
+                    )));
             }
         }
         Ok(())
     }
 }
 
-/// 格式化 token 数字：1500 → "1.5k"
 fn fmt_tokens(n: u32) -> String {
     if n >= 1000 {
         format!("{}.{}k", n / 1000, (n % 1000) / 100)

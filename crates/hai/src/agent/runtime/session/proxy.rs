@@ -1,35 +1,44 @@
+use std::sync::Arc;
+
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
 use self::super::scheduler::SchedulerStatus;
-use super::super::types::{RunOutput, Turn};
-use crate::{agent::event::WakeEvent, domain::vo::ChatId};
+use crate::{
+    agent::{
+        event::WakeEvent,
+        runtime::types::{Inbox, ProcessingOutput},
+    },
+    domain::vo::ChatId,
+};
 
-pub(super) type RunSignal = Option<RunOutput>;
+pub(super) type ProcessingSignal = Option<ProcessingOutput>;
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,
-    pub runs_completed: usize,
+    pub turns_count: usize,
+    pub prompt_tokens: u32,
+    pub conversation_msgs: usize,
+    pub mode: &'static str,
     pub run_in_progress: bool,
     pub run_elapsed_secs: Option<f64>,
     pub model: String,
-    pub last_run_turns: Option<Vec<Turn>>,
+    pub last_turns: Option<Vec<super::super::types::Turn>>,
 }
 
 #[derive(Clone)]
 pub struct SessionHandle {
     pub chat_id: ChatId,
-    pub wake_tx: mpsc::UnboundedSender<WakeEvent>,
+    pub inbox: Inbox,
     pub status_tx: mpsc::UnboundedSender<oneshot::Sender<SessionStatus>>,
+    pub(crate) join: Arc<JoinHandle<()>>,
 }
 
 impl SessionHandle {
     pub fn wake(&self, event: WakeEvent) {
-        if let Err(e) = self.wake_tx.send(event) {
-            tracing::error!(chat_id = %self.chat_id, "Failed to send wake event: {e}");
-        }
+        self.inbox.push(event);
     }
 
     pub async fn status(&self) -> Option<SessionStatus> {
@@ -48,7 +57,7 @@ impl SessionHandle {
     }
 
     pub fn is_alive(&self) -> bool {
-        !self.wake_tx.is_closed()
+        !self.join.is_finished()
     }
 }
 

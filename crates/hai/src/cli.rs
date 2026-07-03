@@ -1,3 +1,7 @@
+pub mod display;
+pub mod log;
+pub mod tui;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +10,7 @@ use crate::{
     config::{AppConfigManager, PathResolver, env::ENV_PREFIX},
     domain::db,
     rebuild,
+    util::pgvector,
 };
 
 #[derive(Parser)]
@@ -26,6 +31,11 @@ pub enum Commands {
     Db {
         #[command(subcommand)]
         action: DbAction,
+    },
+    /// View agent event log
+    Log {
+        #[command(flatten)]
+        args: log::LogArgs,
     },
 }
 
@@ -76,8 +86,10 @@ impl Cli {
                             db::create_database(&cfg.database.url).await?;
                         }
                         DbAction::Migrate => {
-                            let (db, _pool) = db::init_db(&cfg.database).await?;
+                            let (mut db, _pool) = db::init_db(&cfg.database).await?;
                             db::run_migrations(&db).await?;
+                            let dim = cfg.multimodal.embedding.dimension.unwrap_or(1024);
+                            pgvector::ensure_embedding_schema(&mut db, dim).await?;
                         }
                         DbAction::Rebuild { target } => match target {
                             RebuildTarget::Embeddings => {
@@ -85,6 +97,9 @@ impl Cli {
                             }
                         },
                     }
+                }
+                Commands::Log { args } => {
+                    log::execute(args).await?;
                 }
             }
         } else {

@@ -8,6 +8,8 @@ cargo run --bin hai -- config     # 查看配置
 cargo run -- db create            # 创建数据库
 cargo run -- db migrate           # 执行迁移
 cargo run -- db rebuild embeddings   # 用当前 embedding model 重算所有向量
+cargo run --bin hai -- log           # agent 事件日志（TUI）
+cargo run --bin hai -- log --id 42   # 查看单条事件详情
 cargo run --bin toasty-cli -- migration generate    # 生成 migration
 cargo run --bin toasty-cli -- migration apply       # 执行迁移
 ```
@@ -23,32 +25,33 @@ cargo run --bin toasty-cli -- migration apply       # 执行迁移
 ```
 hai/src/
 ├── agent/               agent 业务逻辑
-│   ├── node/               agent 节点定义（每个类型一个目录）
-│   │   └── main/           MainAgent 节点（SystemPromptBuilder + build_react_config）
-│   ├── runtime/            共享：AgentEngine + AgentSession + ReactLoop
+│   ├── node/               agent 节点定义
+│   │   └── main/           MainAgent（SystemPromptBuilder + ReactLoopConfig）
+│   ├── runtime/            共享运行时
 │   │   ├── context.rs       RunContext + ToolContext
-│   │   ├── types.rs         Run / RunOutput / ToolCallResult 类型
-│   │   ├── react.rs         run_react_loop（纯函数，node 无关）
-│   │   ├── engine.rs        AgentEngine（共享单例）
-│   │   ├── registry.rs      SessionManager（background mpsc 自动清理）
+│   │   ├── types.rs         Messages / Inbox / ProcessingOutput / Turn
+│   │   ├── react.rs         ReactRun + run_react_loop（纯函数，node 无关）
+│   │   ├── engine.rs        AgentEngine（Arc 共享单例）
+│   │   ├── registry.rs      SessionManager（Sessions HashMap + lazy retain）
 │   │   ├── shell.rs         ShellRuntime（沙箱 shell）
-│   │   ├── event/           WakeEvent / WakeReason（跨层事件类型）
-│   │   │   └── wake.rs
-│   │   └── session/         AgentSession（状态机 + 调度器）
-│   │       ├── mod.rs        AgentSession + ActiveRun + event loop
-│   │       ├── proxy.rs      SessionHandle
-│   │       ├── dispatch.rs   事件调度 + 派发
-│   │       ├── run.rs        spawn_run_task + assemble_run
-│   │       ├── messages.rs   消息收集
-│   │       ├── context.rs    build_run_context 工厂
-│   │       ├── scheduler.rs  EventScheduler（热度 + 窗口 + 防抖 + 重试）
-│   │       └── attention.rs  Heat + Window（调度器数学原语）
+│   │   ├── event/           WakeEvent + AgentEvent + AgentEventBus
+│   │   │   ├── wake.rs
+│   │   │   └── bus.rs
+│   │   └── session/         AgentSession（事件循环 + 调度器）
+│   │       ├── mod.rs        AgentSession 结构体 + SessionState 枚举
+│   │       ├── event_loop.rs  run() 主循环 + idle_tick + ActiveProcessing
+│   │       ├── dispatch.rs    dispatch + on_complete + spawn_processing
+│   │       ├── prompt.rs      assemble_run + build_run_context + ProcessingPayload
+│   │       ├── proxy.rs       SessionHandle + SessionStatus + HeartbeatTask
+│   │       ├── conversation.rs Conversation（next_prompt + update）
+│   │       ├── scheduler.rs   EventScheduler（pure timing）
+│   │       └── attention.rs   Heat + Window（调度器数学原语）
 │   ├── tools/              工具实现（每个文件一个工具集）
-│   ├── context/            提示词上下文渲染（XML → prompt string）
+│   ├── context/            提示词渲染（XML → prompt string）
 │   ├── link.rs             BotHandle + PlatformHandler trait
 │   ├── personality/        性格配置渲染
 │   └── multimodal/         多媒体服务
-├── agentcore/           基础设施层（不依赖 agent/domain）
+├── agentcore/           agent 核心库（不依赖 agent/domain）
 │   ├── tool.rs          AgentTool trait + ToolError + 辅助函数
 │   ├── mcp.rs           McpManager + McpServerHandle（基于 rmcp）
 │   ├── embedding.rs     EmbeddingService trait
@@ -59,8 +62,15 @@ hai/src/
 ├── util/                工具函数
 │   └── pgvector.rs      pgvector 搜索/写入封装
 ├── domain/              领域层（model + service + vo）
-│   ├── service/         直接调 toasty ORM + sqlx（pgvector 查询）
-│   └── model/           toasty 模型定义（无 embedding 字段，由 rebuild 管理）
+│   ├── model/           toasty 模型
+│   │   ├── memory.rs     Memory + MemoryKind（UserFact / Note / Knowledge）
+│   │   ├── topic.rs      Topic + TopicStatus
+│   │   ├── message.rs    Message
+│   │   └── ...
+│   ├── service/          业务逻辑（直接调 toasty ORM + sqlx）
+│   │   ├── memory.rs     MemoryService（create / update / search / delete）
+│   │   └── ...
+│   └── vo/              值对象（ChatId, MessageId, TopicSearchResult 等）
 ├── platform/            Telegram 平台集成
 │   └── telegram/
 │       ├── dispatcher.rs      teloxide 路由（薄层）
@@ -72,86 +82,114 @@ hai/src/
 ## 通信模型
 
 ```
-Dispatcher ──handle.wake(WakeEvent)──► SessionHandle.wake_tx
-                                            │
-                                      AgentSession::run()
-                                            │
-                                 match state { Idle, Active(ActiveRun) }
-                                 Idle → poll_idle() → select! { wake_rx, status_rx, deadline }
-                                 Active → active.poll() { wake_rx, status_rx, result_rx }
-                                            │
-                                      try_dispatch() → dispatch_with()
-                                                         │ (tokio::spawn + oneshot)
-                                                     node.run()
-                                                         │
-                                                     Run ◄──────── result_rx
-                                            │
-                                      on_run_complete() → self.runs.push + schedule.refresh
+Platform → SessionHandle.wake(WakeEvent)
+  → Inbox.push(event)
+    → idle_tick (Inbox.drain → scheduler.enqueue → scheduler.decide)
+      → dispatch(events)
+        → spawn_processing → run_react_loop
+          → ReactLoopOutput → oneshot → on_complete
+            → on_complete → Idle
 ```
 
-- **Platform → agent**：dispatcher → `registry.get_or_create(ChatId)` → `handle.wake(WakeEvent)`
-- **Agent run 执行**：`dispatch_with()` → `spawn_run_task()`（自由函数）→ Result 通过 per-run oneshot 返回
-- **状态查询**：`handle.status()`（mpsc 通道）
-- **内部命令**走 `self.bot.send_message()`，不经会话
+| 层 | 组件 | 通信方式 |
+|----|------|---------|
+| Platform → Session | `SessionHandle.wake(event)` | `Inbox.push()` + `Notify` |
+| Idle → Active | `idle_tick` → `dispatch` | `scheduler.enqueue()` + `scheduler.decide()` |
+| Processing 完成 | `oneshot::Receiver` → `on_complete` | `oneshot::channel` |
+| 清理 | `on_complete` / Failed / Cancelled | `Inbox.drain()` → `scheduler.enqueue()` → Idle |
+| 状态查询 | `SessionHandle.status()` | `mpsc` + `oneshot` 响应 |
 
-## Session 生命周期
+## Session 事件流
 
-- `SessionManager` 在 `agent/runtime/registry.rs`，管理所有 agent session 的创建与清理
-- `get_or_create(ChatId)` → 读锁快速查找，写锁 double-check 后插入
-- 后台 task 监听 `mpsc::UnboundedReceiver<ChatId>`，收到退出信号后 `is_finished()` 确认 → 自动移除
-- session task 退出时通过 `cleanup_tx.send(chat_id)` 通知清理，无需 `sweep()` 轮询
-- Session 退出后如果同 chat 又来消息，会在 `get_or_create` 创建新 session
-- 所有 session 共用 `AgentEngine`（LLM client + MCP + skills），通过 `Arc` 共享
+事件队列统一由 `EventScheduler.queue` 持有，`AgentSession` 不再有 `backlog`。
+
+```
+Idle:
+  idle_tick(&mut self, inbox: &Inbox):
+    select! { notified(), status_rx, deadline }
+    inbox.drain() → scheduler.enqueue(events) → scheduler.decide(timeout)
+      Ready(events) → dispatch
+      Defer → Idle
+      Done → 退出
+
+Active:
+  on_complete(output, inbox) / Failed / Cancelled:
+    inbox.drain() → scheduler.enqueue() → Idle
+```
+
+两个关键设计：
+- **`scheduler.queue`** 是唯一的挂起事件队列，不在 session 层面重复持有
+- 所有事件统一由 `idle_tick` 路径的 `scheduler.decide()` 调度，无捷径
 
 ## 调度策略
 
-| 方法 | 含义 |
-|------|------|
-| `is_addressed()` | Direct / Mention → 刷新窗口 + 热量 |
-| `is_rapid()` | Scheduled / Command → 绕过防抖 + 窗口 + 热度 |
-| `is_mergeable()` | Observe / Mention / Direct → 同轮次可合并 |
-| debounce 0.5s | 最后一次事件后等 500ms 才 dispatch |
-| Guard window 3s | 3s 内新 addressed 事件可 interrupt 当前 round |
+`scheduler.rs`（pure timing engine）：
+
+| 方法 | 触发条件 | 效果 |
+|------|----------|------|
+| `is_addressed()` | Direct / Mention | 刷新窗口 + 热量 |
+| `is_rapid()` | Scheduled / Command | 绕过 debounce |
+| `is_mergeable()` | Observe / Mention / Direct | 同类事件可合并 |
+| debounce 0.5s | 最后一次事件后等 500ms | 到达 deadline 才 dispatch |
+| Heat spend | `random < heat.value` | 概率性 dispatch（Observe） |
+
+## Memory 系统
+
+```
+Memory {
+    id: Uuid,
+    chat_id: Option<i64>,
+    account_id: Option<i64>,   // UserFact 使用
+    content: String,
+    importance: i32,
+    kind: String,               // "user_fact" | "note" | "knowledge"
+    meta: Option<Json>,        // 通用元数据（references 等）
+    created_at, updated_at: Timestamp,
+}
+
+MemoryKind { UserFact, Note, Knowledge }
+```
+
+- 所有 Memory 统一嵌入（`needs_embedding()` 已被删除）
+- `search_related` 不做 type 排除
+- `MemoryService::create(kind, chat_id, content, account_id?, meta?)` 取代旧的 `save_memory(MemoryInput)`
+- `MemoryService::update(id, content?, importance?)` 取代 Update 变体
 
 ## Tools 层
 
 - 定义在 `agentcore::tool`：`AgentTool` trait（name / description / schema / execute）
 - 工具实现放 `agent/tools/`，每个模块一个 `pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>>` 工厂
-- 无 `ToolBridge` / 无 `ToolT` / 无 autoagents — 全部用本地 `AgentTool` trait
-- 大部分工具用 `#[hai_macros::tool]` 宏自动生成 `impl AgentTool`（name 从 struct 名推导，description 从 doc comment 取，schema 从 `schemars::schema_for!` 生成，execute 反序列化后委托给 `self.exec(typed)`）
-- RunShell / AnalyzeAttachment 因动态 description 保留手动 `impl AgentTool`
-- `chat_id` 来自 struct 字段（round 创建时注入）
-- `#[serde(deserialize_with = "deserialize_option_lenient_u64")]` 处理字符串/数字混用
+- 大部分工具用 `#[hai_macros::tool]` 宏自动生成 `impl AgentTool`
 - args struct 用 `#[derive(Deserialize, JsonSchema)]` + doc comments → `schemars` 自动生成 JSON Schema
-- 辅助函数：`tool_ok()` / `tool_data()` / `tool_err()` / `MapToolErr`（在 `agentcore::tool`）
-
-## Tools 工厂
-
-```rust
-pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    vec![Arc::new(MyTool { field: ctx.some_field.clone() })]
-}
-```
-
-`get_main_agent_tools()` 在 `tools/mod.rs` 中合并所有模块的工具列表，`spawn_run_task()` 再与 MCP 工具合并后传入 `ReactLoop`。
 
 ## MCP
 
 - 基于 `rmcp`（官方 MCP Rust SDK）
-- `McpManager` 在启动时加载所有 MCP server 配置，每个 server 对应一个 `McpServerHandle`
+- `McpManager` 启动时加载所有 MCP server 配置，每个 server 对应一个 `McpServerHandle`
 - 子进程 stderr 被 pipe 到 `tracing::debug!(target: "hai::mcp")`，由 `[logging] level` 控制显隐
-- rmcp 内部日志被全局 EnvFilter 限制到 `warn`（在 `app/mod.rs` 设置）
 
 ## Embedding
 
-- `agentcore::embedding::EmbeddingService` trait（`generate_embedding(&self, text) -> Result<Vec<f32>>`）
-- `MultimodalService` 实现该 trait
-- `domain/service/` 通过 `Arc<dyn EmbeddingService>` 注入，不直接依赖 agent 层
-- 向量存储在 PostgreSQL `embedding vector(N)` 列中，由 `pgvector` 扩展管理
-- 搜索走 `util::pgvector`（`search_embedding_vec` 用 `<->` 余弦距离 + IVFFlat 索引）
-- 业务层搜索：sqlx 查 `(id, distance)` → toasty `in_list` 加载完整对象
-- `hai rebuild embeddings` 读取 `[multimodal.embedding.dimension]`，自动 `ALTER COLUMN TYPE vector(N)` + 重算 + 建 IVFFlat 索引
-- `search_related_dedup()` 封装去重 + 2/3 缩减
+- `agentcore::embedding::EmbeddingService` trait
+- 所有 `Memory` 类型都嵌入（无条件）
+- 向量存储在 PostgreSQL `embedding vector(N)` 列，由 `pgvector` 管理
+- 搜索走 `util::pgvector`（`<->` 余弦距离 + IVFFlat 索引）
+- 维度从 `[multimodal.embedding.dimension]` 读取
+
+## 错误处理
+
+- `?` 优先于 `let _ =`。调用方应感知错误并决定如何处理（propagate、fallback 或 log）。
+- `let _ =` 仅用于确认错误无关紧要的场景（如 best-effort cleanup、`send_typing`）。
+- `if let Err(e) = ... { tracing::warn!(...) }` 替代 `let _ =`，确保错误有上下文。
+
+## 编码风格
+
+- `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`
+- nightly toolchain, edition 2024
+- 无 CI / 无 pre-commit
+- `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见
+- 倾向 RAII 封装（`HeartbeatTask`、`ContainerGuard`）和语义封装
+- Service 直接调 toasty ORM，无 repo 层
 
 ## Bot 配置
 
@@ -161,20 +199,10 @@ bot-token = "xxx"
 allowed-chat-ids = [123456]
 ```
 
-省略 `type` 时从 key 名推断（`telegram` / `tg` → Telegram）。
 Config 覆盖链：`.hai/config.toml` → `HAI_` 环境变量 → 运行时热加载。
 `HAI_LOCAL_MODE=1` 强制使用 `.hai/`，否则回退 `$XDG_CONFIG_HOME/hai/`。
 
 ## Provider
 
-- `api_key` 是 `Option<String>`，Ollama 等本地服务可省略
-- 已知 backend 需要显式注册 `[providers.*]`，不自动注册
-
-## 编码
-
-- `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`
-- nightly toolchain, edition 2024
-- 无 CI / 无 pre-commit
-- `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见
-- 倾向 RAII 封装（`HeartbeatTask`、`ContainerGuard`）和语义封装（`search_related_dedup`）
-- **Service** 直接调 toasty ORM，无 repo 层
+- `api_key` 是 `Option<String>`（Ollama 可省略）
+- 已知 backend 需显式注册 `[providers.*]`

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
+use crate::domain::vo::ChatId;
+
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "chat"]
 pub struct Chat {
@@ -22,8 +24,12 @@ pub struct Chat {
 }
 
 impl Chat {
-    pub fn chat_type(&self) -> ChatType {
-        self.chat_type.parse().expect("Invalid chat type")
+    pub fn id_(&self) -> ChatId {
+        ChatId(self.id)
+    }
+
+    pub fn chat_type(&self) -> Option<ChatType> {
+        self.chat_type.parse().ok()
     }
 }
 

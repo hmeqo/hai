@@ -13,7 +13,7 @@ use crate::{
     },
     agentcore::{
         skills::SkillManager,
-        tool::{AgentTool, ToolError, tool_data},
+        tool::{AgentTool, ToolError, tool_data, tool_err},
     },
 };
 
@@ -71,7 +71,7 @@ impl AgentTool for RunShell {
                 typed.timeout_secs,
             )
             .await
-            .map_err(|e| ToolError::Msg(e.to_string()))?;
+            .map_err(|e| tool_err(e.to_string()))?;
 
         tool_data(json!({
             "stdout": output.stdout,

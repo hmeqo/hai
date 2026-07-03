@@ -1,16 +1,28 @@
+use std::sync::Arc;
+
+use sqlx::PgPool;
+
 use crate::{
+    agentcore::embedding::EmbeddingService,
     domain::{model::Perception, vo::Source},
     error::Result,
+    util::pgvector,
 };
 
 #[derive(Debug)]
 pub struct PerceptionService {
     db: toasty::Db,
+    embedding: Arc<dyn EmbeddingService>,
+    pool: PgPool,
 }
 
 impl PerceptionService {
-    pub fn new(db: toasty::Db) -> Self {
-        Self { db }
+    pub fn new(db: toasty::Db, embedding: Arc<dyn EmbeddingService>, pool: PgPool) -> Self {
+        Self {
+            db,
+            embedding,
+            pool,
+        }
     }
 
     pub async fn find(
@@ -100,6 +112,17 @@ impl PerceptionService {
         .await?
         {
             toasty::update!(existing { content }).exec(&mut db).await?;
+            let id = existing.id;
+            let content = content.to_string();
+            let embedding = Arc::clone(&self.embedding);
+            let pool = self.pool.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    pgvector::store_embedding(&*embedding, &pool, "perception", id, &content).await
+                {
+                    tracing::warn!(%id, "Failed to store perception embedding: {e}");
+                }
+            });
             return Ok(existing);
         }
 
@@ -113,6 +136,18 @@ impl PerceptionService {
         })
         .exec(&mut db)
         .await?;
+
+        let id = perception.id;
+        let content = content.to_string();
+        let embedding = Arc::clone(&self.embedding);
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                pgvector::store_embedding(&*embedding, &pool, "perception", id, &content).await
+            {
+                tracing::warn!(%id, "Failed to store perception embedding: {e}");
+            }
+        });
 
         Ok(perception)
     }

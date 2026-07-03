@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::{
     model::ChatType,
-    vo::{MessageMeta, PlatformMessageMeta, TelegramContentPart, TelegramMessageMeta},
+    vo::{FileId, MessageMeta, PlatformMessageMeta, TelegramContentPart, TelegramMessageMeta},
 };
 
 /// MarkdownV2 保留字符中无格式化意义的字符。
@@ -96,7 +96,7 @@ impl ExtractedTelegramMessage {
             if let Some(photo) = photos.last() {
                 parts.push(TelegramContentPart::Photo {
                     attachment_id: Uuid::now_v7(),
-                    file_id: photo.file.id.clone(),
+                    file_id: FileId(photo.file.id.0.clone()),
                     width: photo.width,
                     height: photo.height,
                     caption,
@@ -105,43 +105,43 @@ impl ExtractedTelegramMessage {
         } else if let Some(video) = msg.video() {
             parts.push(TelegramContentPart::Video {
                 attachment_id: Uuid::now_v7(),
-                file_id: video.file.id.clone(),
+                file_id: FileId(video.file.id.0.clone()),
                 caption,
             });
         } else if let Some(audio) = msg.audio() {
             parts.push(TelegramContentPart::Audio {
                 attachment_id: Uuid::now_v7(),
-                file_id: audio.file.id.clone(),
+                file_id: FileId(audio.file.id.0.clone()),
                 caption,
             });
         } else if let Some(voice) = msg.voice() {
             parts.push(TelegramContentPart::Voice {
                 attachment_id: Uuid::now_v7(),
-                file_id: voice.file.id.clone(),
+                file_id: FileId(voice.file.id.0.clone()),
                 meta: None,
             });
         } else if let Some(document) = msg.document() {
             parts.push(TelegramContentPart::Document {
                 attachment_id: Uuid::now_v7(),
-                file_id: document.file.id.clone(),
+                file_id: FileId(document.file.id.0.clone()),
                 file_name: document.file_name.clone(),
                 caption,
             });
         } else if let Some(sticker) = msg.sticker() {
             parts.push(TelegramContentPart::Sticker {
                 attachment_id: Uuid::now_v7(),
-                file_id: sticker.file.id.clone(),
+                file_id: FileId(sticker.file.id.0.clone()),
                 emoji: sticker.emoji.clone(),
             });
         } else if let Some(animation) = msg.animation() {
             parts.push(TelegramContentPart::Animation {
                 attachment_id: Uuid::now_v7(),
-                file_id: animation.file.id.clone(),
+                file_id: FileId(animation.file.id.0.clone()),
             });
         } else if let Some(video_note) = msg.video_note() {
             parts.push(TelegramContentPart::VideoNote {
                 attachment_id: Uuid::now_v7(),
-                file_id: video_note.file.id.clone(),
+                file_id: FileId(video_note.file.id.0.clone()),
             });
         }
 

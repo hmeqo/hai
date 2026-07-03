@@ -4,9 +4,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agentcore::{
-    skills::SkillManager,
-    tool::{AgentTool, ToolError},
+use crate::{
+    agent::runtime::context::ToolContext,
+    agentcore::{
+        skills::SkillManager,
+        tool::{AgentTool, ToolError},
+    },
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -38,9 +41,11 @@ impl LoadSkill {
     }
 }
 
-pub fn load_skill_tool(skill_manager: SkillManager) -> Vec<Arc<dyn AgentTool>> {
-    if skill_manager.is_empty() {
+pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
+    if ctx.skill_manager.is_empty() {
         return vec![];
     }
-    vec![Arc::new(LoadSkill { skill_manager })]
+    vec![Arc::new(LoadSkill {
+        skill_manager: ctx.skill_manager.clone(),
+    })]
 }

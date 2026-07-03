@@ -96,7 +96,7 @@ impl MessageHandler {
                 external_id: msg.id.to_string(),
                 reply_to_id,
                 meta: extracted.meta,
-                sent_at: Some(jiff::Timestamp::from_second(msg.date.timestamp())?.into()),
+                sent_at: Some(jiff::Timestamp::from_second(msg.date.timestamp())?),
             })
             .await?;
         Ok(())
@@ -117,8 +117,6 @@ impl MessageHandler {
             WakeReason::Observe
         };
         tracing::debug!(%chat_id, reason = reason.label(), "Agent event dispatched");
-        self.session(chat_id)
-            .await
-            .wake(WakeEvent::new(chat_id, reason));
+        self.session(chat_id).await.wake(WakeEvent::new(reason));
     }
 }

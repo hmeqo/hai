@@ -2,6 +2,9 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
+use super::{Account, Chat, Topic};
+use crate::domain::vo::MessageId;
+
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "message"]
 pub struct Message {
@@ -9,13 +12,27 @@ pub struct Message {
     #[auto(increment)]
     pub id: i64,
 
+    #[index]
     pub chat_id: i64,
+    #[belongs_to(key = chat_id, references = id)]
+    pub chat: toasty::Deferred<Chat>,
+
     pub account_id: Option<i64>,
+    #[belongs_to(key = account_id, references = id)]
+    pub account: toasty::Deferred<Option<Account>>,
+
     pub role: String,
     pub content: toasty::Json<serde_json::Value>,
+
     pub topic_id: Option<uuid::Uuid>,
+    #[belongs_to(key = topic_id, references = id)]
+    pub topic: toasty::Deferred<Option<Topic>>,
+
     pub interaction_status: String,
     pub reply_to_id: Option<i64>,
+    #[belongs_to(key = reply_to_id, references = id)]
+    pub reply_to: toasty::Deferred<Option<Message>>,
+
     pub external_id: Option<String>,
     pub meta: Option<toasty::Json<serde_json::Value>>,
     pub token_count: Option<i32>,
@@ -28,8 +45,12 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn status(&self) -> MessageStatus {
-        self.interaction_status.parse().expect("Invalid status")
+    pub fn id_(&self) -> MessageId {
+        MessageId(self.id)
+    }
+
+    pub fn status(&self) -> Option<MessageStatus> {
+        self.interaction_status.parse().ok()
     }
 
     pub fn active_at(&self) -> Timestamp {

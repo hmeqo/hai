@@ -9,7 +9,7 @@ pub mod topic;
 
 use crate::{
     agentcore::render::elements::Node,
-    domain::{model::Topic, service::memory::RelatedMemory, vo::TopicSearchResult},
+    domain::{model::Topic, service::memory::RelatedMemory},
 };
 
 pub fn topic_section(topics: &[Topic]) -> Node {
@@ -23,16 +23,4 @@ pub fn topic_section(topics: &[Topic]) -> Node {
 
 pub fn related_memories_section(memories: &[RelatedMemory], tag: &str) -> Node {
     memory::related_memories_section(memories, tag)
-}
-
-pub fn related_topics_section(topics: &[TopicSearchResult]) -> Node {
-    Node::tag("related_topics").children(
-        topics
-            .iter()
-            .map(|r| {
-                topic::topic_element_static(&r.topic)
-                    .attr("relevance", format!("{:.4}", r.distance))
-            })
-            .collect::<Vec<_>>(),
-    )
 }

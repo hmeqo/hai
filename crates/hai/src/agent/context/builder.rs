@@ -8,20 +8,16 @@ use crate::{
         context::{
             RenderContext, build_situation_section,
             helper::{
-                build_attachment_maps, collect_accounts, load_chat, load_perceptions,
-                load_reply_context, search_related_context, search_related_dedup,
+                SearchRelatedParams, build_attachment_maps, collect_accounts, load_chat,
+                load_perceptions, load_reply_context, search_related_context, search_related_dedup,
             },
+            render_context,
             render_context::RenderContextData,
             render_main_context,
-            sections::{
-                chat::render_chat_info, memory::related_memories_section,
-                message::conversation_element, related_topics_section,
-            },
         },
         link::BuiltContext,
         runtime::context::RunContext,
     },
-    agentcore::render::{Format, Node, render_pretty},
     domain::model::Message,
     error::Result,
 };
@@ -90,14 +86,16 @@ pub async fn build_first_run_prompt(
     let chat_id = ctx.chat_id;
 
     let data = prepare_run_data(ctx, messages).await?;
-    let search = search_related_context(
+    let search = search_related_context(SearchRelatedParams {
         services,
         cfg,
         chat_id,
-        &data.topics,
-        &data.parsed,
-        &data.perception.items,
-    )
+        topics: &data.topics,
+        parsed: &data.parsed,
+        perceptions: &data.perception.items,
+        shown_memory_ids: &HashSet::new(),
+        shown_topic_ids: &HashSet::new(),
+    })
     .await?;
 
     let shown_memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
@@ -157,6 +155,21 @@ pub async fn build_next_run_prompt(
 
     let data = prepare_run_data(ctx, messages).await?;
 
+    let search = search_related_dedup(SearchRelatedParams {
+        services,
+        cfg,
+        chat_id,
+        topics: &data.topics,
+        parsed: &data.parsed,
+        perceptions: &data.perception.items,
+        shown_memory_ids,
+        shown_topic_ids,
+    })
+    .await?;
+
+    let new_shown_memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
+    let new_shown_topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
+
     let perception_map = build_attachment_maps(services, parser, &data.all_messages).await?;
     let renderer = parser.create_renderer(&perception_map);
     let render_ctx = RenderContext::new(
@@ -167,8 +180,8 @@ pub async fn build_next_run_prompt(
             messages: data.all_messages.clone(),
             total_unread: 0,
             topics: vec![],
-            related_topics: vec![],
-            related_memories: vec![],
+            related_topics: search.topics,
+            related_memories: search.memories,
             accounts: data.accounts,
             perceptions: vec![],
             scratchpad: None,
@@ -177,62 +190,12 @@ pub async fn build_next_run_prompt(
         renderer,
     );
 
-    let msg_refs: Vec<&Message> = render_ctx.messages.iter().collect();
-    let conversation = conversation_element(&msg_refs, &render_ctx);
-    let chat_info = render_chat_info(&render_ctx.chat);
-
-    let current_time = jiff::Zoned::now().to_string();
-
-    let mut elements: Vec<Node> = Vec::new();
-
-    // 1. <situation>
-    let situation = build_situation_section(&ctx.events);
-    if !situation.is_empty() {
-        elements.push(situation);
-    }
-
-    // 2. <environment><current_time/>
-    elements.push(
-        Node::tag("environment").child(Node::tag("current_time").child(Node::text(current_time))),
-    );
-
-    // 3. <chat>
-    elements.push(chat_info);
-
-    // 4. <conversation>
-    elements.push(conversation);
-
-    // 5. 检索相关内容（排除已展示）
-    let search = search_related_dedup(
-        services,
-        cfg,
-        chat_id,
-        &data.topics,
-        &data.parsed,
-        &data.perception.items,
-        shown_memory_ids,
-        shown_topic_ids,
-    )
-    .await?;
-
-    let new_shown_memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
-    let new_shown_topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
-
-    if !search.memories.is_empty() {
-        elements.push(related_memories_section(
-            &search.memories,
-            "related_memories",
-        ));
-    }
-    if !search.topics.is_empty() {
-        elements.push(related_topics_section(&search.topics));
-    }
-
-    let new = render_pretty(Node::tag("new").children(elements), Format::Xml);
+    let instruction = build_situation_section(&ctx.events);
+    let rendered = render_context(&render_ctx, instruction, "new");
 
     Ok(BuiltContext {
-        messages: vec![ChatMessage::user(&new)],
-        rendered_prompt: new,
+        messages: vec![ChatMessage::user(&rendered)],
+        rendered_prompt: rendered,
         message_ids: data.message_ids,
         shown_memory_ids: new_shown_memory_ids,
         shown_topic_ids: new_shown_topic_ids,

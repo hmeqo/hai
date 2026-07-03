@@ -8,12 +8,24 @@ use genai::{
     },
 };
 
-use super::types::{ToolCallResult, Turn};
-use crate::agentcore::tool::{AgentTool, ToolError};
+use super::types::{Inbox, Messages, ToolCallResult, Turn};
+use super::AgentEvent;
+use crate::{
+    agent::context::build_situation_section,
+    agentcore::{
+        render::{Format, render_pretty},
+        tool::{AgentTool, ToolError},
+    },
+    domain::vo::ChatId,
+};
+
+const DIRECT_OUTPUT_ERROR: &str =
+    "错误：禁止直接输出文字。所有发言必须通过 send_message 或 send_voice 发送。不想说话请仅调用 done。";
+
+// ── Config ────────────────────────────────────────────────────────────────────
 
 pub(crate) struct ReactLoopConfig {
     pub system_prompt: String,
-    pub max_turns: usize,
     pub options: ChatOptions,
 }
 
@@ -23,137 +35,143 @@ impl ReactLoopConfig {
         if let Some(maxt) = cfg.max_tokens {
             opts = opts.with_max_tokens(maxt);
         }
-        if cfg.reasoning {
-            if let Some(effort) = ReasoningEffort::from_keyword(&cfg.reasoning_effort) {
-                opts = opts.with_reasoning_effort(effort);
-            }
+        if cfg.reasoning
+            && let Some(effort) = ReasoningEffort::from_keyword(&cfg.reasoning_effort)
+        {
+            opts = opts.with_reasoning_effort(effort);
         }
         opts
     }
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+pub(crate) struct ReactLoopOutput {
+    pub turns: Vec<Turn>,
+    pub messages: Messages,
+    pub prompt_tokens: u32,
+}
+
+/// 单次 processing 运行所需的全部数据。
+pub(crate) struct ReactRun {
+    pub client: Client,
+    pub model: String,
+    pub messages: Messages,
+    pub config: ReactLoopConfig,
+    pub inbox: Inbox,
+    pub preempt: bool,
+    pub event_bus: super::AgentEventBus,
+    pub chat_id: ChatId,
+    pub outer_turn: usize,
+}
+
+// ── React Loop ────────────────────────────────────────────────────────────────
+
+#[allow(unused_assignments)]
 pub(crate) async fn run_react_loop(
-    client: Client,
-    model: &str,
-    messages: Vec<ChatMessage>,
+    run: ReactRun,
     tools: Vec<Arc<dyn AgentTool>>,
-    config: &ReactLoopConfig,
 ) -> Result<ReactLoopOutput, ToolError> {
-    let mut messages = messages;
-    let mut all_results: Vec<ToolCallResult> = Vec::new();
+    let mut messages = run.messages;
     let mut turns: Vec<Turn> = Vec::new();
+    let mut prompt_tokens = 0u32;
     let genai_tools = prepare_genai_tools(&tools);
 
-    let mut last_text = String::new();
-    let mut fr_retries = 0usize;
-
-    for _turn in 0..config.max_turns {
-        let req = ChatRequest::new(messages.clone())
-            .with_system(&config.system_prompt)
-            .with_tools(genai_tools.clone());
-
-        let res = client
-            .exec_chat(model, req, Some(&config.options))
+    loop {
+        // ── 1. LLM call ──
+        let res = run
+            .client
+            .exec_chat(
+                &run.model,
+                ChatRequest::new(messages.to_vec())
+                    .with_system(&run.config.system_prompt)
+                    .with_tools(genai_tools.clone()),
+                Some(&run.config.options),
+            )
             .await
             .map_err(|e| ToolError::Msg(format!("LLM request failed: {e}")))?;
 
         let response_text = res.texts().join("\n");
         let reasoning = res.reasoning_content.clone();
-        let usage = res.usage.clone();
-        let stop_reason = res
-            .stop_reason
-            .as_ref()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+        prompt_tokens = res.usage.prompt_tokens.unwrap_or(0) as u32;
         let tool_calls: Vec<ToolCall> = res.into_tool_calls();
-        let tc_before = all_results.len();
 
-        if tool_calls.is_empty() {
-            if response_text.trim().is_empty() {
-                turns.push(Turn {
-                    tool_calls: all_results[tc_before..].to_vec(),
-                    usage,
-                    stop_reason,
-                });
-                return Ok(ReactLoopOutput {
-                    turns,
-                    messages,
-                    final_response: String::new(),
-                });
-            }
-            fr_retries += 1;
-            if fr_retries > 3 {
-                turns.push(Turn {
-                    tool_calls: all_results[tc_before..].to_vec(),
-                    usage,
-                    stop_reason,
-                });
-                return Ok(ReactLoopOutput {
-                    turns,
-                    messages,
-                    final_response: response_text.trim().to_owned(),
-                });
-            }
-            tracing::info!(
-                retry = fr_retries,
-                response = %response_text.trim(),
-                usage = ?usage,
-                "Final Response 非空，已丢弃并重试",
-            );
-            // 失败的 Turn 仍记录（消耗了 token）
-            turns.push(Turn {
-                tool_calls: Vec::new(),
-                usage,
-                stop_reason,
+        let has_done = tool_calls.iter().any(|c| c.fn_name == "done");
+        let active_calls: Vec<ToolCall> = tool_calls
+            .into_iter()
+            .filter(|c| c.fn_name != "done")
+            .collect();
+
+        // ── 2. 构建 assistant message ──
+        messages.push(build_assistant_message(
+            &response_text,
+            &active_calls,
+            reasoning.clone(),
+        ));
+
+        // ── 3. 工具执行 ──
+        let mut turn_tc: Vec<ToolCallResult> = Vec::new();
+        for call in &active_calls {
+            run.event_bus.emit(AgentEvent::ToolCall {
+                chat_id: run.chat_id,
+                turn: run.outer_turn,
+                tool: call.fn_name.clone(),
+                args: call.fn_arguments.to_string(),
             });
-            messages.push(build_assistant_message(&response_text, &[], reasoning));
-            messages.push(ChatMessage::user(
-                "错误：Final Response 必须为空。刚才的输出已被丢弃。",
-            ));
-            continue;
+            execute_single_tool(call, &tools, &mut turn_tc, &mut messages).await;
+            let result = turn_tc.last().unwrap();
+            run.event_bus.emit(AgentEvent::ToolCallResult {
+                chat_id: run.chat_id,
+                turn: run.outer_turn,
+                tool: call.fn_name.clone(),
+                summary: result.result.to_string(),
+                success: result.success,
+            });
         }
 
-        last_text = response_text;
-        messages.push(build_assistant_message(&last_text, &tool_calls, reasoning));
-
-        for call in &tool_calls {
-            if call.fn_name == "done" {
-                tracing::info!("Agent called done, ending loop");
-                turns.push(Turn {
-                    tool_calls: Vec::new(),
-                    usage,
-                    stop_reason,
-                });
-                return Ok(ReactLoopOutput {
-                    turns,
-                    messages,
-                    final_response: String::new(),
-                });
-            }
-            execute_single_tool(call, &tools, &mut all_results, &mut messages).await;
+        // ── 4. 错误注入 ──
+        if active_calls.is_empty() && !response_text.trim().is_empty() {
+            messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
         }
 
+        // ── 5. Decide（在 move 前判断） ──
+        let stop = active_calls.is_empty() && response_text.trim().is_empty() || has_done;
+
+        // ── 6. Commit ──
         turns.push(Turn {
-            tool_calls: all_results[tc_before..].to_vec(),
-            usage,
-            stop_reason,
+            tool_calls: turn_tc,
+            response: response_text,
+            reasoning,
         });
+
+        if stop {
+            return Ok(ReactLoopOutput {
+                turns,
+                messages,
+                prompt_tokens,
+            });
+        }
+
+        // ── 7. Preempt ──
+        if run.preempt {
+            apply_preempt(&mut messages, &run.inbox).await;
+        }
     }
-
-    Ok(ReactLoopOutput {
-        turns,
-        messages,
-        final_response: last_text.trim().to_owned(),
-    })
 }
 
-pub(crate) struct ReactLoopOutput {
-    pub turns: Vec<Turn>,
-    pub messages: Vec<ChatMessage>,
-    pub final_response: String,
+// ── Preempt ───────────────────────────────────────────────────────────────────
+
+async fn apply_preempt(messages: &mut Messages, inbox: &Inbox) -> bool {
+    let events = inbox.drain();
+    if events.is_empty() {
+        return false;
+    }
+    let xml = render_pretty(build_situation_section(&events), Format::Xml);
+    messages.push(ChatMessage::user(xml));
+    true
 }
 
-// ── 辅助函数 ─────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn prepare_genai_tools(tools: &[Arc<dyn AgentTool>]) -> Vec<Tool> {
     tools
@@ -190,13 +208,11 @@ fn build_assistant_message(
 async fn execute_single_tool(
     call: &ToolCall,
     tools: &[Arc<dyn AgentTool>],
-    all_results: &mut Vec<ToolCallResult>,
-    messages: &mut Vec<ChatMessage>,
+    turn_tc: &mut Vec<ToolCallResult>,
+    messages: &mut Messages,
 ) {
     let tool_name = &call.fn_name;
     let args = &call.fn_arguments;
-
-    tracing::info!(tool = %tool_name, args = %args, "tool call");
 
     let result = match tools.iter().find(|t| t.name() == tool_name) {
         Some(tool) => tool.execute(args.clone()).await,
@@ -205,8 +221,7 @@ async fn execute_single_tool(
 
     match result {
         Ok(val) => {
-            tracing::info!(tool = %tool_name, result = %val, "tool ok");
-            all_results.push(ToolCallResult::ok(
+            turn_tc.push(ToolCallResult::ok(
                 tool_name.clone(),
                 args.clone(),
                 val.clone(),
@@ -218,7 +233,7 @@ async fn execute_single_tool(
         }
         Err(e) => {
             tracing::error!(tool = %tool_name, args = %args, error = %e, "tool error");
-            all_results.push(ToolCallResult::err(tool_name.clone(), args.clone()));
+            turn_tc.push(ToolCallResult::err(tool_name.clone(), args.clone()));
             messages.push(ChatMessage::from(ToolResponse::from_tool_call(
                 call,
                 format!("Error: {e}"),

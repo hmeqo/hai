@@ -1,8 +1,12 @@
+use super::Chat;
+
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "scratchpad"]
 pub struct Scratchpad {
     #[key]
     pub chat_id: i64,
+    #[belongs_to(key = chat_id, references = id)]
+    pub chat: toasty::Deferred<Chat>,
 
     pub content: String,
     pub token_count: i32,

@@ -2,8 +2,12 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
-use teloxide::types::FileId;
 use uuid::Uuid;
+
+/// 平台无关的文件标识符（如 Telegram file_id）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct FileId(pub String);
 
 /// 附件解析器类型
 #[derive(

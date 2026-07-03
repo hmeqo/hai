@@ -30,6 +30,20 @@ pub struct NewAgentMessage {
     pub sent_at: Option<jiff::Timestamp>,
 }
 
+pub(crate) struct UpsertMessageParams {
+    pub chat_id: i64,
+    pub external_id: Option<String>,
+    pub role: String,
+    pub content: toasty::Json<serde_json::Value>,
+    pub account_id: Option<i64>,
+    pub interaction_status: String,
+    pub reply_to_id: Option<i64>,
+    pub meta: toasty::Json<serde_json::Value>,
+    pub token_count: Option<i32>,
+    pub sent_at: Option<jiff::Timestamp>,
+    pub topic_id: Option<Uuid>,
+}
+
 #[derive(Debug)]
 pub struct MessageService {
     db: toasty::Db,
@@ -44,54 +58,40 @@ impl MessageService {
         Ok(count_json_tokens(content) as i32)
     }
 
-    async fn upsert_by_external_id(
-        &self,
-        chat_id: i64,
-        external_id: Option<&str>,
-        role: &str,
-        content: toasty::Json<serde_json::Value>,
-        account_id: Option<i64>,
-        interaction_status: &str,
-        reply_to_id: Option<i64>,
-        meta: toasty::Json<serde_json::Value>,
-        token_count: Option<i32>,
-        sent_at: Option<jiff::Timestamp>,
-        topic_id: Option<Uuid>,
-    ) -> Result<Message> {
+    async fn upsert_by_external_id(&self, params: UpsertMessageParams) -> Result<Message> {
         let mut db = self.db.clone();
-        if let Some(ext_id) = external_id {
-            if let Some(mut existing) = Message::filter(
+        if let Some(ref ext_id) = params.external_id
+            && let Some(mut existing) = Message::filter(
                 Message::fields()
                     .chat_id()
-                    .eq(chat_id)
-                    .and(Message::fields().external_id().eq(Some(ext_id.to_string()))),
+                    .eq(params.chat_id)
+                    .and(Message::fields().external_id().eq(Some(ext_id.clone()))),
             )
             .first()
             .exec(&mut db)
             .await?
-            {
-                toasty::update!(existing {
-                    content,
-                    meta,
-                    interaction_status,
-                })
-                .exec(&mut db)
-                .await?;
-                return Ok(existing);
-            }
+        {
+            toasty::update!(existing {
+                content: params.content,
+                meta: params.meta,
+                interaction_status: params.interaction_status,
+            })
+            .exec(&mut db)
+            .await?;
+            return Ok(existing);
         }
         toasty::create!(Message {
-            chat_id,
-            account_id,
-            role,
-            content,
-            topic_id,
-            interaction_status,
-            reply_to_id,
-            external_id: external_id.map(String::from),
-            meta,
-            token_count,
-            sent_at,
+            chat_id: params.chat_id,
+            account_id: params.account_id,
+            role: params.role,
+            content: params.content,
+            topic_id: params.topic_id,
+            interaction_status: params.interaction_status,
+            reply_to_id: params.reply_to_id,
+            external_id: params.external_id,
+            meta: params.meta,
+            token_count: params.token_count,
+            sent_at: params.sent_at,
         })
         .exec(&mut db)
         .await
@@ -100,19 +100,19 @@ impl MessageService {
 
     pub async fn save_user_message(&self, msg: NewUserMessage) -> Result<Message> {
         let token_count = Self::estimate_tokens(&msg.content)?;
-        self.upsert_by_external_id(
-            msg.chat_id.0,
-            Some(&msg.external_id),
-            "user",
-            toasty::Json(msg.content),
-            Some(msg.account_id),
-            MessageStatus::Unread.as_str(),
-            msg.reply_to_id,
-            toasty::Json(serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null)),
-            Some(token_count),
-            msg.sent_at,
-            None,
-        )
+        self.upsert_by_external_id(UpsertMessageParams {
+            chat_id: msg.chat_id.0,
+            external_id: Some(msg.external_id),
+            role: "user".into(),
+            content: toasty::Json(msg.content),
+            account_id: Some(msg.account_id),
+            interaction_status: MessageStatus::Unread.as_str().into(),
+            reply_to_id: msg.reply_to_id,
+            meta: toasty::Json(serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null)),
+            token_count: Some(token_count),
+            sent_at: msg.sent_at,
+            topic_id: None,
+        })
         .await
     }
 
@@ -123,19 +123,19 @@ impl MessageService {
             Self::estimate_tokens(&msg.content)?
         };
         let meta = AgentMessageMeta { model: msg.model };
-        self.upsert_by_external_id(
-            msg.chat_id.0,
-            msg.external_id.as_deref(),
-            "assistant",
-            toasty::Json(msg.content),
-            msg.account_id,
-            MessageStatus::Seen.as_str(),
-            msg.reply_to_id,
-            toasty::Json(serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null)),
-            Some(token_count),
-            msg.sent_at,
-            None,
-        )
+        self.upsert_by_external_id(UpsertMessageParams {
+            chat_id: msg.chat_id.0,
+            external_id: msg.external_id,
+            role: "assistant".into(),
+            content: toasty::Json(msg.content),
+            account_id: msg.account_id,
+            interaction_status: MessageStatus::Seen.as_str().into(),
+            reply_to_id: msg.reply_to_id,
+            meta: toasty::Json(serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null)),
+            token_count: Some(token_count),
+            sent_at: msg.sent_at,
+            topic_id: None,
+        })
         .await
     }
 
@@ -187,20 +187,22 @@ impl MessageService {
     pub async fn get_messages_window(
         &self,
         chat_id: ChatId,
-        since_id: Option<i64>,
+        since_id: Option<MessageId>,
         limit: i64,
     ) -> Result<Vec<Message>> {
-        Message::filter(
+        let sid = since_id.map(|s| s.0).unwrap_or(-1);
+        let mut msgs: Vec<Message> = Message::filter(
             Message::fields()
                 .chat_id()
                 .eq(chat_id.0)
-                .and(Message::fields().id().gt(since_id.unwrap_or(-1))),
+                .and(Message::fields().id().gt(sid)),
         )
-        .order_by(Message::fields().id().asc())
+        .order_by(Message::fields().id().desc())
         .limit(limit as usize)
         .exec(&mut self.db.clone())
-        .await
-        .map_err(Into::into)
+        .await?;
+        msgs.reverse();
+        Ok(msgs)
     }
 
     pub async fn get_unread_messages(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
@@ -237,7 +239,10 @@ impl MessageService {
         Message::get_by_id(&mut self.db.clone(), &id.0)
             .await
             .map(Some)
-            .or_else(|_| Ok(None))
+            .or_else(|e| {
+                tracing::warn!(msg_id = %id, "get_message_by_id failed: {e}");
+                Ok(None)
+            })
     }
 
     pub async fn get_messages_by_ids(&self, ids: &[MessageId]) -> Result<Vec<Message>> {
@@ -336,13 +341,11 @@ impl MessageService {
         for msg in messages {
             if let Ok(parts) =
                 serde_json::from_value::<Vec<TelegramContentPart>>(msg.content.0.clone())
-            {
-                if let Some(part) = parts
+                && let Some(part) = parts
                     .into_iter()
                     .find(|p| p.attachment_id() == Some(attachment_id))
-                {
-                    return Ok(Some((msg, part)));
-                }
+            {
+                return Ok(Some((msg, part)));
             }
         }
         Ok(None)

@@ -1,6 +1,16 @@
 version = 1
 
 [[migrations]]
-id = 2061939454415633963
+id = 8972359203239455522
 name = "0000_initial.sql"
 snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 8474721751202300228
+name = "0001_memory_schema_cleanup.sql"
+snapshot_name = "0001_snapshot.toml"
+
+[[migrations]]
+id = 2239221563053133369
+name = "0002_event.sql"
+snapshot_name = "0002_snapshot.toml"

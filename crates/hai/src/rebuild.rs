@@ -12,7 +12,7 @@ use crate::{
         model::{Memory, Perception, Topic},
     },
     error::{AppResultExt, ErrorKind, Result},
-    util::pgvector::vec_to_pgstring,
+    util::pgvector,
 };
 
 const MAX_CONCURRENT: usize = 10;
@@ -42,24 +42,15 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
     let dimension = config.multimodal.embedding.dimension.unwrap_or(1024);
     let agent = Arc::new(providers.build_agent(provider_name, model));
 
-    let _ = toasty::sql::statement("CREATE EXTENSION IF NOT EXISTS vector")
-        .exec(&mut db)
-        .await;
+    pgvector::ensure_embedding_schema(&mut db, dimension).await?;
 
     for table in &["memory", "topic", "perception"] {
-        let _ = toasty::sql::statement(format!("DROP INDEX IF EXISTS idx_{table}_embedding"))
+        toasty::sql::statement(format!("DROP INDEX IF EXISTS idx_{table}_embedding"))
             .exec(&mut db)
-            .await;
-        let _ = toasty::sql::statement(format!(
-            "UPDATE {table} SET embedding = NULL WHERE embedding IS NULL OR embedding = ''"
-        ))
-        .exec(&mut db)
-        .await;
-        toasty::sql::statement(format!(
-            "ALTER TABLE {table} ALTER COLUMN embedding TYPE vector({dimension}) USING embedding::vector"
-        ))
-        .exec(&mut db)
-        .await?;
+            .await?;
+        toasty::sql::statement(format!("UPDATE {table} SET embedding = NULL"))
+            .exec(&mut db)
+            .await?;
     }
 
     let memories: Vec<Memory> = Memory::all()
@@ -84,14 +75,14 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
         });
     }
     for t in &topics {
-        if let Some(ref s) = t.summary {
-            if !s.is_empty() {
-                jobs.push(Job {
-                    table: "topic",
-                    id: t.id,
-                    content: s.clone(),
-                });
-            }
+        if let Some(ref s) = t.summary
+            && !s.is_empty()
+        {
+            jobs.push(Job {
+                table: "topic",
+                id: t.id,
+                content: s.clone(),
+            });
         }
     }
     for p in &perceptions {
@@ -105,7 +96,7 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
     let total = jobs.len();
     let pb = progress_bar("embeddings", total);
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
-    let mut ok = 0usize;
+    let mut failed = 0usize;
 
     let mut stream: FuturesUnordered<_> = jobs
         .into_iter()
@@ -124,7 +115,7 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
                 let sql = format!(
                     "UPDATE {t} SET embedding = '{v}'::vector WHERE id = '{id}'",
                     t = job.table,
-                    v = vec_to_pgstring(&emb),
+                    v = pgvector::vec_to_pgstring(&emb),
                     id = job.id,
                 );
                 toasty::sql::statement(sql).exec(&mut db).await?;
@@ -135,14 +126,21 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
 
     while let Some(result) = stream.next().await {
         match result {
-            Ok(()) => ok += 1,
-            Err(e) => tracing::warn!("{e}"),
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!("{e}");
+                failed += 1;
+            }
         }
         pb.inc(1);
     }
 
     pb.finish_and_clear();
+    let ok = total - failed;
     println!("Written {ok}/{total} embeddings.");
+    if failed > 0 {
+        return Err(ErrorKind::Internal.msg(format!("{failed}/{total} embeddings failed")));
+    }
 
     for table in &["memory", "topic", "perception"] {
         let lists = (10usize).max((total as f64).sqrt() as usize);
@@ -161,9 +159,9 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
 fn progress_bar(name: &str, total: usize) -> ProgressBar {
     let pb = ProgressBar::new(total as u64);
     pb.set_style(
-        ProgressStyle::with_template("{prefix:12} [{bar:40.cyan/blue}] {pos:>5}/{len:<5} ({eta})")
+        ProgressStyle::with_template("{prefix:>12} {bar:30.green} {pos}/{len} ({eta})")
             .unwrap()
-            .progress_chars("█░"),
+            .progress_chars("━ "),
     );
     pb.set_prefix(name.to_owned());
     pb

@@ -18,7 +18,10 @@ impl ScratchpadService {
         Scratchpad::get_by_chat_id(&mut self.db.clone(), &chat_id.0)
             .await
             .map(Some)
-            .or_else(|_| Ok(None))
+            .or_else(|e| {
+                tracing::warn!(%chat_id, "Failed to get scratchpad: {e}");
+                Ok(None)
+            })
     }
 
     pub async fn save(&self, chat_id: ChatId, content: &str) -> Result<Scratchpad> {
@@ -31,7 +34,7 @@ impl ScratchpadService {
                 content,
                 token_count
             })
-            .exec(&mut self.db.clone())
+            .exec(&mut db)
             .await?;
             Ok(existing)
         } else {
@@ -41,7 +44,7 @@ impl ScratchpadService {
                 token_count,
                 updated_at: now,
             })
-            .exec(&mut self.db.clone())
+            .exec(&mut db)
             .await
             .map_err(Into::into)
         }

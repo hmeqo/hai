@@ -40,16 +40,6 @@ impl RawClient {
         }
     }
 
-    pub fn openrouter(api_key: impl Into<String>) -> Self {
-        let k = api_key.into();
-        Self::new(Some(&k), "https://openrouter.ai/api/v1")
-    }
-
-    pub fn openai(api_key: impl Into<String>) -> Self {
-        let k = api_key.into();
-        Self::new(Some(&k), "https://api.openai.com/v1")
-    }
-
     pub fn agent(&self, model: impl Into<String>) -> RawAgent {
         RawAgent::new(self.clone(), model)
     }
@@ -67,11 +57,6 @@ impl RawClient {
         }
 
         Ok(req.send().await?.json::<Value>().await?)
-    }
-
-    pub async fn request_bytes(&self, sub_url: &str, body: &Value) -> Result<Vec<u8>> {
-        let (bytes, _) = self.request_bytes_with_type(sub_url, body).await?;
-        Ok(bytes)
     }
 
     pub async fn request_bytes_with_type(
@@ -111,9 +96,9 @@ impl RawClient {
 
 #[derive(Debug, Clone)]
 pub struct RawAgent {
-    pub client: Arc<RawClient>,
-    pub model: Arc<String>,
-    pub default_prompt: Arc<String>,
+    client: Arc<RawClient>,
+    model: Arc<String>,
+    default_prompt: Arc<String>,
 }
 
 impl RawAgent {
@@ -128,6 +113,10 @@ impl RawAgent {
     pub fn with_default_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.default_prompt = Arc::new(prompt.into());
         self
+    }
+
+    pub fn default_prompt(&self) -> &str {
+        &self.default_prompt
     }
 
     pub async fn completion(

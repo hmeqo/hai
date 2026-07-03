@@ -109,14 +109,20 @@ impl PlatformService {
         Chat::get_by_id(&mut self.db.clone(), &id.0)
             .await
             .map(Some)
-            .or_else(|_| Ok(None))
+            .or_else(|e| {
+                tracing::warn!(chat_id = %id, "get_chat_by_id failed: {e}");
+                Ok(None)
+            })
     }
 
     pub async fn get_account_by_id(&self, id: AccountId) -> Result<Option<Account>> {
         Account::get_by_id(&mut self.db.clone(), &id.0)
             .await
             .map(Some)
-            .or_else(|_| Ok(None))
+            .or_else(|e| {
+                tracing::warn!(account_id = %id, "get_account_by_id failed: {e}");
+                Ok(None)
+            })
     }
 
     pub async fn get_identity_accounts(&self, identity_id: IdentityId) -> Result<Vec<Account>> {

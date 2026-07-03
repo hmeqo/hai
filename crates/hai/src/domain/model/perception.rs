@@ -1,4 +1,4 @@
-use crate::domain::vo::Source;
+use crate::domain::vo::{PerceptionId, Source};
 
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "perception"]
@@ -16,6 +16,10 @@ pub struct Perception {
 }
 
 impl Perception {
+    pub fn id_(&self) -> PerceptionId {
+        PerceptionId(self.id)
+    }
+
     pub fn source(&self) -> Option<Source> {
         serde_json::from_value(self.source.0.clone()).ok()
     }

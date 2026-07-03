@@ -8,7 +8,7 @@ use syn::{
 
 enum ToolArgs {
     None_,
-    Type(syn::Type),
+    Type(Box<syn::Type>),
 }
 
 impl Parse for ToolArgs {
@@ -29,7 +29,7 @@ impl Parse for ToolArgs {
         }
 
         let args_type: syn::Type = input.parse()?;
-        Ok(Self::Type(args_type))
+        Ok(Self::Type(Box::new(args_type)))
     }
 }
 
@@ -99,7 +99,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
             TokenStream::from(expanded)
         }
         Ok(ToolArgs::Type(args_type)) => {
-            expand_with_args(&struct_name, name_lit, description, input, args_type)
+            expand_with_args(&struct_name, name_lit, description, input, *args_type)
         }
         Err(_) => {
             let args_name_str = format!("{}Args", struct_name);

@@ -7,7 +7,7 @@ use crate::{
     agentcore::tool::{AgentTool, ToolError, tool_ok},
 };
 
-/// 评估完消息后决定本轮结束。调用此工具表示你说完了或不参与，不再生成额外输出。
+/// 评估完消息后决定本轮结束。
 #[hai_macros::tool(args = none)]
 pub struct Done;
 

@@ -40,9 +40,6 @@ id_type!(
     pub struct AccountId(pub i64);
 );
 id_type!(
-    pub struct ScratchpadId(pub i64);
-);
-id_type!(
     pub struct TopicId(pub uuid::Uuid);
 );
 id_type!(

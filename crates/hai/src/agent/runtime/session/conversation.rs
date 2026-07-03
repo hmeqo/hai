@@ -1,67 +1,70 @@
 use std::collections::HashSet;
 
-use genai::chat::ChatMessage;
 use uuid::Uuid;
 
 use super::super::{
     context::RunContext,
-    types::{Run, RunPayload},
+    types::{Messages, ProcessingOutput, Turn},
 };
-use crate::agent::context;
+use crate::{
+    agent::context,
+    config::schema::ConversationMode,
+    domain::{model::Message, vo::MessageId},
+};
 
-/// 持久化对话上下文。Ephemeral 模式下不存在（`None`）。
 pub(super) struct Conversation {
-    pub messages: Vec<ChatMessage>,
-    pub runs: Vec<Run>,
+    pub messages: Messages,
+    pub since_id: MessageId,
+    pub shown_memory_ids: HashSet<Uuid>,
+    pub shown_topic_ids: HashSet<Uuid>,
+    pub last_turns: Vec<Turn>,
+    pub prompt_tokens: u32,
+    pub mode: ConversationMode,
+    turn_count: usize,
 }
 
 impl Conversation {
-    pub fn new() -> Self {
+    pub fn new(mode: ConversationMode) -> Self {
         Self {
-            messages: Vec::new(),
-            runs: Vec::new(),
+            messages: Messages::new(Vec::new()),
+            since_id: MessageId(0),
+            shown_memory_ids: HashSet::new(),
+            shown_topic_ids: HashSet::new(),
+            last_turns: Vec::new(),
+            prompt_tokens: 0,
+            mode,
+            turn_count: 0,
         }
     }
 
-    pub fn push_run(&mut self, run: Run, messages: Vec<ChatMessage>) {
-        self.messages = messages;
-        self.runs.push(run);
+    pub fn update(&mut self, output: &ProcessingOutput) {
+        self.messages = output.messages.clone();
+        self.last_turns = output.turns.clone();
+        self.prompt_tokens = output.prompt_tokens;
+        self.since_id = output.since_id;
+        self.turn_count += 1;
     }
 
-    pub fn last_run(&self) -> Option<&Run> {
-        self.runs.last()
-    }
-
-    fn seen_ids(&self) -> (HashSet<Uuid>, HashSet<Uuid>) {
-        let mems = self
-            .runs
-            .iter()
-            .flat_map(|r| r.shown_memory_ids.iter().copied())
-            .collect();
-        let tops = self
-            .runs
-            .iter()
-            .flat_map(|r| r.shown_topic_ids.iter().copied())
-            .collect();
-        (mems, tops)
-    }
-
-    pub fn runs_completed(&self) -> usize {
-        self.runs.len()
+    pub fn turn_count(&self) -> usize {
+        self.turn_count
     }
 
     pub async fn next_prompt(
-        &self,
+        &mut self,
         ctx: &RunContext,
-        messages: &[crate::domain::model::Message],
-        next_since_id: i64,
-    ) -> Option<RunPayload> {
-        let built = if self.last_run().is_some() {
-            let (mem, top) = self.seen_ids();
-            context::build_next_run_prompt(ctx, messages, &mem, &top)
-                .await
-                .map_err(|e| tracing::error!(?e, "build_next_run_prompt failed"))
-                .ok()?
+        messages: &[Message],
+        next_since_id: MessageId,
+    ) -> Option<super::prompt::ProcessingPayload> {
+        let built = if self.turn_count > 0 {
+            context::build_next_run_prompt(
+                ctx,
+                messages,
+                &self.shown_memory_ids,
+                &self.shown_topic_ids,
+            )
+            .await
+            .map_err(|e| tracing::error!(?e, "build_next_run_prompt failed"))
+            .ok()?
         } else {
             context::build_first_run_prompt(ctx, messages)
                 .await
@@ -69,19 +72,18 @@ impl Conversation {
                 .ok()?
         };
 
-        let full_messages = {
-            let mut msgs = self.messages.clone();
-            msgs.extend(built.messages);
-            msgs
-        };
+        self.shown_memory_ids
+            .extend(built.shown_memory_ids.iter().copied());
+        self.shown_topic_ids
+            .extend(built.shown_topic_ids.iter().copied());
 
-        Some(RunPayload {
-            messages: full_messages,
+        let mut full = self.messages.clone();
+        full.extend(built.messages);
+        Some(super::prompt::ProcessingPayload {
+            messages: full,
             prompt: built.rendered_prompt,
-            message_ids: built.message_ids,
+            message_ids: built.message_ids.iter().map(|id| MessageId(*id)).collect(),
             since_id: next_since_id,
-            shown_memory_ids: built.shown_memory_ids,
-            shown_topic_ids: built.shown_topic_ids,
         })
     }
 }

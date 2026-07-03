@@ -5,6 +5,7 @@ use derive_more::Deref;
 
 use crate::{
     agent::multimodal::{ModelService, MultimodalService},
+    agent::runtime::AgentEventBus,
     config::{AppConfig, AppConfigManager, ProviderManager},
     domain::{db, service::DbServices},
     error::Result,
@@ -21,6 +22,7 @@ pub struct AppContextInner {
     pub provider: ProviderContext,
     pub db: DbContext,
     pub agent: AgentContext,
+    pub event_bus: AgentEventBus,
 }
 
 impl AppContext {
@@ -32,6 +34,8 @@ impl AppContext {
 
         let (db_handle, pool) = db::init_db(&cfg.database).await?;
         let db_srv = DbServices::new(db_handle.clone(), pool, multimodal.clone());
+
+        let event_bus = AgentEventBus::new(db_handle.clone());
 
         let provider = ProviderContext {
             provider: providers,
@@ -52,6 +56,7 @@ impl AppContext {
                 provider,
                 agent,
                 db,
+                event_bus,
             }),
         })
     }

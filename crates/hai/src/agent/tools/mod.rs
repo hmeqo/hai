@@ -22,6 +22,7 @@ pub fn get_main_agent_tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
         topic::tools,
         memory::tools,
         scratchpad::tools,
+        skills::tools,
         multimodal::tools,
         voice::tools,
         shell::tools,

@@ -36,7 +36,7 @@ pub const SYSTEM_PROMPT: &str = r#"
 `create_topic` `assign_topic` `push_summary`(追加，仅 active) `close_topic`(结项) `delete_topic`
 
 ### 记忆
-`record_memory` 记新信息（user_fact 需 account_id，chat_rule 会覆盖）
+`record_memory` 记新信息 (user_fact 需 account_id)
 `correct_memory` 纠错修正 `delete_memory` 删冗余重复 `search_memory` 查询
 "#;
 

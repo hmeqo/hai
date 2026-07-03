@@ -160,8 +160,8 @@ impl MultimodalService {
         custom: Option<&str>,
     ) -> Result<String> {
         let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.image.default_prompt, c),
-            None => self.0.image.default_prompt.to_string(),
+            Some(c) => format!("{}。聚焦：{}", self.0.image.default_prompt(), c),
+            None => self.0.image.default_prompt().to_string(),
         };
         let url = image.into().into_image_url();
         let content = json!([
@@ -186,8 +186,8 @@ impl MultimodalService {
         custom: Option<&str>,
     ) -> Result<String> {
         let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.video.default_prompt, c),
-            None => self.0.video.default_prompt.to_string(),
+            Some(c) => format!("{}。聚焦：{}", self.0.video.default_prompt(), c),
+            None => self.0.video.default_prompt().to_string(),
         };
         let video = video.into();
         let format = video.format.map(|c| c.api_format()).unwrap_or("mp4");
@@ -204,8 +204,8 @@ impl MultimodalService {
         custom: Option<&str>,
     ) -> Result<String> {
         let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.audio.default_prompt, c),
-            None => self.0.audio.default_prompt.to_string(),
+            Some(c) => format!("{}。聚焦：{}", self.0.audio.default_prompt(), c),
+            None => self.0.audio.default_prompt().to_string(),
         };
         let audio = audio.into();
         let format = audio.format.map(|c| c.api_format()).unwrap_or("wav");

@@ -12,8 +12,9 @@ use crate::{
         tool::{AgentTool, MapToolErr, ToolError, tool_data, tool_err, tool_ok},
     },
     domain::{
+        model::MemoryKind,
         service::DbServices,
-        vo::{ChatId, MemoryInput},
+        vo::{ChatId, MemoryId},
     },
 };
 
@@ -23,7 +24,6 @@ pub enum RecordMemoryCategory {
     UserFact,
     Knowledge,
     Note,
-    ChatRule,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -38,7 +38,7 @@ pub struct RecordMemoryArgs {
     pub references: Option<serde_json::Value>,
 }
 
-/// 记录记忆（群友特征/知识/笔记/群规）
+/// 记录记忆（群友特征/知识/笔记）
 #[hai_macros::tool]
 pub struct RecordMemory {
     pub chat_id: ChatId,
@@ -47,35 +47,26 @@ pub struct RecordMemory {
 
 impl RecordMemory {
     async fn exec(&self, args: RecordMemoryArgs) -> Result<Value, ToolError> {
-        let input = match args.category {
+        let kind = match args.category {
             RecordMemoryCategory::UserFact => {
-                let account_id = args
-                    .account_id
-                    .ok_or_else(|| tool_err("account_id is required for 'user_fact'"))?;
-                MemoryInput::CreateUserFact {
-                    account_id,
-                    chat_id: self.chat_id,
-                    content: args.content,
+                if args.account_id.is_none() {
+                    return Err(tool_err("account_id is required for 'user_fact'"));
                 }
+                MemoryKind::UserFact
             }
-            RecordMemoryCategory::Knowledge => MemoryInput::CreateKnowledge {
-                chat_id: self.chat_id,
-                content: args.content,
-            },
-            RecordMemoryCategory::Note => MemoryInput::CreateAgentNote {
-                chat_id: self.chat_id,
-                references: args.references,
-                content: args.content,
-            },
-            RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
-                chat_id: self.chat_id,
-                content: args.content,
-            },
+            RecordMemoryCategory::Knowledge => MemoryKind::Knowledge,
+            RecordMemoryCategory::Note => MemoryKind::Note,
         };
 
         self.services
             .memory
-            .save_memory(input)
+            .create(
+                kind,
+                self.chat_id,
+                args.content,
+                args.account_id,
+                args.references,
+            )
             .await
             .into_tool_err()?;
         tool_ok()
@@ -86,8 +77,6 @@ impl RecordMemory {
 pub struct CorrectMemoryArgs {
     /// 记忆 ID
     pub id: Uuid,
-    /// 分类
-    pub category: RecordMemoryCategory,
     /// 内容
     pub content: Option<String>,
     /// 重要性
@@ -97,39 +86,14 @@ pub struct CorrectMemoryArgs {
 /// 更新记忆
 #[hai_macros::tool]
 pub struct CorrectMemory {
-    pub chat_id: ChatId,
     pub services: DbServices,
 }
 
 impl CorrectMemory {
     async fn exec(&self, args: CorrectMemoryArgs) -> Result<Value, ToolError> {
-        let input = match args.category {
-            RecordMemoryCategory::UserFact => MemoryInput::UpdateUserFact {
-                id: args.id,
-                content: args.content,
-                importance: args.importance,
-            },
-            RecordMemoryCategory::Knowledge => MemoryInput::UpdateKnowledge {
-                id: args.id,
-                content: args.content,
-                importance: args.importance,
-            },
-            RecordMemoryCategory::Note => MemoryInput::UpdateAgentNote {
-                id: args.id,
-                content: args.content,
-                importance: args.importance,
-            },
-            RecordMemoryCategory::ChatRule => MemoryInput::UpsertChatRule {
-                chat_id: self.chat_id,
-                content: args
-                    .content
-                    .ok_or_else(|| tool_err("content is required for 'chat_rule'"))?,
-            },
-        };
-
         self.services
             .memory
-            .save_memory(input)
+            .update(args.id, args.content, args.importance)
             .await
             .into_tool_err()?;
         tool_ok()
@@ -183,10 +147,9 @@ impl DeleteMemory {
     async fn exec(&self, args: DeleteMemoryArgs) -> Result<Value, ToolError> {
         self.services
             .memory
-            .delete(crate::domain::vo::MemoryId(args.id))
+            .delete(MemoryId(args.id))
             .await
             .into_tool_err()?;
-
         tool_ok()
     }
 }
@@ -198,7 +161,6 @@ pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
             services: ctx.db.clone(),
         }),
         Arc::new(CorrectMemory {
-            chat_id: ctx.chat_id,
             services: ctx.db.clone(),
         }),
         Arc::new(SearchMemory {

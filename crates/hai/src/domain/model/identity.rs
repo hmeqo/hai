@@ -1,3 +1,5 @@
+use crate::domain::vo::IdentityId;
+
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "identity"]
 pub struct Identity {
@@ -11,4 +13,10 @@ pub struct Identity {
     pub created_at: jiff::Timestamp,
     #[auto]
     pub updated_at: jiff::Timestamp,
+}
+
+impl Identity {
+    pub fn id_(&self) -> IdentityId {
+        IdentityId(self.id)
+    }
 }

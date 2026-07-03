@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
+use super::Identity;
+use crate::domain::vo::AccountId;
+
 #[derive(Debug, Clone, toasty::Model)]
 #[table = "account"]
 pub struct Account {
@@ -10,6 +13,9 @@ pub struct Account {
 
     #[index]
     pub identity_id: Option<uuid::Uuid>,
+    #[belongs_to(key = identity_id, references = id)]
+    pub identity: toasty::Deferred<Option<Identity>>,
+
     pub platform: String,
     pub external_id: String,
     pub meta: Option<toasty::Json<serde_json::Value>>,
@@ -21,8 +27,8 @@ pub struct Account {
 }
 
 impl Account {
-    pub fn platform(&self) -> Platform {
-        self.platform.parse().expect("Invalid platform")
+    pub fn id_(&self) -> AccountId {
+        AccountId(self.id)
     }
 }
 

@@ -18,8 +18,13 @@ use crate::{
 
 /// 将 CommonContext 渲染为最终的 XML prompt 字符串
 pub fn render_main_context(ctx: &RenderContext, instruction: Node) -> String {
+    render_context(ctx, instruction, "context")
+}
+
+/// 共用渲染逻辑，可指定 root tag（首轮 = context，后续轮 = new）
+pub(crate) fn render_context(ctx: &RenderContext, instruction: Node, root_tag: &str) -> String {
     render_pretty(
-        Node::tag("context").children(
+        Node::tag(root_tag).children(
             ContextBuilder::new(ctx, instruction)
                 .env()
                 .chat()
@@ -42,16 +47,26 @@ pub fn build_situation_section(events: &[WakeEvent]) -> Node {
         return Node::tag("situation");
     }
 
-    Node::tag("situation").children(
-        events
-            .iter()
-            .map(|event| {
-                Node::tag("trigger")
-                    .attr("reason", event.reason.label())
-                    .child(Node::text(event.reason.describe()))
-            })
-            .collect::<Vec<_>>(),
-    )
+    let mut children: Vec<Node> = Vec::new();
+    let mut i = 0;
+    while i < events.len() {
+        let label = events[i].reason.label();
+        let describe = events[i].reason.describe();
+        let mut count = 1;
+        while i + count < events.len() && events[i + count].reason.label() == label {
+            count += 1;
+        }
+        let mut node = Node::tag("trigger")
+            .attr("reason", label)
+            .child(Node::text(&describe));
+        if count > 1 {
+            node = node.attr("count", count.to_string());
+        }
+        children.push(node);
+        i += count;
+    }
+
+    Node::tag("situation").children(children)
 }
 
 struct ContextBuilder<'a> {

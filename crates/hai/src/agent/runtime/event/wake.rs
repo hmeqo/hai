@@ -4,8 +4,6 @@ use derive_more::Deref;
 use strum::{EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-use crate::domain::vo::ChatId;
-
 /// 定时/后台任务的具体负载
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct TaskPayload {
@@ -100,7 +98,6 @@ impl WakeReason {
 /// WakeEvent 的内部数据（通过 Arc 共享）
 #[derive(Debug)]
 pub struct WakeEventInner {
-    pub chat_id: ChatId,
     pub reason: WakeReason,
 }
 
@@ -109,7 +106,7 @@ pub struct WakeEventInner {
 pub struct WakeEvent(Arc<WakeEventInner>);
 
 impl WakeEvent {
-    pub fn new(chat_id: ChatId, reason: WakeReason) -> Self {
-        Self(Arc::new(WakeEventInner { chat_id, reason }))
+    pub fn new(reason: WakeReason) -> Self {
+        Self(Arc::new(WakeEventInner { reason }))
     }
 }

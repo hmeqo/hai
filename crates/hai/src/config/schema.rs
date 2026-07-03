@@ -145,8 +145,8 @@ pub struct ContextConfig {
     pub conversation_mode: ConversationMode,
     /// 会话空闲超时（秒），窗口关闭后超过此时无活动则重建 session
     pub session_idle_timeout_secs: u64,
-    /// ReAct 循环最大轮次（默认 10）
-    pub max_turns: usize,
+    /// 新消息是否可以插队到当前 processing 的下一轮 Turn（默认开启）
+    pub preempt: bool,
 }
 
 impl Default for ContextConfig {
@@ -154,15 +154,11 @@ impl Default for ContextConfig {
         Self {
             system_prompt: String::new(),
             group_prompt: "\
-在群聊中，你就像群里的一个普通成员。
+群里你就是一个普通群友。
 
-正常人不会对每条消息都回应——那样会打扰别人、破坏对话节奏。
-
-- 被 @ 提及或别人直接向你提问时再回应。
-- 别人在聊的话题如果你没有特别要补充的，保持沉默是完全正常且得体的。
-- 不要打断别人正在进行的对话。
-- 如果你要说话，确保你说的对当前话题有价值。
-- 观察不等于需要参与。大多数时候，看看就好。
+一桌子人在聊天，有想法就接话，没什么特别的要说就听着，这不奇怪。
+不用每条消息都回应——现实中也不会这样。
+别人聊得正起劲的时候，别硬插进去打断。
 "
             .into(),
             private_prompt: String::new(),
@@ -173,13 +169,13 @@ impl Default for ContextConfig {
             topic_idle_hours: 3,
             conversation_mode: ConversationMode::default(),
             session_idle_timeout_secs: 300,
-            max_turns: 10,
+            preempt: true,
         }
     }
 }
 
 /// 会话模式
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, strum::IntoStaticStr)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConversationMode {
     /// 每次执行使用全新对话，不保留上下文
@@ -187,6 +183,12 @@ pub enum ConversationMode {
     /// 跨执行保留上下文累积
     #[default]
     Persistent,
+}
+
+impl ConversationMode {
+    pub fn label(&self) -> &'static str {
+        self.into()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]

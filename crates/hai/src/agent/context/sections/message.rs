@@ -8,7 +8,7 @@ use crate::{
 
 pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
     let sent_at = format_time_dyn2(msg.sent_at);
-    let is_replied = msg.status() == MessageStatus::Replied;
+    let is_replied = msg.status() == Some(MessageStatus::Replied);
 
     let mut b = Node::tag("message")
         .attr("id", msg.id)
@@ -23,12 +23,12 @@ pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
     {
         let replied_sender = ctx.sender_name(replied_msg);
         let replied_sent_at = format_time_dyn2(replied_msg.sent_at);
-        let replied_is_replied = replied_msg.status() == MessageStatus::Replied;
+        let replied_is_replied = replied_msg.status() == Some(MessageStatus::Replied);
 
         let mut elements = (ctx.content_renderer)(&replied_msg.content);
         truncate_text_nodes(&mut elements, 50);
 
-        let mut reference = Node::tag("reply_to")
+        let mut reference = Node::tag("reference")
             .attr("id", reply_id)
             .attr("sender", replied_sender.as_str())
             .attr("sent_at", replied_sent_at.as_str());

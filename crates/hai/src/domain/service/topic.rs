@@ -137,8 +137,6 @@ impl TopicService {
         let topic = Topic::get_by_id(&mut db, &topic_id).await?;
         topic.ensure_not_closed()?;
 
-        let vec = self.embedding.generate_embedding(summary).await?;
-
         Topic::filter_by_id(topic_id)
             .update()
             .status("closed")
@@ -147,7 +145,7 @@ impl TopicService {
             .exec(&mut db)
             .await?;
 
-        let _ = pgvector::upsert_embedding_vec(&self.pool, "topic", topic_id, &vec).await;
+        pgvector::store_embedding(&*self.embedding, &self.pool, "topic", topic_id, summary).await?;
 
         Ok(topic)
     }
@@ -158,9 +156,15 @@ impl TopicService {
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<TopicSearchResult>> {
-        let filter = format!("chat_id = {} AND status = 'closed'", chat_id.0);
-        let rows =
-            pgvector::search_embedding_vec(&self.pool, "topic", query, &filter, limit).await?;
+        let rows = pgvector::search_embedding_vec(
+            &self.pool,
+            "topic",
+            query,
+            chat_id.0,
+            Some("status = 'closed'"),
+            limit,
+        )
+        .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -227,7 +231,9 @@ impl TopicService {
 
     pub async fn delete_topic(&self, topic_id: Uuid) -> Result<()> {
         Topic::delete_by_id(&mut self.db.clone(), topic_id).await?;
-        let _ = pgvector::clear_embedding_vec(&self.pool, "topic", topic_id).await;
+        if let Err(e) = pgvector::clear_embedding_vec(&self.pool, "topic", topic_id).await {
+            tracing::warn!(topic_id = %topic_id, "Failed to clear topic embedding: {e}");
+        }
         Ok(())
     }
 }

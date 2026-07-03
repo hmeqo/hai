@@ -1,10 +1,9 @@
 use genai::{Client, resolver::AuthData};
-use strum::{Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{config::schema::ProviderConfig, error::Result};
 
-/// Provider 类型枚举。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter, IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
 pub enum ProviderBackend {
     OpenRouter,
@@ -22,10 +21,6 @@ pub enum ProviderBackend {
 }
 
 impl ProviderBackend {
-    pub fn supported_types() -> Vec<&'static str> {
-        Self::iter().map(Into::into).collect()
-    }
-
     pub fn default_base_url(&self) -> &'static str {
         match self {
             Self::OpenRouter => "https://openrouter.ai/api/v1",

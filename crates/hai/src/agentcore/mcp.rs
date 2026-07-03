@@ -155,7 +155,13 @@ impl McpServerHandle {
             return Ok(Value::Null);
         }
 
-        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+        match serde_json::from_str(&text) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                tracing::warn!(text = %text.chars().take(200).collect::<String>(), "MCP response is not valid JSON, wrapping as string");
+                Ok(Value::String(text))
+            }
+        }
     }
 }
 
@@ -185,7 +191,15 @@ impl AgentTool for McpAgentTool {
     }
 
     async fn execute(&self, args: Value) -> std::result::Result<Value, ToolError> {
-        let json_map: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
-        self.server.call_tool(&self.tool.name, json_map).await
+        let json_map = args.as_object().ok_or_else(|| {
+            ToolError::Msg(format!(
+                "MCP tool {} expected object args, got {:?}",
+                self.name(),
+                args
+            ))
+        })?;
+        self.server
+            .call_tool(&self.tool.name, json_map.clone())
+            .await
     }
 }

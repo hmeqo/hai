@@ -45,7 +45,7 @@ impl DbServices {
         let embedding: Arc<dyn EmbeddingService> = Arc::new(multimodal.clone());
         let topic = TopicService::new(db.clone(), Arc::clone(&embedding), pool.clone());
         let memory = MemoryService::new(db.clone(), Arc::clone(&embedding), pool.clone());
-        let perception = PerceptionService::new(db.clone());
+        let perception = PerceptionService::new(db.clone(), Arc::clone(&embedding), pool.clone());
 
         Self(Arc::new(DbServicesInner {
             pool,

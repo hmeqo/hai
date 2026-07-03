@@ -16,7 +16,6 @@ pub fn build_react_config(engine: &AgentEngine, chat_type: ChatType) -> ReactLoo
         .build();
     ReactLoopConfig {
         system_prompt,
-        max_turns: cfg.context.max_turns,
         options: ReactLoopConfig::build_chat_options(cfg),
     }
 }
