@@ -37,16 +37,23 @@ impl AgentSession {
         };
 
         let turn = self.conversation.turn_count() + 1;
+        let reason = ctx
+            .events
+            .first()
+            .map(|e| e.reason.label())
+            .unwrap_or("unknown")
+            .to_string();
+
+        self.engine.app.event_bus.emit(AgentEvent::WakeStarted {
+            chat_id: self.chat_id,
+            turn,
+            reason,
+        });
         self.engine.app.event_bus.emit(AgentEvent::ContextBuilt {
             chat_id: self.chat_id,
             turn,
             msg_count: payload.message_ids.len(),
             full_prompt: payload.prompt.clone(),
-        });
-        self.engine.app.event_bus.emit(AgentEvent::TurnStarted {
-            chat_id: self.chat_id,
-            turn,
-            reason: ctx.events.first().map(|e| e.reason.label()).unwrap_or("unknown").to_string(),
         });
 
         let (proc_handle, result_rx) =
@@ -141,7 +148,9 @@ pub(super) fn spawn_processing(
                     .flat_map(|t| &t.tool_calls)
                     .any(|tc| matches!(tc.tool_name.as_str(), "send_message" | "send_voice"));
 
-                let (response, reasoning) = output.turns.last()
+                let (response, reasoning) = output
+                    .turns
+                    .last()
                     .map(|t| (t.response.clone(), t.reasoning.clone()))
                     .unwrap_or_default();
 

@@ -8,8 +8,10 @@ use genai::{
     },
 };
 
-use super::types::{Inbox, Messages, ToolCallResult, Turn};
-use super::AgentEvent;
+use super::{
+    AgentEvent,
+    types::{Inbox, Messages, ToolCallResult, Turn},
+};
 use crate::{
     agent::context::build_situation_section,
     agentcore::{
@@ -19,8 +21,7 @@ use crate::{
     domain::vo::ChatId,
 };
 
-const DIRECT_OUTPUT_ERROR: &str =
-    "错误：禁止直接输出文字。所有发言必须通过 send_message 或 send_voice 发送。不想说话请仅调用 done。";
+const DIRECT_OUTPUT_ERROR: &str = "错误：禁止直接输出文字。所有发言必须通过 send_message 或 send_voice 发送。不想说话请仅调用 done。";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -79,17 +80,14 @@ pub(crate) async fn run_react_loop(
 
     loop {
         // ── 1. LLM call ──
-        let res = run
-            .client
-            .exec_chat(
-                &run.model,
-                ChatRequest::new(messages.to_vec())
-                    .with_system(&run.config.system_prompt)
-                    .with_tools(genai_tools.clone()),
-                Some(&run.config.options),
-            )
-            .await
-            .map_err(|e| ToolError::Msg(format!("LLM request failed: {e}")))?;
+        let res = llm_call_with_retry(
+            &run.client,
+            &run.model,
+            &run.config,
+            &genai_tools,
+            &messages,
+        )
+        .await?;
 
         let response_text = res.texts().join("\n");
         let reasoning = res.reasoning_content.clone();
@@ -102,14 +100,14 @@ pub(crate) async fn run_react_loop(
             .filter(|c| c.fn_name != "done")
             .collect();
 
-        // ── 2. 构建 assistant message ──
+        // ── 构建 assistant message ──
         messages.push(build_assistant_message(
             &response_text,
             &active_calls,
             reasoning.clone(),
         ));
 
-        // ── 3. 工具执行 ──
+        // ── 工具执行 ──
         let mut turn_tc: Vec<ToolCallResult> = Vec::new();
         for call in &active_calls {
             run.event_bus.emit(AgentEvent::ToolCall {
@@ -129,15 +127,17 @@ pub(crate) async fn run_react_loop(
             });
         }
 
-        // ── 4. 错误注入 ──
-        if active_calls.is_empty() && !response_text.trim().is_empty() {
-            messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
+        // ──  Decide ──
+        let mut stop = has_done;
+        if !stop && active_calls.is_empty() {
+            if response_text.trim().is_empty() {
+                stop = true
+            } else {
+                messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
+            }
         }
 
-        // ── 5. Decide（在 move 前判断） ──
-        let stop = active_calls.is_empty() && response_text.trim().is_empty() || has_done;
-
-        // ── 6. Commit ──
+        // ── Commit ──
         turns.push(Turn {
             tool_calls: turn_tc,
             response: response_text,
@@ -152,7 +152,7 @@ pub(crate) async fn run_react_loop(
             });
         }
 
-        // ── 7. Preempt ──
+        // ── Preempt ──
         if run.preempt {
             apply_preempt(&mut messages, &run.inbox).await;
         }
@@ -205,6 +205,56 @@ fn build_assistant_message(
     msg
 }
 
+/// 带重试的 LLM 调用。只对网络类错误重试，api/认证错误直接透传。
+async fn llm_call_with_retry(
+    client: &Client,
+    model: &str,
+    config: &ReactLoopConfig,
+    genai_tools: &[Tool],
+    messages: &Messages,
+) -> Result<genai::chat::ChatResponse, ToolError> {
+    let max_retries = 2;
+    let mut last_err = None;
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            tracing::warn!(attempt, "Retrying LLM call after network error");
+        }
+
+        match client
+            .exec_chat(
+                model,
+                ChatRequest::new(messages.to_vec())
+                    .with_system(&config.system_prompt)
+                    .with_tools(genai_tools.to_vec()),
+                Some(&config.options),
+            )
+            .await
+        {
+            Ok(res) => return Ok(res),
+            Err(e) if is_retryable_ge(&e) => {
+                let msg = format!("LLM request failed: {e}");
+                last_err = Some(ToolError::Msg(msg));
+            }
+            Err(e) => return Err(ToolError::Msg(format!("LLM request failed: {e}"))),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| ToolError::Msg("LLM call failed after retries".into())))
+}
+
+fn is_retryable_ge(e: &genai::Error) -> bool {
+    match e {
+        genai::Error::WebModelCall { webc_error, .. }
+        | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::Reqwest(re) => re.is_timeout() || re.is_connect(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 async fn execute_single_tool(
     call: &ToolCall,
     tools: &[Arc<dyn AgentTool>],
@@ -232,8 +282,11 @@ async fn execute_single_tool(
             )));
         }
         Err(e) => {
-            tracing::error!(tool = %tool_name, args = %args, error = %e, "tool error");
-            turn_tc.push(ToolCallResult::err(tool_name.clone(), args.clone()));
+            turn_tc.push(ToolCallResult::err(
+                tool_name.clone(),
+                args.clone(),
+                format!("{e}"),
+            ));
             messages.push(ChatMessage::from(ToolResponse::from_tool_call(
                 call,
                 format!("Error: {e}"),

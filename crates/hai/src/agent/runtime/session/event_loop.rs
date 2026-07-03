@@ -6,11 +6,11 @@ use tokio::{
     time::Instant,
 };
 
-use super::{
-    super::event::WakeEvent,
-    AgentSession, SessionState, proxy, scheduler::Decision,
+use super::{super::event::WakeEvent, AgentSession, SessionState, proxy, scheduler::Decision};
+use crate::agent::runtime::{
+    AgentEvent,
+    types::{Inbox, ProcessingOutput},
 };
-use crate::agent::runtime::{types::{Inbox, ProcessingOutput}, AgentEvent};
 
 // ── Active Processing ─────────────────────────────────────────────────────
 

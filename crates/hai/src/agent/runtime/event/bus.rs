@@ -1,77 +1,18 @@
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::domain::vo::ChatId;
+pub use crate::domain::vo::AgentEventPayload as AgentEvent;
 
 // ── AgentEvent ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub enum AgentEvent {
-    SessionCreated {
-        chat_id: ChatId,
-        mode: String,
-        model: String,
-    },
-    SessionDone {
-        chat_id: ChatId,
-    },
-    TurnStarted {
-        chat_id: ChatId,
-        turn: usize,
-        reason: String,
-    },
-    ContextBuilt {
-        chat_id: ChatId,
-        turn: usize,
-        msg_count: usize,
-        full_prompt: String,
-    },
-    ToolCall {
-        chat_id: ChatId,
-        turn: usize,
-        tool: String,
-        args: String,
-    },
-    ToolCallResult {
-        chat_id: ChatId,
-        turn: usize,
-        tool: String,
-        summary: String,
-        success: bool,
-    },
-    TurnCompleted {
-        chat_id: ChatId,
-        turn: usize,
-        tool_calls: usize,
-        elapsed_ms: u64,
-        prompt_tokens: u32,
-        completion_tokens: u32,
-        has_spoken: bool,
-        response: String,
-        reasoning: Option<String>,
-    },
-}
-
 impl AgentEvent {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::SessionCreated { .. } => "session_created",
-            Self::SessionDone { .. } => "session_done",
-            Self::TurnStarted { .. } => "turn_started",
-            Self::ContextBuilt { .. } => "context_built",
-            Self::ToolCall { .. } => "tool_call",
-            Self::ToolCallResult { .. } => "tool_call_result",
-            Self::TurnCompleted { .. } => "turn_completed",
-        }
-    }
-
     pub fn chat_id(&self) -> Option<i64> {
         match self {
             Self::SessionCreated { chat_id, .. }
             | Self::SessionDone { chat_id }
-            | Self::TurnStarted { chat_id, .. }
+            | Self::WakeStarted { chat_id, .. }
             | Self::ContextBuilt { chat_id, .. }
             | Self::ToolCall { chat_id, .. }
             | Self::ToolCallResult { chat_id, .. }
@@ -79,31 +20,20 @@ impl AgentEvent {
         }
     }
 
-    pub fn payload(&self) -> Value {
+    pub fn kind(&self) -> &'static str {
         match self {
-            Self::SessionCreated { mode, model, .. } => json!({
-                "mode": mode, "model": model
-            }),
-            Self::SessionDone { .. } => json!({}),
-            Self::TurnStarted { turn, reason, .. } => json!({
-                "turn": turn, "reason": reason
-            }),
-            Self::ContextBuilt { turn, msg_count, full_prompt, .. } => json!({
-                "turn": turn, "msg_count": msg_count, "full_prompt": full_prompt
-            }),
-            Self::ToolCall { turn, tool, args, .. } => json!({
-                "turn": turn, "tool": tool, "args": args
-            }),
-            Self::ToolCallResult { turn, tool, summary, success, .. } => json!({
-                "turn": turn, "tool": tool, "summary": summary, "success": success
-            }),
-            Self::TurnCompleted { turn, tool_calls, elapsed_ms, prompt_tokens, completion_tokens, has_spoken, response, reasoning, .. } => json!({
-                "turn": turn, "tool_calls": tool_calls, "elapsed_ms": elapsed_ms,
-                "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-                "has_spoken": has_spoken, "response": response,
-                "reasoning": reasoning
-            }),
+            Self::SessionCreated { .. } => "session_created",
+            Self::SessionDone { .. } => "session_done",
+            Self::WakeStarted { .. } => "wake_started",
+            Self::ContextBuilt { .. } => "context_built",
+            Self::ToolCall { .. } => "tool_call",
+            Self::ToolCallResult { .. } => "tool_call_result",
+            Self::TurnCompleted { .. } => "turn_completed",
         }
+    }
+
+    pub fn payload(&self) -> Value {
+        serde_json::to_value(self).unwrap()
     }
 }
 
@@ -157,14 +87,12 @@ async fn flush(batch: &[AgentEvent], db: &toasty::Db) {
     for event in batch {
         if let Err(e) = toasty::create!(Event {
             domain: "agent".to_string(),
-            kind: event.as_str().to_string(),
-            chat_id: event.chat_id(),
             payload: toasty::Json(event.payload()),
         })
         .exec(&mut db.clone())
         .await
         {
-            tracing::warn!(kind = %event.as_str(), error = %e, "Failed to flush agent event");
+            tracing::warn!(kind = event.kind(), error = %e, "Failed to flush agent event");
         }
     }
 }

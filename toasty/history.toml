@@ -14,3 +14,8 @@ snapshot_name = "0001_snapshot.toml"
 id = 2239221563053133369
 name = "0002_event.sql"
 snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 3021826919047328601
+name = "0003_event_drop_kind_chat_id.sql"
+snapshot_name = "0003_snapshot.toml"

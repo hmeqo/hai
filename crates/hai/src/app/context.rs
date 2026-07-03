@@ -4,8 +4,10 @@ use arc_swap::ArcSwap;
 use derive_more::Deref;
 
 use crate::{
-    agent::multimodal::{ModelService, MultimodalService},
-    agent::runtime::AgentEventBus,
+    agent::{
+        multimodal::{ModelService, MultimodalService},
+        runtime::AgentEventBus,
+    },
     config::{AppConfig, AppConfigManager, ProviderManager},
     domain::{db, service::DbServices},
     error::Result,

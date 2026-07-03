@@ -49,7 +49,12 @@ async fn show_detail(seq: i64, db: &toasty::Db) -> crate::error::Result<()> {
     };
 
     let d = EventDisplay::from_event(&event);
-    println!("{}  {}  {}", display::fmt_time(event.created_at), display::chat_display(event.chat_id), d.tag);
+    println!(
+        "{}  {}  {}",
+        display::fmt_time(event.created_at),
+        display::chat_display(&event),
+        d.tag
+    );
     println!("────────────────────────────────────────────────────────────────────────");
     println!("{}", d.detail_text);
 

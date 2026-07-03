@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 macro_rules! id_type {
     ($vis:vis struct $name:ident(pub $inner:ty);) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize)]
         #[serde(transparent)]
         $vis struct $name(pub $inner);
 

@@ -26,12 +26,12 @@ impl ToolCallResult {
         }
     }
 
-    pub fn err(tool_name: impl Into<String>, args: Value) -> Self {
+    pub fn err(tool_name: impl Into<String>, args: Value, error: impl Into<String>) -> Self {
         Self {
             tool_name: tool_name.into(),
             success: false,
             arguments: args,
-            result: Value::Null,
+            result: Value::String(error.into()),
         }
     }
 }
