@@ -16,7 +16,10 @@ impl AgentEvent {
             | Self::ContextBuilt { chat_id, .. }
             | Self::ToolCall { chat_id, .. }
             | Self::ToolCallResult { chat_id, .. }
-            | Self::TurnCompleted { chat_id, .. } => Some(chat_id.0),
+            | Self::RunCompleted { chat_id, .. }
+            | Self::ModelRetry { chat_id, .. }
+            | Self::RunFailed { chat_id, .. }
+            | Self::Preempted { chat_id, .. } => Some(chat_id.0),
         }
     }
 
@@ -28,7 +31,10 @@ impl AgentEvent {
             Self::ContextBuilt { .. } => "context_built",
             Self::ToolCall { .. } => "tool_call",
             Self::ToolCallResult { .. } => "tool_call_result",
-            Self::TurnCompleted { .. } => "turn_completed",
+            Self::ModelRetry { .. } => "model_retry",
+            Self::RunCompleted { .. } => "run_completed",
+            Self::RunFailed { .. } => "run_failed",
+            Self::Preempted { .. } => "preempted",
         }
     }
 

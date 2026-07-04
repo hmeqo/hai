@@ -15,6 +15,16 @@ impl EventDisplay {
         let tag = tag_for_kind(&ae);
 
         let one_liner = match &ae {
+            AgentEventPayload::RunFailed { turn, error, .. } => {
+                let preview: String = error.chars().take(60).collect();
+                format!("FAIL   {turn}  {preview}")
+            }
+            AgentEventPayload::Preempted { turn, .. } => {
+                format!("PREEMPT  {turn}")
+            }
+            AgentEventPayload::ModelRetry { turn, reason, .. } => {
+                format!("RETRY  {turn}  {reason}")
+            }
             AgentEventPayload::WakeStarted { turn, reason, .. } => {
                 format!("WAKE   {turn}  {reason}")
             }
@@ -43,7 +53,7 @@ impl EventDisplay {
                     if *success { "✓" } else { "✗" }
                 )
             }
-            AgentEventPayload::TurnCompleted {
+            AgentEventPayload::RunCompleted {
                 turn,
                 tool_calls,
                 elapsed_ms,
@@ -82,7 +92,10 @@ fn tag_for_kind(ae: &AgentEventPayload) -> &'static str {
         AgentEventPayload::WakeStarted { .. } => "WAKE",
         AgentEventPayload::ContextBuilt { .. } => "CTX",
         AgentEventPayload::ToolCall { .. } | AgentEventPayload::ToolCallResult { .. } => "TOOL",
-        AgentEventPayload::TurnCompleted { .. } => "DONE",
+        AgentEventPayload::RunCompleted { .. } => "DONE",
+        AgentEventPayload::ModelRetry { .. } => "RETRY",
+        AgentEventPayload::RunFailed { .. } => "FAIL",
+        AgentEventPayload::Preempted { .. } => "PREEMPT",
     }
 }
 
@@ -96,6 +109,23 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
     );
 
     let body = match ae {
+        AgentEventPayload::Preempted { turn, .. } => {
+            format!("\n  Turn:   {turn}")
+        }
+        AgentEventPayload::RunFailed {
+            turn,
+            elapsed_ms,
+            error,
+            ..
+        } => {
+            format!(
+                "\n  Turn:     {turn}\n  Duration: {:.1}s\n  Error:    {error}",
+                *elapsed_ms as f64 / 1000.0
+            )
+        }
+        AgentEventPayload::ModelRetry { turn, reason, .. } => {
+            format!("\n  Turn:   {turn}\n  Reason: {reason}")
+        }
         AgentEventPayload::ContextBuilt {
             msg_count,
             full_prompt,
@@ -127,7 +157,7 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
             b.push_str(&format!("\n  Status: {}", if *success { "✓" } else { "✗" }));
             b
         }
-        AgentEventPayload::TurnCompleted {
+        AgentEventPayload::RunCompleted {
             tool_calls,
             elapsed_ms,
             prompt_tokens,
@@ -201,10 +231,13 @@ pub(super) fn color_rgb(event: &Event) -> (u8, u8, u8) {
         Err(_) => return (156, 163, 175),
     };
     match &ae {
+        AgentEventPayload::RunFailed { .. } => (239, 68, 68),
+        AgentEventPayload::Preempted { .. } => (250, 176, 5),
+        AgentEventPayload::ModelRetry { .. } => (250, 176, 5),
         AgentEventPayload::ToolCall { .. } => (59, 130, 246),
         AgentEventPayload::ToolCallResult { success, .. } if !success => (239, 68, 68),
         AgentEventPayload::ToolCallResult { .. } => (34, 197, 94),
-        AgentEventPayload::TurnCompleted { .. } => (255, 255, 255),
+        AgentEventPayload::RunCompleted { .. } => (255, 255, 255),
         AgentEventPayload::WakeStarted { .. } | AgentEventPayload::ContextBuilt { .. } => {
             (234, 179, 8)
         }
@@ -266,8 +299,8 @@ fn filter_in_rust(raw: Vec<Event>, chat_id: Option<i64>, event_kind: Option<&str
                 Ok(ae) => ae,
                 Err(_) => return false,
             };
-            let chat_ok = chat_id.map_or(true, |cid| ae.chat_id() == Some(cid));
-            let kind_ok = event_kind.map_or(true, |k| ae.kind() == k);
+            let chat_ok = chat_id.is_none_or(|cid| ae.chat_id() == Some(cid));
+            let kind_ok = event_kind.is_none_or(|k| ae.kind() == k);
             chat_ok && kind_ok
         })
         .collect()

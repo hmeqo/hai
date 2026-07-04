@@ -154,13 +154,13 @@ pub(super) fn spawn_processing(
                     .map(|t| (t.response.clone(), t.reasoning.clone()))
                     .unwrap_or_default();
 
-                event_bus.emit(AgentEvent::TurnCompleted {
+                event_bus.emit(AgentEvent::RunCompleted {
                     chat_id,
                     turn: outer_turn,
                     tool_calls,
                     elapsed_ms: elapsed.as_millis() as u64,
                     prompt_tokens: output.prompt_tokens,
-                    completion_tokens: 0,
+                    completion_tokens: output.completion_tokens,
                     has_spoken,
                     response,
                     reasoning,
@@ -177,7 +177,13 @@ pub(super) fn spawn_processing(
                 }));
             }
             Err(e) => {
-                tracing::error!(%chat_id, elapsed_secs = %elapsed.as_secs_f64(), "Agent run failed: {e}");
+                tracing::warn!(%chat_id, elapsed_secs = %elapsed.as_secs_f64(), error = %e, "Agent run failed");
+                event_bus.emit(AgentEvent::RunFailed {
+                    chat_id,
+                    turn: outer_turn,
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    error: e.to_string(),
+                });
                 let _ = tx.send(None);
             }
         }

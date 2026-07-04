@@ -29,10 +29,7 @@ pub async fn execute(args: LogArgs) -> crate::error::Result<()> {
     if let Some(seq) = args.id {
         show_detail(seq, &db).await?;
     } else {
-        let mut app = super::tui::TuiApp::new(db);
-        app.set_chat_filter(args.chat);
-        app.set_kind_filter(args.event);
-        app.run()
+        super::tui::run_tui(db, args.chat, args.event)
             .await
             .map_err(|e| crate::error::ErrorKind::Internal.msg(e.to_string()))?;
     }

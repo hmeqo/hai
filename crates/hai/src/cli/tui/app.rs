@@ -3,48 +3,71 @@ use std::time::Duration;
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 
-use super::input::CTRL_STEP;
-use crate::{cli::display, domain::model::Event};
+use crate::cli::display::{self, EventDisplay};
 
 const POLL_MS: u64 = 200;
+const PAGE_STEP: usize = 10;
+const CTRL_STEP: usize = 15;
+const PADDING: usize = 3;
 
-// ── Focus / Layout ──────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
-pub enum Focus {
+#[derive(Clone, Copy, PartialEq)]
+enum Focus {
     List,
     Detail,
 }
 
-pub enum DetailLayout {
+enum DetailLayout {
     Split,
     Full,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Nav {
+    MoveUp(usize),
+    MoveDown(usize),
+    GoTop,
+    GoEnd,
+    ScrollUp(u16),
+    ScrollDown(u16),
+    ToggleFocus,
+    OpenOrToggleFullscreen,
+    CloseDetail,
+    Search,
+}
+
 // ── TuiApp ──────────────────────────────────────────────────────
 
-pub struct TuiApp {
-    pub(super) events: Vec<Event>,
-    pub(super) selected: usize,
-    pub(super) list_offset: usize,
-    pub(super) list_vp_h: usize,
-    pub(super) focus: Focus,
-    pub(super) detail_layout: DetailLayout,
-    pub(super) detail_seq: Option<i64>,
-    pub(super) detail_scroll: u16,
-    pub(super) filter: String,
-    pub(super) search_active: bool,
-    pub(super) last_seq: i64,
-    pub(super) chat_filter: Option<i64>,
-    pub(super) kind_filter: Option<String>,
-    pub(super) db: toasty::Db,
+pub(super) struct TuiApp {
+    events: Vec<crate::domain::model::Event>,
+    selected: usize,
+    list_offset: usize,
+    list_vp_h: usize,
+    focus: Focus,
+    detail_layout: DetailLayout,
+    detail_seq: Option<i64>,
+    detail_scroll: u16,
+    filter: String,
+    search_active: bool,
+    last_seq: i64,
+    chat_filter: Option<i64>,
+    kind_filter: Option<String>,
+    follow: bool,
+    db: toasty::Db,
 }
 
 impl TuiApp {
-    pub fn new(db: toasty::Db) -> Self {
+    fn new(db: toasty::Db, chat_filter: Option<i64>, kind_filter: Option<String>) -> Self {
         Self {
             events: Vec::new(),
             selected: 0,
@@ -57,18 +80,11 @@ impl TuiApp {
             filter: String::new(),
             search_active: false,
             last_seq: 0,
-            chat_filter: None,
-            kind_filter: None,
+            chat_filter,
+            kind_filter,
+            follow: false,
             db,
         }
-    }
-
-    pub fn set_chat_filter(&mut self, chat_id: Option<i64>) {
-        self.chat_filter = chat_id;
-    }
-
-    pub fn set_kind_filter(&mut self, kind: Option<String>) {
-        self.kind_filter = kind;
     }
 
     async fn load_initial(&mut self) -> crate::error::Result<()> {
@@ -78,32 +94,145 @@ impl TuiApp {
         self.last_seq = events.first().map(|e| e.seq).unwrap_or(0);
         self.events = events;
         self.events.reverse();
-        self.selected = self.events.len().saturating_sub(1);
-        if !self.events.is_empty() {
-            self.detail_seq = Some(self.events[self.selected].seq);
-        }
+        self.follow_end();
         Ok(())
     }
 
-    async fn poll_new(&mut self) -> crate::error::Result<()> {
-        let events = display::query_new_events(
+    async fn poll_new(&mut self) {
+        let Ok(events) = display::query_new_events(
             &self.db,
             self.last_seq,
             self.chat_filter,
             self.kind_filter.as_deref(),
         )
-        .await?;
-        if !events.is_empty() {
-            self.last_seq = events.last().map(|e| e.seq).unwrap_or(self.last_seq);
-            for e in events {
-                self.events.push(e);
-            }
-            self.selected = self.events.len().saturating_sub(1);
+        .await
+        else {
+            return;
+        };
+
+        if events.is_empty() {
+            return;
         }
-        Ok(())
+        self.last_seq = events.last().map(|e| e.seq).unwrap_or(self.last_seq);
+        self.events.extend(events);
+        if self.follow {
+            self.follow_end();
+        }
     }
 
-    pub async fn run(&mut self) -> anyhow::Result<()> {
+    // ── Selection ───────────────────────────────────────────────
+
+    fn select_at(&mut self, index: usize) {
+        if self.events.is_empty() {
+            return;
+        }
+        self.selected = index.clamp(0, self.events.len() - 1);
+        self.follow = false;
+        if self.detail_seq.is_some() {
+            self.detail_seq = Some(self.events[self.selected].seq);
+            self.detail_scroll = 0;
+        }
+        self.clamp_list_offset();
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let new = (self.selected as isize + delta).max(0) as usize;
+        self.select_at(new.min(self.events.len().saturating_sub(1)));
+    }
+
+    fn follow_end(&mut self) {
+        if self.events.is_empty() {
+            return;
+        }
+        self.selected = self.events.len() - 1;
+        self.follow = true;
+        if self.detail_seq.is_some() {
+            self.detail_seq = Some(self.events[self.selected].seq);
+            self.detail_scroll = 0;
+        }
+        self.clamp_list_offset();
+    }
+
+    fn scroll_detail(&mut self, delta: i16) {
+        let max = self.detail_text_lines().saturating_sub(1);
+        let new = (self.detail_scroll as i16 + delta).max(0) as u16;
+        self.detail_scroll = new.min(max);
+    }
+
+    // ── Nav ─────────────────────────────────────────────────────
+
+    fn key_to_nav(code: KeyCode, modifiers: KeyModifiers, focus: Focus) -> Option<Nav> {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        match (code, ctrl, focus) {
+            (KeyCode::Up | KeyCode::Char('k'), false, Focus::List) => Some(Nav::MoveUp(1)),
+            (KeyCode::Down | KeyCode::Char('j'), false, Focus::List) => Some(Nav::MoveDown(1)),
+            (KeyCode::PageUp, _, Focus::List) => Some(Nav::MoveUp(PAGE_STEP)),
+            (KeyCode::PageDown, _, Focus::List) => Some(Nav::MoveDown(PAGE_STEP)),
+            (KeyCode::Char('u'), true, Focus::List) => Some(Nav::MoveUp(CTRL_STEP)),
+            (KeyCode::Char('d'), true, Focus::List) => Some(Nav::MoveDown(CTRL_STEP)),
+            (KeyCode::Char('g'), false, Focus::List) => Some(Nav::GoTop),
+            (KeyCode::Char('G'), false, Focus::List) => Some(Nav::GoEnd),
+
+            (KeyCode::Up | KeyCode::Char('k'), _, Focus::Detail) => Some(Nav::ScrollUp(1)),
+            (KeyCode::Down | KeyCode::Char('j'), _, Focus::Detail) => Some(Nav::ScrollDown(1)),
+            (KeyCode::PageUp, _, Focus::Detail) => Some(Nav::ScrollUp(PAGE_STEP as u16)),
+            (KeyCode::PageDown, _, Focus::Detail) => Some(Nav::ScrollDown(PAGE_STEP as u16)),
+            (KeyCode::Char('u'), true, Focus::Detail) => Some(Nav::ScrollUp(CTRL_STEP as u16)),
+            (KeyCode::Char('d'), true, Focus::Detail) => Some(Nav::ScrollDown(CTRL_STEP as u16)),
+
+            (KeyCode::Tab | KeyCode::BackTab, _, _) => Some(Nav::ToggleFocus),
+            (KeyCode::Enter | KeyCode::Right, _, _) => Some(Nav::OpenOrToggleFullscreen),
+            (KeyCode::Esc | KeyCode::Left, _, _) => Some(Nav::CloseDetail),
+            (KeyCode::Char('/'), _, _) => Some(Nav::Search),
+            _ => None,
+        }
+    }
+
+    fn apply_nav(&mut self, nav: Nav) {
+        match nav {
+            Nav::MoveUp(n) => self.move_selection(-(n as isize)),
+            Nav::MoveDown(n) => self.move_selection(n as isize),
+            Nav::GoTop => self.select_at(0),
+            Nav::GoEnd => self.follow_end(),
+            Nav::ScrollUp(n) => self.scroll_detail(-(n as i16)),
+            Nav::ScrollDown(n) => self.scroll_detail(n as i16),
+            Nav::ToggleFocus => {
+                self.focus = match self.focus {
+                    Focus::List => Focus::Detail,
+                    Focus::Detail => Focus::List,
+                }
+            }
+            Nav::OpenOrToggleFullscreen => {
+                if self.detail_seq.is_none() && !self.events.is_empty() {
+                    self.detail_seq = Some(self.events[self.selected].seq);
+                    self.detail_scroll = 0;
+                    self.focus = Focus::Detail;
+                } else {
+                    self.detail_layout = match self.detail_layout {
+                        DetailLayout::Split => DetailLayout::Full,
+                        DetailLayout::Full => DetailLayout::Split,
+                    };
+                }
+            }
+            Nav::CloseDetail => {
+                if self.detail_seq.is_some() {
+                    self.detail_seq = None;
+                    self.detail_scroll = 0;
+                    self.follow = false;
+                    self.focus = Focus::List;
+                }
+            }
+            Nav::Search if !self.search_active => {
+                self.search_active = true;
+                self.filter.clear();
+            }
+            Nav::Search => {} // already active, ignore
+        }
+    }
+
+    // ── Run ─────────────────────────────────────────────────────
+
+    async fn run(&mut self) -> anyhow::Result<()> {
         use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
         use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -118,10 +247,8 @@ impl TuiApp {
         let mut tick = tokio::time::interval(Duration::from_millis(POLL_MS));
         loop {
             tokio::select! {
-                _ = tick.tick() => { let _ = self.poll_new().await; }
-                result = self.handle_input() => {
-                    if result == Control::Quit { break; }
-                }
+                _ = tick.tick() => self.poll_new().await,
+                result = self.handle_input() => if result == Control::Quit { break; },
             }
             terminal.draw(|f| self.render(f))?;
         }
@@ -135,8 +262,6 @@ impl TuiApp {
         Ok(())
     }
 
-    // ── Input ──────────────────────────────────────────────────
-
     async fn handle_input(&mut self) -> Control {
         if !event::poll(Duration::from_millis(10)).ok().unwrap_or(false) {
             return Control::Continue;
@@ -148,136 +273,96 @@ impl TuiApp {
             return Control::Continue;
         }
 
-        if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-            return Control::Quit;
-        }
-
         if self.search_active {
-            self.handle_search_input(key.code);
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.search_active = false,
+                KeyCode::Char(c) => self.filter.push(c),
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                }
+                _ => {}
+            }
             return Control::Continue;
         }
 
-        match key.code {
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.toggle_focus();
-            }
-            KeyCode::Esc | KeyCode::Left
-                if matches!(self.focus, Focus::Detail) && self.detail_seq.is_some() =>
-            {
-                self.close_detail()
-            }
-            KeyCode::Enter | KeyCode::Right => self.open_detail(),
-            KeyCode::Char('/') => {
-                self.search_active = true;
-                self.filter.clear();
-            }
-
-            // 列表导航
-            KeyCode::Up
-            | KeyCode::Char('k')
-            | KeyCode::Down
-            | KeyCode::Char('j')
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Char('g')
-            | KeyCode::Char('G')
-                if matches!(self.focus, Focus::List) =>
-            {
-                self.handle_list_input(key.code);
-            }
-
-            // 详情导航
-            KeyCode::Up
-            | KeyCode::Char('k')
-            | KeyCode::Down
-            | KeyCode::Char('j')
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-                if matches!(self.focus, Focus::Detail) =>
-            {
-                self.handle_detail_input(key.code);
-            }
-
-            // Ctrl+U/D
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match self.focus {
-                    Focus::List => {
-                        self.selected = self.selected.saturating_sub(CTRL_STEP);
-                        self.clamp_list_offset();
-                    }
-                    Focus::Detail => {
-                        self.detail_scroll = self.detail_scroll.saturating_sub(CTRL_STEP as u16)
-                    }
-                }
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match self.focus {
-                    Focus::List => {
-                        self.selected =
-                            (self.selected + CTRL_STEP).min(self.events.len().saturating_sub(1));
-                        self.clamp_list_offset();
-                    }
-                    Focus::Detail => {
-                        let max = self.detail_text_lines().saturating_sub(1) as u16;
-                        self.detail_scroll = (self.detail_scroll + CTRL_STEP as u16).min(max);
-                    }
-                }
-            }
-            _ => {}
+        if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+            return Control::Quit;
         }
+
+        if let Some(nav) = Self::key_to_nav(key.code, key.modifiers, self.focus) {
+            self.apply_nav(nav);
+        }
+
         Control::Continue
     }
 
-    fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::List => Focus::Detail,
-            Focus::Detail => Focus::List,
-        };
-    }
-
-    fn open_detail(&mut self) {
-        if self.detail_seq.is_some() {
-            self.detail_layout = match self.detail_layout {
-                DetailLayout::Split => DetailLayout::Full,
-                DetailLayout::Full => DetailLayout::Split,
-            };
-        } else if !self.events.is_empty() {
-            self.detail_seq = Some(self.events[self.selected].seq);
-            self.detail_scroll = 0;
-            self.focus = Focus::Detail;
-        }
-    }
-
-    fn close_detail(&mut self) {
-        match self.detail_layout {
-            DetailLayout::Full => self.detail_layout = DetailLayout::Split,
-            DetailLayout::Split => {
-                self.detail_seq = None;
-                self.focus = Focus::List;
-                self.detail_scroll = 0;
-            }
-        }
-    }
-
-    // ── Render ─────────────────────────────────────────────────
+    // ── Render ──────────────────────────────────────────────────
 
     fn render(&mut self, f: &mut Frame) {
-        let [top, body, bot] = *Layout::vertical([
+        let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .split(f.area()) else {
+        .split(f.area());
+        let Some([top, body, bot]) = chunks.first_chunk::<3>() else {
             return;
         };
 
-        self.render_header(f, top);
-        self.render_body(f, body);
-        self.render_status(f, bot);
+        self.render_header(f, *top);
+        self.render_body(f, *body);
+        self.render_status(f, *bot);
 
         if self.search_active {
             self.render_search(f, f.area());
         }
+    }
+
+    fn render_header(&self, f: &mut Frame, area: Rect) {
+        let left = format!(
+            " hai {} {}events ",
+            self.chat_filter
+                .map(|c| format!("Chat {c:+}"))
+                .unwrap_or_default(),
+            self.events.len(),
+        );
+        let right = if !self.filter.is_empty() {
+            format!(" filter: {} ", self.filter)
+        } else {
+            String::new()
+        };
+
+        f.render_widget(
+            Line::from(vec![
+                Span::styled(left, Style::new().bold()),
+                Span::raw(" "),
+                Span::styled(right, Style::new().fg(Color::DarkGray).italic()),
+            ]),
+            area,
+        );
+    }
+
+    fn render_status(&self, f: &mut Frame, area: Rect) {
+        let label = match (self.focus, self.detail_seq.as_ref(), &self.detail_layout) {
+            (Focus::Detail, Some(_), DetailLayout::Full) => " detail fullscreen ",
+            (Focus::Detail, Some(_), DetailLayout::Split) => " detail ",
+            _ => " list ",
+        };
+        let follow = if self.follow { " G tail" } else { "" };
+        let nav = match self.focus {
+            Focus::List => format!("↑↓/PgUp/PgDn/Ctrl+U/D events{follow}"),
+            Focus::Detail => "↑↓/PgUp/PgDn scroll".into(),
+        };
+
+        f.render_widget(
+            Line::from(vec![
+                Span::styled(label, Style::new().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw("  "),
+                Span::styled(nav, Style::new().fg(Color::DarkGray)),
+                Span::raw("  Tab focus  Enter full  / search  q quit"),
+            ]),
+            area,
+        );
     }
 
     fn render_body(&mut self, f: &mut Frame, area: Rect) {
@@ -292,12 +377,150 @@ impl TuiApp {
 
         let chunks = Layout::horizontal([Constraint::Percentage(lp), Constraint::Percentage(dp)])
             .split(area);
+        let Some([lp_area, dp_area]) = chunks.first_chunk::<2>() else {
+            return;
+        };
+
         if lp > 0 {
-            self.render_list(f, chunks[0]);
+            self.render_list(f, *lp_area);
         }
         if dp > 0 {
-            self.render_detail(f, chunks[1]);
+            self.render_detail(f, *dp_area);
         }
+    }
+
+    fn render_list(&mut self, f: &mut Frame, area: Rect) {
+        let focus = match self.focus {
+            Focus::List => Color::White,
+            Focus::Detail => Color::DarkGray,
+        };
+
+        let block = Block::default()
+            .title(" events ")
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(focus));
+
+        self.list_vp_h = block.inner(area).height as usize;
+        let max_off = self.events.len().saturating_sub(self.list_vp_h);
+        self.list_offset = self.list_offset.min(max_off);
+
+        let items: Vec<ListItem> = self
+            .events
+            .iter()
+            .map(|e| {
+                let d = EventDisplay::from_event(e);
+                let (cr, cg, cb) = display::color_rgb(e);
+                ListItem::new(Line::from(Span::styled(
+                    format!(
+                        "#{:>5}  {}  {}  {}",
+                        e.seq,
+                        display::fmt_time(e.created_at),
+                        display::chat_display(e),
+                        d.one_liner
+                    ),
+                    Style::new().fg(Color::Rgb(cr, cg, cb)),
+                )))
+            })
+            .collect();
+
+        let mut state = ListState::default()
+            .with_offset(self.list_offset)
+            .with_selected(Some(self.selected));
+
+        f.render_stateful_widget(
+            List::new(items).block(block).highlight_style(
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Color::LightYellow)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            area,
+            &mut state,
+        );
+    }
+
+    fn clamp_list_offset(&mut self) {
+        if self.events.is_empty() || self.list_vp_h == 0 {
+            return;
+        }
+        let max_off = self.events.len().saturating_sub(self.list_vp_h);
+
+        if self.selected < self.list_offset {
+            self.list_offset = self.selected;
+        }
+        if self.selected >= self.list_offset + self.list_vp_h {
+            self.list_offset = self
+                .selected
+                .saturating_sub(self.list_vp_h.saturating_sub(1));
+        }
+        self.list_offset = self.list_offset.min(max_off);
+
+        let visual = self.selected - self.list_offset;
+        if visual < PADDING && self.list_offset > 0 {
+            self.list_offset = self.list_offset.saturating_sub(PADDING - visual);
+        }
+        if visual >= self.list_vp_h.saturating_sub(PADDING) {
+            let overshoot = visual.saturating_sub(self.list_vp_h.saturating_sub(PADDING + 1));
+            self.list_offset = (self.list_offset + overshoot).min(max_off);
+        }
+        self.list_offset = self.list_offset.min(max_off);
+    }
+
+    fn render_detail(&mut self, f: &mut Frame, area: Rect) {
+        let focus = match self.focus {
+            Focus::Detail => Color::White,
+            Focus::List => Color::DarkGray,
+        };
+
+        let block = Block::default()
+            .title(" detail ")
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(focus));
+
+        let text = self
+            .detail_event()
+            .map(|e| EventDisplay::from_event(e).detail_text.clone())
+            .unwrap_or_default();
+        let scroll_len: usize = text.lines().count().max(1);
+        let inner = block.inner(area);
+
+        f.render_widget(
+            Paragraph::new(Text::from(text))
+                .block(block)
+                .scroll((self.detail_scroll, 0))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+
+        let pos = (self.detail_scroll as usize).min(scroll_len.saturating_sub(1));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            inner,
+            &mut ScrollbarState::new(scroll_len).position(pos),
+        );
+    }
+
+    fn detail_event(&self) -> Option<&crate::domain::model::Event> {
+        self.detail_seq
+            .and_then(|seq| self.events.iter().find(|e| e.seq == seq))
+    }
+
+    fn detail_text_lines(&self) -> u16 {
+        self.detail_event()
+            .map(|e| EventDisplay::from_event(e).detail_text.lines().count() as u16)
+            .unwrap_or(0)
+    }
+
+    fn render_search(&self, f: &mut Frame, area: Rect) {
+        let popup = centered_rect(50, 3, area);
+        f.render_widget(
+            Paragraph::new(self.filter.as_str())
+                .block(Block::default().title(" search ").borders(Borders::ALL)),
+            popup,
+        );
+        f.set_cursor_position((popup.x + 1 + self.filter.len() as u16, popup.y + 1));
     }
 }
 
@@ -305,4 +528,33 @@ impl TuiApp {
 enum Control {
     Continue,
     Quit,
+}
+
+// ── Entry point ─────────────────────────────────────────────────
+
+pub async fn run_tui(
+    db: toasty::Db,
+    chat_filter: Option<i64>,
+    kind_filter: Option<String>,
+) -> anyhow::Result<()> {
+    TuiApp::new(db, chat_filter, kind_filter).run().await
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length((r.height * (100 - percent_y) / 200).max(1)),
+            Constraint::Length(percent_y),
+            Constraint::Length((r.height * (100 - percent_y) / 200).max(1)),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length((r.width * (100 - percent_x) / 200).max(1)),
+            Constraint::Length((r.width * percent_x / 100).max(1)),
+            Constraint::Length((r.width * (100 - percent_x) / 200).max(1)),
+        ])
+        .split(popup[1])[1]
 }

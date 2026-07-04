@@ -35,8 +35,8 @@ hai/src/
 │   │   ├── registry.rs      SessionManager（Sessions HashMap + lazy retain）
 │   │   ├── shell.rs         ShellRuntime（沙箱 shell）
 │   │   ├── event/           WakeEvent + AgentEvent + AgentEventBus
-│   │   │   ├── wake.rs
-│   │   │   └── bus.rs
+│   │   │   ├── wake.rs      WakeEvent + WakeReason
+│   │   │   └── bus.rs       AgentEventPayload（serde tagged enum）+ AgentEventBus
 │   │   └── session/         AgentSession（事件循环 + 调度器）
 │   │       ├── mod.rs        AgentSession 结构体 + SessionState 枚举
 │   │       ├── event_loop.rs  run() 主循环 + idle_tick + ActiveProcessing
@@ -98,6 +98,28 @@ Platform → SessionHandle.wake(WakeEvent)
 | Processing 完成 | `oneshot::Receiver` → `on_complete` | `oneshot::channel` |
 | 清理 | `on_complete` / Failed / Cancelled | `Inbox.drain()` → `scheduler.enqueue()` → Idle |
 | 状态查询 | `SessionHandle.status()` | `mpsc` + `oneshot` 响应 |
+
+## Agent 事件
+
+`AgentEventPayload` 是 serde tagged enum（`#[serde(tag = "event")]`），所有事件统一存在 `event` 表的 `payload` JSONB 列中。
+
+### 事件变体
+
+| 变体 | tag（JSON `event` 字段） | 说明 |
+|------|--------------------------|------|
+| `SessionCreated` | `session_created` | 会话创建 |
+| `WakeStarted` | `wake_started`（别名 `turn_started`） | 一次 processing 启动 |
+| `ContextBuilt` | `context_built` | prompt 构建完成 |
+| `ToolCall` | `tool_call` | 工具调用 |
+| `ToolCallResult` | `tool_call_result` | 工具返回结果 |
+| `RunCompleted` | `run_completed` | 一次 run 成功完成 |
+| `RunFailed` | `run_failed` | 一次 run 失败 |
+| `ModelRetry` | `model_retry` | 模型 retry（`reason` 字段区分 `text_without_tool` / `timeout_retry`） |
+| `Preempted` | `preempted` | run 期间 inbox 新事件注入 |
+| `SessionDone` | `session_done` | 会话结束 |
+
+- `chat_id` 作为字段嵌入每个变体（不在 DB 列级别独立存储）
+- `reason: ModelRetryReason` 是 `#[derive(IntoStaticStr, EnumString)]` 枚举，零分配序列化
 
 ## Session 事件流
 
@@ -187,7 +209,7 @@ MemoryKind { UserFact, Note, Knowledge }
 - `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`
 - nightly toolchain, edition 2024
 - 无 CI / 无 pre-commit
-- `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见
+- `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见；TUI 模块内部一律零 visibility 标记
 - 倾向 RAII 封装（`HeartbeatTask`、`ContainerGuard`）和语义封装
 - Service 直接调 toasty ORM，无 repo 层
 

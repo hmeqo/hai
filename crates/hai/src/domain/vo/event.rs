@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString, IntoStaticStr};
 
 use super::ChatId;
 
@@ -38,7 +39,7 @@ pub enum AgentEventPayload {
         summary: String,
         success: bool,
     },
-    TurnCompleted {
+    RunCompleted {
         chat_id: ChatId,
         turn: usize,
         tool_calls: usize,
@@ -49,4 +50,27 @@ pub enum AgentEventPayload {
         response: String,
         reasoning: Option<String>,
     },
+    ModelRetry {
+        chat_id: ChatId,
+        turn: usize,
+        reason: ModelRetryReason,
+    },
+    Preempted {
+        chat_id: ChatId,
+        turn: usize,
+    },
+    RunFailed {
+        chat_id: ChatId,
+        turn: usize,
+        elapsed_ms: u64,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Display, IntoStaticStr, EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ModelRetryReason {
+    TextWithoutTool,
+    TimeoutRetry,
 }

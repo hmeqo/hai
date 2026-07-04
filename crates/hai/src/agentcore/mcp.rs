@@ -155,13 +155,7 @@ impl McpServerHandle {
             return Ok(Value::Null);
         }
 
-        match serde_json::from_str(&text) {
-            Ok(v) => Ok(v),
-            Err(_) => {
-                tracing::warn!(text = %text.chars().take(200).collect::<String>(), "MCP response is not valid JSON, wrapping as string");
-                Ok(Value::String(text))
-            }
-        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
     }
 }
 

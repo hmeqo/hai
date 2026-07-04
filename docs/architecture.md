@@ -107,6 +107,27 @@ agent 工具调用:
   不经 agent 系统
 ```
 
+## 事件列表
+
+所有事件通过 `AgentEventPayload`（serde tagged enum）序列化到 `event.payload` JSONB 列。
+
+| 事件 | tag | 说明 |
+|------|-----|------|
+| `SessionCreated` | `session_created` | 会话创建 |
+| `WakeStarted` | `wake_started`（别名 `turn_started`） | processing 启动 |
+| `ContextBuilt` | `context_built` | prompt 构建完成 |
+| `ToolCall` | `tool_call` | 工具调用 |
+| `ToolCallResult` | `tool_call_result` | 工具返回结果 |
+| `RunCompleted` | `run_completed` | run 成功完成 |
+| `RunFailed` | `run_failed` | run 失败 |
+| `ModelRetry` | `model_retry` | 模型 retry（`reason`: `text_without_tool` / `timeout_retry`） |
+| `Preempted` | `preempted` | run 期间 inbox 新事件注入 |
+| `SessionDone` | `session_done` | 会话结束 |
+
+- `chat_id` 嵌入每个变体，无独立 DB 列
+- `ModelRetryReason` 用 `IntoStaticStr` + `EnumString`，零分配
+- `TurnCompleted` 已迁移为 `RunCompleted`
+
 ## Session 生命周期
 
 - `SessionManager` 在 `agent/runtime/registry.rs`，管理所有 `AgentSession` 的创建与清理
