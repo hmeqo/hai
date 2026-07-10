@@ -69,7 +69,7 @@ pub struct SentMessageMeta {
 /// 平台无关的 bot 能力抽象，由各平台实现。
 #[async_trait::async_trait]
 pub trait PlatformHandler: Debug + Send + Sync + 'static {
-    /// 发送文本消息
+    /// 发送消息
     async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta>;
     /// 发送语音消息
     async fn send_voice(&self, req: SendVoiceReq) -> Result<SentMessageMeta>;
@@ -97,14 +97,21 @@ pub struct BotHandle {
     pub bot_id: BotId,
     pub profile: BotProfile,
     pub handler: Arc<dyn PlatformHandler>,
+    pub rich_message: bool,
 }
 
 impl BotHandle {
-    pub fn new(bot_id: BotId, profile: BotProfile, handler: Arc<dyn PlatformHandler>) -> Self {
+    pub fn new(
+        bot_id: BotId,
+        profile: BotProfile,
+        handler: Arc<dyn PlatformHandler>,
+        rich_message: bool,
+    ) -> Self {
         Self {
             bot_id,
             profile,
             handler,
+            rich_message,
         }
     }
 

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,16 +28,33 @@ pub struct SendMessageArgs {
     pub replied_message_ids: Option<Vec<i64>>,
 }
 
-/// 发消息。
-#[hai_macros::tool]
 pub struct SendMessage {
     pub chat_id: ChatId,
     pub bot: BotHandle,
     pub services: DbServices,
 }
 
-impl SendMessage {
-    async fn exec(&self, args: SendMessageArgs) -> Result<Value, ToolError> {
+#[async_trait]
+impl AgentTool for SendMessage {
+    fn name(&self) -> &str {
+        "send_message"
+    }
+
+    fn description(&self) -> &str {
+        if self.bot.rich_message {
+            "发送消息，支持富文本"
+        } else {
+            "发送消息"
+        }
+    }
+
+    fn schema(&self) -> Option<Value> {
+        Some(serde_json::to_value(schemars::schema_for!(SendMessageArgs)).unwrap())
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+        let args: SendMessageArgs = serde_json::from_value(args)?;
+
         if let Some(ids) = &args.replied_message_ids {
             let msg_ids: Vec<crate::domain::vo::MessageId> = ids
                 .iter()

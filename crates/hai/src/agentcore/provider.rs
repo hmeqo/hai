@@ -1,11 +1,14 @@
-use genai::{Client, resolver::AuthData};
+use genai::{
+    Client, ServiceTarget,
+    resolver::{AuthData, Endpoint},
+};
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::{config::schema::ProviderConfig, error::Result};
+use crate::{config::provider_manager::ProviderEntry, error::Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
-pub enum ProviderBackend {
+pub enum Vendor {
     OpenRouter,
     OpenAI,
     Anthropic,
@@ -20,8 +23,8 @@ pub enum ProviderBackend {
     Requesty,
 }
 
-impl ProviderBackend {
-    pub fn default_base_url(&self) -> &'static str {
+impl Vendor {
+    pub(crate) fn default_base_url(&self) -> &'static str {
         match self {
             Self::OpenRouter => "https://openrouter.ai/api/v1",
             Self::OpenAI => "https://api.openai.com/v1",
@@ -38,7 +41,7 @@ impl ProviderBackend {
         }
     }
 
-    pub fn resolve_base_url(&self, override_url: Option<&str>) -> String {
+    pub(crate) fn resolve_base_url(&self, override_url: Option<&str>) -> String {
         override_url
             .map(String::from)
             .unwrap_or_else(|| self.default_base_url().to_string())
@@ -62,19 +65,23 @@ impl ProviderBackend {
     }
 }
 
-pub fn genai_model_name(provider: &ProviderBackend, model: &str) -> String {
-    let prefix = provider.genai_model_prefix();
+pub(crate) fn genai_model_name(entry: &ProviderEntry, model: &str) -> String {
+    let prefix = entry.vendor.genai_model_prefix();
     format!("{prefix}{model}")
 }
 
-/// 创建 genai Client 并配置 API key。
-/// 用 `AuthResolver` 而非 `set_var`，避免 unsafe。
-pub fn create_genai_client(provider_config: &ProviderConfig) -> Result<Client> {
-    let api_key = provider_config.api_key.clone().unwrap_or_default();
-    let client = Client::builder()
-        .with_auth_resolver_fn(move |_model_iden: genai::ModelIden| {
-            Ok(Some(AuthData::from_single(api_key.clone())))
-        })
-        .build();
-    Ok(client)
+pub(crate) fn create_genai_client(entry: &ProviderEntry) -> Result<Client> {
+    let api_key = entry.config.api_key.clone().unwrap_or_default();
+    let mut builder = Client::builder()
+        .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(api_key.clone()))));
+
+    if let Some(base_url) = &entry.config.base_url {
+        let url = base_url.clone();
+        builder = builder.with_service_target_resolver_fn(move |mut target: ServiceTarget| {
+            target.endpoint = Endpoint::from_owned(url.clone());
+            Ok(target)
+        });
+    }
+
+    Ok(builder.build())
 }

@@ -33,9 +33,14 @@ pub async fn spawn_bots(ctx: &AppContext, engine: &AgentEngine) -> Result<()> {
                     name: my_name.name,
                 };
 
-                let handler =
-                    TelegramPlatformHandler::new(bot.clone(), bot_account.id, ctx.clone());
-                let handle = BotHandle::new(bot_id.clone(), profile, Arc::new(handler));
+                let handler = TelegramPlatformHandler::new(
+                    bot.clone(),
+                    bot_account.id,
+                    ctx.clone(),
+                    resolved.rich_message,
+                );
+                let handle =
+                    BotHandle::new(bot_id.clone(), profile, Arc::new(handler), resolved.rich_message);
 
                 let dispatcher = TelegramDispatcher::new(
                     bot_id.clone(),

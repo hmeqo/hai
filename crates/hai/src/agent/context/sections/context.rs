@@ -11,7 +11,7 @@ use super::{
     topic::{topic_element, topic_element_static},
 };
 use crate::{
-    agent::{context::RenderContext, event::WakeEvent},
+    agent::{context::RenderContext, event::EventGroup},
     agentcore::render::{Format, Node, render_pretty},
     domain::{model::MessageStatus, vo::Source},
 };
@@ -42,29 +42,23 @@ pub(crate) fn render_context(ctx: &RenderContext, instruction: Node, root_tag: &
 }
 
 /// 构建 `<situation>` section（描述唤醒原因）
-pub fn build_situation_section(events: &[WakeEvent]) -> Node {
-    if events.is_empty() {
+pub fn build_situation_section(groups: &[EventGroup]) -> Node {
+    if groups.is_empty() {
         return Node::tag("situation");
     }
 
-    let mut children: Vec<Node> = Vec::new();
-    let mut i = 0;
-    while i < events.len() {
-        let label = events[i].reason.label();
-        let describe = events[i].reason.describe();
-        let mut count = 1;
-        while i + count < events.len() && events[i + count].reason.label() == label {
-            count += 1;
-        }
-        let mut node = Node::tag("trigger")
-            .attr("reason", label)
-            .child(Node::text(&describe));
-        if count > 1 {
-            node = node.attr("count", count.to_string());
-        }
-        children.push(node);
-        i += count;
-    }
+    let children: Vec<Node> = groups
+        .iter()
+        .map(|g| {
+            let mut n = Node::tag("trigger")
+                .attr("reason", g.label)
+                .child(Node::text(&g.describe));
+            if g.count > 1 {
+                n = n.attr("count", g.count.to_string());
+            }
+            n
+        })
+        .collect();
 
     Node::tag("situation").children(children)
 }

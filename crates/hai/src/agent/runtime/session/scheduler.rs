@@ -1,14 +1,14 @@
 use tokio::time::{Duration, Instant};
 
 use super::attention::{Heat, Window};
-use crate::agent::event::WakeEvent;
+use crate::agent::event::{WakeEvent, WakeEvents};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
 
 /// 调度器决策。
 pub enum Decision {
     /// 时机成熟，返回待派发的事件。
-    Ready(Vec<WakeEvent>),
+    Ready(WakeEvents),
     /// 时机未到（debounce / heat 没中），继续等。
     Defer,
     /// Session 闲置超时，该退出了。
@@ -17,7 +17,7 @@ pub enum Decision {
 
 /// 事件调度器——只做时机决策并持有待派发队列。
 pub struct EventScheduler {
-    queue: Vec<WakeEvent>,
+    queue: WakeEvents,
     heat: Heat,
     window: Window,
     debounce_until: Option<Instant>,
@@ -26,7 +26,7 @@ pub struct EventScheduler {
 impl EventScheduler {
     pub fn new(base_heat: f64, window_secs: f64) -> Self {
         Self {
-            queue: Vec::new(),
+            queue: WakeEvents::default(),
             heat: Heat::new(base_heat),
             window: Window::new(window_secs),
             debounce_until: None,
@@ -64,8 +64,8 @@ impl EventScheduler {
     }
 
     /// 将事件放入队列并更新调度状态。
-    pub fn enqueue(&mut self, events: Vec<WakeEvent>) {
-        for event in &events {
+    pub fn enqueue(&mut self, events: WakeEvents) {
+        for event in events.iter() {
             self.on_event(event);
         }
         self.queue.extend(events);
@@ -85,12 +85,12 @@ impl EventScheduler {
         self.refresh_heat();
 
         if self.window.is_active() {
-            return Decision::Ready(std::mem::take(&mut self.queue));
+            return Decision::Ready(self.queue.take());
         }
 
         if self.heat.value > 0.0 && rand::random::<f64>() < self.heat.value {
             self.heat.spend();
-            return Decision::Ready(std::mem::take(&mut self.queue));
+            return Decision::Ready(self.queue.take());
         }
 
         if let Some(close) = self.window.closes_at()
@@ -99,7 +99,7 @@ impl EventScheduler {
             return if self.queue.is_empty() {
                 Decision::Done
             } else {
-                Decision::Ready(std::mem::take(&mut self.queue))
+                Decision::Ready(self.queue.take())
             };
         }
 

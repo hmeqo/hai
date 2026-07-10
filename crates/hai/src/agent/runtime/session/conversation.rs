@@ -4,10 +4,10 @@ use uuid::Uuid;
 
 use super::super::{
     context::RunContext,
-    types::{Messages, ProcessingOutput, Turn},
+    types::{Messages, RunOutput, Turn},
 };
 use crate::{
-    agent::context,
+    agent::{context, runtime::session::prompt::RunInput},
     config::schema::ConversationMode,
     domain::{model::Message, vo::MessageId},
 };
@@ -20,7 +20,7 @@ pub(super) struct Conversation {
     pub last_turns: Vec<Turn>,
     pub prompt_tokens: u32,
     pub mode: ConversationMode,
-    turn_count: usize,
+    run_count: usize,
 }
 
 impl Conversation {
@@ -33,20 +33,24 @@ impl Conversation {
             last_turns: Vec::new(),
             prompt_tokens: 0,
             mode,
-            turn_count: 0,
+            run_count: 0,
         }
     }
 
-    pub fn update(&mut self, output: &ProcessingOutput) {
+    pub fn update(&mut self, output: &RunOutput) {
         self.messages = output.messages.clone();
         self.last_turns = output.turns.clone();
         self.prompt_tokens = output.prompt_tokens;
         self.since_id = output.since_id;
-        self.turn_count += 1;
+        self.run_count += 1;
     }
 
-    pub fn turn_count(&self) -> usize {
-        self.turn_count
+    pub fn run_count(&self) -> usize {
+        self.run_count
+    }
+
+    pub fn next_run_number(&self) -> usize {
+        self.run_count + 1
     }
 
     pub async fn next_prompt(
@@ -54,8 +58,8 @@ impl Conversation {
         ctx: &RunContext,
         messages: &[Message],
         next_since_id: MessageId,
-    ) -> Option<super::prompt::ProcessingPayload> {
-        let built = if self.turn_count > 0 {
+    ) -> Option<RunInput> {
+        let built = if self.run_count > 0 {
             context::build_next_run_prompt(
                 ctx,
                 messages,
@@ -79,7 +83,7 @@ impl Conversation {
 
         let mut full = self.messages.clone();
         full.extend(built.messages);
-        Some(super::prompt::ProcessingPayload {
+        Some(RunInput {
             messages: full,
             prompt: built.rendered_prompt,
             message_ids: built.message_ids.iter().map(|id| MessageId(*id)).collect(),

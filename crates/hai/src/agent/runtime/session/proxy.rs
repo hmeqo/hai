@@ -9,12 +9,12 @@ use self::super::scheduler::SchedulerStatus;
 use crate::{
     agent::{
         event::WakeEvent,
-        runtime::types::{Inbox, ProcessingOutput},
+        runtime::{event::Inbox, types::RunOutput},
     },
     domain::vo::ChatId,
 };
 
-pub(super) type ProcessingSignal = Option<ProcessingOutput>;
+pub(super) type RunSignal = Option<RunOutput>;
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,

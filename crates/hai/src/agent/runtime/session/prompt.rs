@@ -1,7 +1,7 @@
-//! 上下文构建：assemble_run + build_run_context + gather_messages + ProcessingPayload
+//! 上下文构建：assemble_run + build_run_context + gather_messages + RunInput
 
 use super::{
-    super::{context::RunContext, event::WakeEvent},
+    super::{context::RunContext, event::WakeEvents},
     AgentSession,
 };
 use crate::{
@@ -10,10 +10,10 @@ use crate::{
     error::Result,
 };
 
-// ── ProcessingPayload ─────────────────────────────────────────────────────
+// ── RunInput ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
-pub(super) struct ProcessingPayload {
+pub(super) struct RunInput {
     pub messages: Messages,
     pub prompt: String,
     pub message_ids: Vec<MessageId>,
@@ -23,7 +23,7 @@ pub(super) struct ProcessingPayload {
 // ── 上下文构建 ─────────────────────────────────────────────────────────────
 
 impl AgentSession {
-    pub(super) fn build_run_context(&self, events: Vec<WakeEvent>) -> RunContext {
+    pub(super) fn build_run_context(&self, events: WakeEvents) -> RunContext {
         RunContext {
             app: self.engine.app.clone(),
             chat_id: self.chat_id,
@@ -43,7 +43,7 @@ impl AgentSession {
         let cfg = &self.engine.app.cfg.agent.context;
         let srv = &self.engine.app.db.srv.message;
 
-        if self.conversation.turn_count() == 0 {
+        if self.conversation.run_count() == 0 {
             let (msgs, last_id) = srv
                 .get_context_messages(self.chat_id, cfg.history_cap, 10)
                 .await?;
@@ -60,8 +60,8 @@ impl AgentSession {
 
     pub(super) async fn assemble_run(
         &mut self,
-        events: Vec<WakeEvent>,
-    ) -> Option<(RunContext, ProcessingPayload)> {
+        events: WakeEvents,
+    ) -> Option<(RunContext, RunInput)> {
         let ctx = self.build_run_context(events);
         let (messages, next_since_id) = self.gather_messages().await.ok()?;
 

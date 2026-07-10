@@ -8,5 +8,5 @@ pub mod shell;
 pub mod types;
 
 pub use engine::AgentEngine;
-pub use event::{AgentEvent, AgentEventBus};
+pub use event::AgentEventBus;
 pub use session::SessionHandle;

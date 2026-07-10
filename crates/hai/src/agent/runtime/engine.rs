@@ -30,9 +30,9 @@ impl AgentEngine {
 
         let provider = app.provider.get_checked(&cfg.agent.provider)?;
 
-        let client = provider::create_genai_client(&provider.config)?;
+        let client = provider::create_genai_client(provider)?;
 
-        let model = provider::genai_model_name(&provider.backend, &cfg.agent.model);
+        let model = provider::genai_model_name(provider, &cfg.agent.model);
 
         Ok(Self(Arc::new(AgentEngineInner {
             app,

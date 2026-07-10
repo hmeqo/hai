@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 
 use super::shell::ShellRuntime;
 use crate::{
-    agent::{event::WakeEvent, link::BotHandle, multimodal::MultimodalService},
+    agent::{event::WakeEvents, link::BotHandle, multimodal::MultimodalService},
     agentcore::skills::SkillManager,
     app::AppContext,
     domain::{model::ChatType, service::DbServices, vo::ChatId},
@@ -16,7 +16,7 @@ pub struct RunContext {
     pub chat_id: ChatId,
     pub chat_type: ChatType,
     pub bot: BotHandle,
-    pub events: Vec<WakeEvent>,
+    pub events: WakeEvents,
     pub skill_manager: SkillManager,
     pub db: DbServices,
     pub shell: Arc<Mutex<ShellRuntime>>,

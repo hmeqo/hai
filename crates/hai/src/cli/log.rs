@@ -45,7 +45,10 @@ async fn show_detail(seq: i64, db: &toasty::Db) -> crate::error::Result<()> {
         return Ok(());
     };
 
-    let d = EventDisplay::from_event(&event);
+    let Some(d) = EventDisplay::from_event(&event) else {
+        eprintln!("Event #{seq}: unable to deserialize");
+        return Ok(());
+    };
     println!(
         "{}  {}  {}",
         display::fmt_time(event.created_at),

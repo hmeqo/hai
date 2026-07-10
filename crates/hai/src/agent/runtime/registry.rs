@@ -5,7 +5,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{AgentEngine, session::SessionHandle, shell::ShellRuntime, types::Inbox};
+use super::{AgentEngine, event::Inbox, session::SessionHandle, shell::ShellRuntime};
 use crate::{agent::link::BotHandle, domain::vo::ChatId};
 
 pub struct SessionManager {

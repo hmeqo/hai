@@ -11,10 +11,10 @@ use std::sync::Arc;
 pub use proxy::SessionHandle;
 use tokio::{sync::Mutex, time::Duration};
 
-use self::{conversation::Conversation, event_loop::ActiveProcessing, scheduler::EventScheduler};
+use self::{conversation::Conversation, event_loop::ActiveRun, scheduler::EventScheduler};
 use super::{AgentEngine, shell::ShellRuntime};
 use crate::{
-    agent::{link::BotHandle, runtime::AgentEvent},
+    agent::link::BotHandle,
     domain::{
         model::ChatType,
         vo::{AttachmentParser, ChatId},
@@ -26,7 +26,7 @@ use crate::{
 
 enum SessionState {
     Idle,
-    Active(ActiveProcessing),
+    Active(ActiveRun),
 }
 
 impl SessionState {
@@ -86,15 +86,6 @@ impl AgentSession {
 
         let conversation =
             Conversation::new(engine.app.cfg.agent.context.conversation_mode.clone());
-
-        let mode = conversation.mode.label().to_string();
-        let model = engine.app.cfg.agent.model.clone();
-
-        engine.app.event_bus.emit(AgentEvent::SessionCreated {
-            chat_id,
-            mode,
-            model,
-        });
 
         Ok(Self {
             schedule: EventScheduler::new(base_heat, window_secs),

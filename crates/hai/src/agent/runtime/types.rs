@@ -1,11 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use genai::chat::ChatMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Notify;
 
-use crate::{agent::event::WakeEvent, domain::vo::MessageId};
+use crate::domain::vo::MessageId;
 
 /// 工具调用的执行结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +43,7 @@ pub struct Turn {
     pub reasoning: Option<String>,
 }
 
-/// CoW 消息容器。沿整条 processing 链路共享，clone = Arc bump。
+/// CoW 消息容器。沿整条 run 链路共享，clone = Arc bump。
 #[derive(Clone)]
 pub struct Messages(Arc<Vec<ChatMessage>>);
 
@@ -70,47 +69,11 @@ impl Messages {
     }
 }
 
-/// Processing 结束后返回给 session 的数据。
-pub struct ProcessingOutput {
+/// Run 结束后返回给 session 的数据。
+pub struct RunOutput {
     pub messages: Messages,
     pub turns: Vec<Turn>,
     pub prompt_tokens: u32,
     pub since_id: MessageId,
     pub has_spoken: bool,
-}
-
-// ─── Inbox ────────────────────────────────────────────────────────────────
-
-/// 事件信箱。外部推入、内部取出。
-/// Session 持有并下放 clone 给 Processing Task。
-#[derive(Clone)]
-pub struct Inbox {
-    events: Arc<Mutex<Vec<WakeEvent>>>,
-    notify: Arc<Notify>,
-}
-
-impl Inbox {
-    pub fn new() -> Self {
-        Self {
-            events: Arc::new(Mutex::new(Vec::new())),
-            notify: Arc::new(Notify::new()),
-        }
-    }
-
-    pub fn push(&self, event: WakeEvent) {
-        self.events.lock().unwrap().push(event);
-        self.notify.notify_one();
-    }
-
-    pub fn drain(&self) -> Vec<WakeEvent> {
-        std::mem::take(&mut *self.events.lock().unwrap())
-    }
-
-    pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
-        self.notify.notified()
-    }
-
-    pub fn len(&self) -> usize {
-        self.events.lock().unwrap().len()
-    }
 }

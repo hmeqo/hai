@@ -110,3 +110,83 @@ impl WakeEvent {
         Self(Arc::new(WakeEventInner { reason }))
     }
 }
+
+// ── WakeEvents ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct WakeEvents(Vec<WakeEvent>);
+
+impl WakeEvents {
+    pub fn new(events: Vec<WakeEvent>) -> Self {
+        Self(events)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, WakeEvent> {
+        self.0.iter()
+    }
+
+    pub fn first(&self) -> Option<&WakeEvent> {
+        self.0.first()
+    }
+
+    pub fn into_vec(self) -> Vec<WakeEvent> {
+        self.0
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.0.extend(other.0)
+    }
+
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = WakeEvent> {
+        self.0.into_iter()
+    }
+
+    pub fn coalesce(&self) -> Vec<EventGroup> {
+        let mut groups = Vec::new();
+        let mut i = 0;
+        while i < self.0.len() {
+            let label = self.0[i].reason.label();
+            let describe = self.0[i].reason.describe();
+            let mut count = 1;
+            while i + count < self.0.len() && self.0[i + count].reason == self.0[i].reason {
+                count += 1;
+            }
+            groups.push(EventGroup {
+                label,
+                describe,
+                count,
+            });
+            i += count;
+        }
+        groups
+    }
+}
+
+#[derive(Debug)]
+pub struct EventGroup {
+    pub label: &'static str,
+    pub describe: String,
+    pub count: usize,
+}
+
+pub trait EventGroupSlice {
+    fn reasons_summary(&self) -> String;
+}
+
+impl EventGroupSlice for [EventGroup] {
+    fn reasons_summary(&self) -> String {
+        self.iter().map(|g| g.label).collect::<Vec<_>>().join(", ")
+    }
+}

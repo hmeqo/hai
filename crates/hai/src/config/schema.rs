@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -6,7 +6,6 @@ use struct_patch::Patch;
 use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
 use crate::{
-    agentcore::provider::ProviderBackend,
     config::{PathResolver, meta::AGENT_NAME},
     error::{AppResultExt, ErrorKind, Result},
 };
@@ -153,14 +152,7 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
-            group_prompt: "\
-群里你就是一个普通群友。
-
-一桌子人在聊天，有想法就接话，没什么特别的要说就听着，这不奇怪。
-不用每条消息都回应——现实中也不会这样。
-别人聊得正起劲的时候，别硬插进去打断。
-"
-            .into(),
+            group_prompt: "这是群聊，你是有自己的人格的普通群友，默认行为模式按人格模型来，没什么事就保持沉默。".into(),
             private_prompt: String::new(),
             message_history_limit: 10,
             history_cap: 100,
@@ -413,6 +405,13 @@ pub struct BotConfigRaw {
     pub bot_type: Option<String>,
     pub bot_token: Option<String>,
     pub allowed_chat_ids: Option<Vec<i64>>,
+    /// 启用 sendRichMessage（默认 true）
+    #[serde(default = "default_true")]
+    pub rich_message: Option<bool>,
+}
+
+fn default_true() -> Option<bool> {
+    Some(true)
 }
 
 /// 单个 provider 的配置
@@ -524,38 +523,6 @@ impl LoggingConfig {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Internal Derived Types
-//   非反序列化配置，由系统运行时从原始配置解析生成。
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// 解析后的 provider 信息（包含 backend、base_url、api_key）
-#[derive(Debug, Clone)]
-pub struct ResolvedProvider {
-    pub name: String,
-    pub config: Arc<ProviderConfig>,
-    pub backend: ProviderBackend,
-    pub base_url: String,
-}
-
-impl ResolvedProvider {
-    /// 获取有效的 type（优先使用配置中的 type，否则使用 key 名称）
-    pub fn effective_type(&self) -> &str {
-        self.config.r#type.as_deref().unwrap_or(&self.name)
-    }
-
-    pub fn base_url(&self) -> &str {
-        self.config
-            .base_url
-            .as_deref()
-            .unwrap_or_else(|| self.backend.default_base_url())
-    }
-
-    pub fn override_base_url(&self) -> Option<&str> {
-        self.config.base_url.as_deref()
-    }
-}
-
 /// 解析后的 bot 配置
 #[derive(Debug, Clone)]
 pub struct BotConfig {
@@ -563,6 +530,7 @@ pub struct BotConfig {
     pub platform: BotPlatform,
     pub bot_token: String,
     pub allowed_chat_ids: Vec<i64>,
+    pub rich_message: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, EnumIter, EnumString, IntoStaticStr)]
@@ -590,6 +558,7 @@ impl BotConfig {
             platform,
             bot_token: raw.bot_token.clone().unwrap_or_default(),
             allowed_chat_ids: raw.allowed_chat_ids.clone().unwrap_or_default(),
+            rich_message: raw.rich_message.unwrap_or(true),
         })
     }
 

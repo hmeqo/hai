@@ -1,4 +1,9 @@
-use crate::domain::{model::Event, vo::AgentEventPayload};
+use serde_json::Value;
+
+use crate::domain::{
+    model::Event,
+    vo::{AgentEvent, AgentEventPayload},
+};
 
 // ── EventDisplay ───────────────────────────────────────────────────────────────
 
@@ -9,38 +14,38 @@ pub(super) struct EventDisplay {
 }
 
 impl EventDisplay {
-    pub fn from_event(event: &Event) -> Self {
-        let ae: AgentEventPayload =
-            serde_json::from_value(event.payload.0.clone()).unwrap_or_else(|_| fallback());
-        let tag = tag_for_kind(&ae);
+    pub fn from_event(event: &Event) -> Option<Self> {
+        let ae: AgentEvent = serde_json::from_value(event.payload.0.clone()).ok()?;
+        let payload = &ae.payload;
+        let tag = tag_for_kind(payload);
 
-        let one_liner = match &ae {
-            AgentEventPayload::RunFailed { turn, error, .. } => {
+        let one_liner = match payload {
+            AgentEventPayload::RunFailed { run, error, .. } => {
                 let preview: String = error.chars().take(60).collect();
-                format!("FAIL   {turn}  {preview}")
+                format!("FAIL   {run}  {preview}")
             }
-            AgentEventPayload::Preempted { turn, .. } => {
-                format!("PREEMPT  {turn}")
+            AgentEventPayload::Preempted { run, .. } => {
+                format!("PREEMPT  {run}")
             }
-            AgentEventPayload::ModelRetry { turn, reason, .. } => {
-                format!("RETRY  {turn}  {reason}")
+            AgentEventPayload::ModelRetry { run, reason, .. } => {
+                format!("RETRY  {run}  {reason}")
             }
-            AgentEventPayload::WakeStarted { turn, reason, .. } => {
-                format!("WAKE   {turn}  {reason}")
-            }
-            AgentEventPayload::ContextBuilt {
-                turn, msg_count, ..
+            AgentEventPayload::RunStarted {
+                run,
+                reason,
+                msg_count,
+                ..
             } => {
-                format!("CTX    {turn}  msgs:{msg_count}")
+                format!("RUN    {run}  {reason}  msgs:{msg_count}")
             }
             AgentEventPayload::ToolCall {
-                turn, tool, args, ..
+                run, tool, args, ..
             } => {
                 let preview: String = args.chars().take(40).collect();
-                format!("TOOL   {turn}  {tool}({preview})")
+                format!("TOOL   {run}  {tool}({preview})")
             }
             AgentEventPayload::ToolCallResult {
-                turn,
+                run,
                 tool,
                 summary,
                 success,
@@ -48,13 +53,13 @@ impl EventDisplay {
             } => {
                 let preview: String = summary.chars().take(40).collect();
                 format!(
-                    "TOOL   {turn}  {tool}  {}  {}",
+                    "TOOL   {run}  {tool}  {}  {}",
                     preview,
                     if *success { "✓" } else { "✗" }
                 )
             }
             AgentEventPayload::RunCompleted {
-                turn,
+                output,
                 tool_calls,
                 elapsed_ms,
                 prompt_tokens,
@@ -62,40 +67,67 @@ impl EventDisplay {
                 ..
             } => {
                 format!(
-                    "DONE   {turn}  {tool_calls}tools  {:.1}s  {prompt_tokens}/{completion_tokens}tok",
+                    "DONE   {}  {tool_calls}tools  {:.1}s  {prompt_tokens}/{completion_tokens}tok",
+                    output.run,
                     *elapsed_ms as f64 / 1000.0
                 )
             }
-            AgentEventPayload::SessionCreated { mode, model, .. } => {
-                format!("SESS   created  {mode}  {model}")
+            AgentEventPayload::TurnCompleted(tc) => {
+                format!("TURN   {}.{}", tc.run, tc.turn)
             }
-            AgentEventPayload::SessionDone { .. } => "SESS   done".to_string(),
         };
 
-        let detail_text = build_detail(event, &ae);
+        let detail_text = build_detail(event, payload);
 
-        Self {
+        Some(Self {
             tag,
             one_liner,
             detail_text,
-        }
+        })
     }
 }
 
-fn fallback() -> AgentEventPayload {
-    AgentEventPayload::SessionDone { chat_id: 0.into() }
-}
-
-fn tag_for_kind(ae: &AgentEventPayload) -> &'static str {
-    match ae {
-        AgentEventPayload::SessionCreated { .. } | AgentEventPayload::SessionDone { .. } => "SESS",
-        AgentEventPayload::WakeStarted { .. } => "WAKE",
-        AgentEventPayload::ContextBuilt { .. } => "CTX",
+fn tag_for_kind(payload: &AgentEventPayload) -> &'static str {
+    match payload {
+        AgentEventPayload::RunStarted { .. } => "RUN",
         AgentEventPayload::ToolCall { .. } | AgentEventPayload::ToolCallResult { .. } => "TOOL",
+        AgentEventPayload::TurnCompleted(..) => "TURN",
         AgentEventPayload::RunCompleted { .. } => "DONE",
         AgentEventPayload::ModelRetry { .. } => "RETRY",
         AgentEventPayload::RunFailed { .. } => "FAIL",
         AgentEventPayload::Preempted { .. } => "PREEMPT",
+    }
+}
+
+// ── Detail Builder ─────────────────────────────────────────────────────────────
+
+struct Detail {
+    buf: String,
+}
+
+impl Detail {
+    fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    fn field(&mut self, label: &str, value: impl std::fmt::Display) {
+        use std::fmt::Write;
+        write!(self.buf, "\n  {label}:  {value}").unwrap();
+    }
+
+    fn block(&mut self, label: &str, body: &str) {
+        self.buf.push_str(&format!("\n  {label}:"));
+        for line in body.lines() {
+            self.buf.push_str(&format!("\n  {line}"));
+        }
+    }
+
+    fn dump(&mut self, title: &str, body: &str) {
+        self.buf.push_str(&format!("\n\n{title}:\n{body}"));
+    }
+
+    fn build(self) -> String {
+        self.buf
     }
 }
 
@@ -108,42 +140,61 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
         tag_for_kind(ae)
     );
 
-    let body = match ae {
-        AgentEventPayload::Preempted { turn, .. } => {
-            format!("\n  Turn:   {turn}")
-        }
-        AgentEventPayload::RunFailed {
-            turn,
-            elapsed_ms,
-            error,
-            ..
-        } => {
-            format!(
-                "\n  Turn:     {turn}\n  Duration: {:.1}s\n  Error:    {error}",
-                *elapsed_ms as f64 / 1000.0
-            )
-        }
-        AgentEventPayload::ModelRetry { turn, reason, .. } => {
-            format!("\n  Turn:   {turn}\n  Reason: {reason}")
-        }
-        AgentEventPayload::ContextBuilt {
+    let mut d = Detail::new();
+
+    match ae {
+        AgentEventPayload::RunStarted {
+            run,
+            reason,
             msg_count,
             full_prompt,
             ..
         } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Messages:  {msg_count}"));
-            b.push_str(&format!(
-                "\n\nFull Prompt ({} tokens):\n{full_prompt}",
-                estimate_tokens(full_prompt)
-            ));
-            b
+            d.field("Run", run);
+            d.field("Reason", reason);
+            d.field("Messages", msg_count);
+            if !full_prompt.is_empty() {
+                d.dump("Prompt", &display_json_value(full_prompt));
+            }
+        }
+        AgentEventPayload::Preempted {
+            run,
+            count,
+            reasons,
+            content,
+            ..
+        } => {
+            d.field("Run", run);
+            d.field("Events", count);
+            d.field("Reasons", reasons);
+            if !content.is_empty() {
+                d.block("Injected", content);
+            }
+        }
+        AgentEventPayload::RunFailed {
+            run,
+            elapsed_ms,
+            error,
+            ..
+        } => {
+            d.field("Run", run);
+            d.field("Duration", format!("{:.1}s", *elapsed_ms as f64 / 1000.0));
+            d.field("Error", error);
+        }
+        AgentEventPayload::ModelRetry { run, reason, .. } => {
+            d.field("Run", run);
+            d.field("Reason", reason);
+        }
+        AgentEventPayload::TurnCompleted(tc) => {
+            d.field("Turn", format!("{}.{}", tc.run, tc.turn));
+            if let Some(rs) = &tc.reasoning {
+                d.block("Thinking", rs);
+            }
+            d.block("Response", &tc.response);
         }
         AgentEventPayload::ToolCall { tool, args, .. } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Tool:  {tool}"));
-            b.push_str(&format!("\n\nArguments:\n  {args}"));
-            b
+            d.field("Tool", tool);
+            d.block("Arguments", &display_json_value(args));
         }
         AgentEventPayload::ToolCallResult {
             tool,
@@ -151,57 +202,46 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
             success,
             ..
         } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Tool:   {tool}"));
-            b.push_str(&format!("\n  Result: {summary}"));
-            b.push_str(&format!("\n  Status: {}", if *success { "✓" } else { "✗" }));
-            b
+            d.field("Tool", tool);
+            d.block("Result", &display_json_value(summary));
+            d.field("Status", if *success { "✓" } else { "✗" });
         }
         AgentEventPayload::RunCompleted {
+            output,
             tool_calls,
             elapsed_ms,
             prompt_tokens,
             completion_tokens,
-            response,
-            reasoning,
             ..
         } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Tool Calls:  {tool_calls}"));
-            b.push_str(&format!(
-                "\n  Duration:    {:.1}s",
-                *elapsed_ms as f64 / 1000.0
-            ));
-            if let Some(rs) = reasoning.as_ref().filter(|s| !s.is_empty()) {
-                b.push_str(&format!("\n  Thinking:    {rs}"));
+            d.field("Turn", format!("{}.{}", output.run, output.turn));
+            if let Some(rs) = &output.reasoning {
+                d.block("Thinking", rs);
             }
-            if !response.is_empty() {
-                b.push_str(&format!("\n  Response:    {response}"));
+            if !output.response.is_empty() {
+                d.block("Response", &output.response);
             }
-            b.push_str(&format!(
-                "\n  Tokens:      {prompt_tokens} (prompt) + {completion_tokens} (completion)"
-            ));
-            b
+            d.field("Tool Calls", tool_calls);
+            d.field("Duration", format!("{:.1}s", *elapsed_ms as f64 / 1000.0));
+            d.field(
+                "Tokens",
+                format!("{prompt_tokens} (prompt) + {completion_tokens} (completion)"),
+            );
         }
-        AgentEventPayload::WakeStarted { turn, reason, .. } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Turn:   {turn}"));
-            b.push_str(&format!("\n  Reason: {reason}"));
-            b
-        }
-        AgentEventPayload::SessionCreated { mode, model, .. } => {
-            let mut b = String::new();
-            b.push_str(&format!("\n  Mode:   {mode}"));
-            b.push_str(&format!("\n  Model:  {model}"));
-            b
-        }
-        AgentEventPayload::SessionDone { .. } => String::new(),
-    };
+    }
 
-    format!("{header}{body}")
+    format!("{header}{}", d.build())
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
+
+fn display_json_value(s: &str) -> String {
+    match serde_json::from_str::<Value>(s) {
+        Ok(Value::String(s)) => s,
+        Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
+        Err(_) => s.to_string(),
+    }
+}
 
 pub(super) fn fmt_time(ts: jiff::Timestamp) -> String {
     let zoned = ts.to_zoned(jiff::tz::TimeZone::system());
@@ -209,41 +249,30 @@ pub(super) fn fmt_time(ts: jiff::Timestamp) -> String {
 }
 
 pub(super) fn chat_display(event: &Event) -> String {
-    let ae: AgentEventPayload = match serde_json::from_value(event.payload.0.clone()) {
+    let ae: AgentEvent = match serde_json::from_value(event.payload.0.clone()) {
         Ok(ae) => ae,
         Err(_) => return String::new(),
     };
-    match ae.chat_id() {
-        Some(id) => format!("{:+}", id),
-        None => String::new(),
-    }
-}
-
-fn estimate_tokens(s: &str) -> usize {
-    s.len() / 4
+    format!("{:+}", ae.chat_id)
 }
 
 // ── 颜色映射 ─────────────────────────────────────────────────────────────
 
 pub(super) fn color_rgb(event: &Event) -> (u8, u8, u8) {
-    let ae: AgentEventPayload = match serde_json::from_value(event.payload.0.clone()) {
+    let ae: AgentEvent = match serde_json::from_value(event.payload.0.clone()) {
         Ok(ae) => ae,
         Err(_) => return (156, 163, 175),
     };
-    match &ae {
+    match &ae.payload {
         AgentEventPayload::RunFailed { .. } => (239, 68, 68),
         AgentEventPayload::Preempted { .. } => (250, 176, 5),
         AgentEventPayload::ModelRetry { .. } => (250, 176, 5),
+        AgentEventPayload::TurnCompleted(..) => (56, 189, 248),
+        AgentEventPayload::RunStarted { .. } => (234, 179, 8),
         AgentEventPayload::ToolCall { .. } => (59, 130, 246),
         AgentEventPayload::ToolCallResult { success, .. } if !success => (239, 68, 68),
         AgentEventPayload::ToolCallResult { .. } => (34, 197, 94),
         AgentEventPayload::RunCompleted { .. } => (255, 255, 255),
-        AgentEventPayload::WakeStarted { .. } | AgentEventPayload::ContextBuilt { .. } => {
-            (234, 179, 8)
-        }
-        AgentEventPayload::SessionCreated { .. } | AgentEventPayload::SessionDone { .. } => {
-            (107, 114, 128)
-        }
     }
 }
 
@@ -295,12 +324,12 @@ fn filter_in_rust(raw: Vec<Event>, chat_id: Option<i64>, event_kind: Option<&str
     }
     raw.into_iter()
         .filter(|e| {
-            let ae: AgentEventPayload = match serde_json::from_value(e.payload.0.clone()) {
+            let ae: AgentEvent = match serde_json::from_value(e.payload.0.clone()) {
                 Ok(ae) => ae,
                 Err(_) => return false,
             };
-            let chat_ok = chat_id.is_none_or(|cid| ae.chat_id() == Some(cid));
-            let kind_ok = event_kind.is_none_or(|k| ae.kind() == k);
+            let chat_ok = chat_id.is_none_or(|cid| ae.chat_id.0 == cid);
+            let kind_ok = event_kind.is_none_or(|k| ae.payload.kind() == k);
             chat_ok && kind_ok
         })
         .collect()

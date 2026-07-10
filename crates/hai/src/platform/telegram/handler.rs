@@ -27,21 +27,26 @@ use crate::{
 
 pub struct TelegramPlatformHandlerInner {
     bot: Bot,
+    srv: TelegramService,
     account_id: i64,
     ctx: AppContext,
     media: TelegramMediaAnalyzer,
+    rich_message: bool,
 }
 
 #[derive(Clone, Deref)]
 pub struct TelegramPlatformHandler(Arc<TelegramPlatformHandlerInner>);
 
 impl TelegramPlatformHandler {
-    pub fn new(bot: Bot, account_id: i64, ctx: AppContext) -> Self {
+    pub fn new(bot: Bot, account_id: i64, ctx: AppContext, rich_message: bool) -> Self {
+        let srv = TelegramService::new(bot.clone());
         Self(Arc::new(TelegramPlatformHandlerInner {
-            media: TelegramMediaAnalyzer::new(TelegramService::new(bot.clone()), ctx.clone()),
+            media: TelegramMediaAnalyzer::new(srv.clone(), ctx.clone()),
+            srv,
             bot,
             account_id,
             ctx,
+            rich_message,
         }))
     }
 
@@ -120,6 +125,26 @@ impl TelegramPlatformHandler {
             }
         }
     }
+
+    /// 优先 sendRichMessage，失败降级 MarkdownV2 → 纯文本
+    async fn send_with_rich_fallback(
+        &self,
+        content: &str,
+        cid: teloxide::types::ChatId,
+        reply_params: &Option<ReplyParameters>,
+    ) -> Result<teloxide::types::Message> {
+        match self
+            .srv
+            .send_rich_message(cid.0, content, reply_params.as_ref())
+            .await
+        {
+            Ok(msg) => Ok(msg),
+            Err(_) => {
+                self.send_with_markdown_fallback(content, cid, reply_params)
+                    .await
+            }
+        }
+    }
 }
 
 impl fmt::Debug for TelegramPlatformHandler {
@@ -136,9 +161,11 @@ impl PlatformHandler for TelegramPlatformHandler {
             .resolve_reply_parameters(req.platform_reply_to_id)
             .await?;
 
-        let sent_msg = self
-            .send_with_markdown_fallback(&req.content, cid, &reply_params)
-            .await?;
+        let sent_msg = if self.rich_message {
+            self.send_with_rich_fallback(&req.content, cid, &reply_params).await?
+        } else {
+            self.send_with_markdown_fallback(&req.content, cid, &reply_params).await?
+        };
 
         let content = serde_json::to_value(vec![TelegramContentPart::Text { text: req.content }])?;
         self.persist_message(

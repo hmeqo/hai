@@ -9,19 +9,24 @@ use genai::{
 };
 
 use super::{
-    AgentEvent,
-    types::{Inbox, Messages, ToolCallResult, Turn},
+    event::Inbox,
+    types::{Messages, ToolCallResult, Turn},
 };
 use crate::{
-    agent::context::build_situation_section,
+    agent::{
+        context::build_situation_section,
+        event::EventGroupSlice,
+        node::main::build_react_config,
+        runtime::{context::RunContext, engine::AgentEngine},
+    },
     agentcore::{
         render::{Format, render_pretty},
         tool::{AgentTool, ToolError},
     },
-    domain::vo::{ChatId, ModelRetryReason},
+    domain::vo::{AgentEventPayload, ChatId, ModelRetryReason, TurnOutput},
 };
 
-const DIRECT_OUTPUT_ERROR: &str = "Error: direct text output is not allowed. You must use send_message or send_voice to speak. If you want to end silently, call done alone.";
+const DIRECT_OUTPUT_ERROR: &str = "Error: direct output is not allowed. Use send_message / send_voice to reply, or done to end.";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -54,7 +59,7 @@ pub(crate) struct ReactLoopOutput {
     pub completion_tokens: u32,
 }
 
-/// 单次 processing 运行所需的全部数据。
+/// 单次 run 所需的全部数据。
 pub(crate) struct ReactRun {
     pub client: Client,
     pub model: String,
@@ -64,7 +69,29 @@ pub(crate) struct ReactRun {
     pub preempt: bool,
     pub event_bus: super::AgentEventBus,
     pub chat_id: ChatId,
-    pub outer_turn: usize,
+    pub run_number: usize,
+}
+
+impl ReactRun {
+    pub(crate) fn new(
+        engine: &AgentEngine,
+        ctx: &RunContext,
+        messages: Messages,
+        inbox: Inbox,
+        run_number: usize,
+    ) -> Self {
+        Self {
+            client: engine.client.clone(),
+            model: engine.model.clone(),
+            messages,
+            config: build_react_config(engine, ctx.chat_type),
+            inbox,
+            preempt: engine.app.cfg.agent.context.preempt,
+            event_bus: engine.app.event_bus.clone(),
+            chat_id: ctx.chat_id,
+            run_number,
+        }
+    }
 }
 
 // ── React Loop ────────────────────────────────────────────────────────────────
@@ -75,6 +102,7 @@ pub(crate) async fn run_react_loop(
     tools: Vec<Arc<dyn AgentTool>>,
 ) -> Result<ReactLoopOutput, ToolError> {
     let mut turns: Vec<Turn> = Vec::new();
+    let mut turn_index = 0;
     let mut prompt_tokens = 0u32;
     let genai_tools = prepare_genai_tools(&tools);
 
@@ -104,21 +132,25 @@ pub(crate) async fn run_react_loop(
         // ── 工具执行 ──
         let mut turn_tc: Vec<ToolCallResult> = Vec::new();
         for call in &active_calls {
-            run.event_bus.emit(AgentEvent::ToolCall {
-                chat_id: run.chat_id,
-                turn: run.outer_turn,
-                tool: call.fn_name.clone(),
-                args: call.fn_arguments.to_string(),
-            });
+            run.event_bus.emit(
+                run.chat_id,
+                AgentEventPayload::ToolCall {
+                    run: run.run_number,
+                    tool: call.fn_name.clone(),
+                    args: call.fn_arguments.to_string(),
+                },
+            );
             execute_single_tool(call, &tools, &mut turn_tc, &mut run.messages).await;
             let result = turn_tc.last().unwrap();
-            run.event_bus.emit(AgentEvent::ToolCallResult {
-                chat_id: run.chat_id,
-                turn: run.outer_turn,
-                tool: call.fn_name.clone(),
-                summary: result.result.to_string(),
-                success: result.success,
-            });
+            run.event_bus.emit(
+                run.chat_id,
+                AgentEventPayload::ToolCallResult {
+                    run: run.run_number,
+                    tool: call.fn_name.clone(),
+                    summary: result.result.to_string(),
+                    success: result.success,
+                },
+            );
         }
 
         // ──  Decide ──
@@ -127,21 +159,36 @@ pub(crate) async fn run_react_loop(
             if response_text.trim().is_empty() {
                 stop = true
             } else {
-                run.event_bus.emit(AgentEvent::ModelRetry {
-                    chat_id: run.chat_id,
-                    turn: run.outer_turn,
-                    reason: ModelRetryReason::TextWithoutTool,
-                });
+                run.event_bus.emit(
+                    run.chat_id,
+                    AgentEventPayload::ModelRetry {
+                        run: run.run_number,
+                        reason: ModelRetryReason::ResponseWithText,
+                    },
+                );
                 run.messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
             }
         }
 
         // ── Commit ──
+        turn_index += 1;
         turns.push(Turn {
             tool_calls: turn_tc,
             response: response_text,
             reasoning,
         });
+        if !stop {
+            let turn = turns.last().unwrap();
+            run.event_bus.emit(
+                run.chat_id,
+                AgentEventPayload::TurnCompleted(TurnOutput {
+                    run: run.run_number,
+                    turn: turn_index,
+                    reasoning: turn.reasoning.clone(),
+                    response: turn.response.clone(),
+                }),
+            );
+        }
 
         if stop {
             return Ok(ReactLoopOutput {
@@ -153,26 +200,46 @@ pub(crate) async fn run_react_loop(
         }
 
         // ── Preempt ──
-        if run.preempt {
-            run.event_bus.emit(AgentEvent::Preempted {
-                chat_id: run.chat_id,
-                turn: run.outer_turn,
-            });
-            apply_preempt(&mut run.messages, &run.inbox).await;
+        if run.preempt
+            && let Some(result) = inject_preempt(&mut run.messages, &run.inbox).await
+        {
+            run.event_bus.emit(
+                run.chat_id,
+                AgentEventPayload::Preempted {
+                    run: run.run_number,
+                    count: result.count,
+                    reasons: result.reasons,
+                    content: result.content,
+                },
+            );
         }
     }
 }
 
 // ── Preempt ───────────────────────────────────────────────────────────────────
 
-async fn apply_preempt(messages: &mut Messages, inbox: &Inbox) -> bool {
+pub(super) struct PreemptResult {
+    pub count: usize,
+    pub reasons: String,
+    pub content: String,
+}
+
+async fn inject_preempt(
+    messages: &mut Messages,
+    inbox: &Inbox,
+) -> Option<PreemptResult> {
     let events = inbox.drain();
     if events.is_empty() {
-        return false;
+        return None;
     }
-    let xml = render_pretty(build_situation_section(&events), Format::Xml);
-    messages.push(ChatMessage::user(xml));
-    true
+    let groups = events.coalesce();
+    let content = render_pretty(build_situation_section(&groups), Format::Xml);
+    messages.push(ChatMessage::user(content.clone()));
+    Some(PreemptResult {
+        count: events.len(),
+        reasons: groups.reasons_summary(),
+        content,
+    })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -220,11 +287,13 @@ async fn llm_call_with_retry(
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            run.event_bus.emit(AgentEvent::ModelRetry {
-                chat_id: run.chat_id,
-                turn: run.outer_turn,
-                reason: ModelRetryReason::TimeoutRetry,
-            });
+            run.event_bus.emit(
+                run.chat_id,
+                AgentEventPayload::ModelRetry {
+                    run: run.run_number,
+                    reason: ModelRetryReason::TimeoutRetry,
+                },
+            );
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 

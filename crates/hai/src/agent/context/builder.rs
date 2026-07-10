@@ -120,7 +120,8 @@ pub async fn build_first_run_prompt(
     };
     let renderer = parser.create_renderer(&data.perception.map);
     let render_ctx = RenderContext::new(context_data, renderer);
-    let rendered_prompt = render_main_context(&render_ctx, build_situation_section(&ctx.events));
+    let rendered_prompt =
+        render_main_context(&render_ctx, build_situation_section(&ctx.events.coalesce()));
 
     Ok(BuiltContext {
         messages: vec![ChatMessage::user(&rendered_prompt)],
@@ -190,7 +191,7 @@ pub async fn build_next_run_prompt(
         renderer,
     );
 
-    let instruction = build_situation_section(&ctx.events);
+    let instruction = build_situation_section(&ctx.events.coalesce());
     let rendered = render_context(&render_ctx, instruction, "new");
 
     Ok(BuiltContext {

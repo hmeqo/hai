@@ -44,12 +44,14 @@ enum Nav {
     OpenOrToggleFullscreen,
     CloseDetail,
     Search,
+    FilterChat,
 }
 
 // ── TuiApp ──────────────────────────────────────────────────────
 
 pub(super) struct TuiApp {
     events: Vec<crate::domain::model::Event>,
+    filtered: Vec<usize>,
     selected: usize,
     list_offset: usize,
     list_vp_h: usize,
@@ -59,6 +61,8 @@ pub(super) struct TuiApp {
     detail_scroll: u16,
     filter: String,
     search_active: bool,
+    chat_filter_input: String,
+    chat_filter_active: bool,
     last_seq: i64,
     chat_filter: Option<i64>,
     kind_filter: Option<String>,
@@ -70,6 +74,7 @@ impl TuiApp {
     fn new(db: toasty::Db, chat_filter: Option<i64>, kind_filter: Option<String>) -> Self {
         Self {
             events: Vec::new(),
+            filtered: Vec::new(),
             selected: 0,
             list_offset: 0,
             list_vp_h: 20,
@@ -79,6 +84,8 @@ impl TuiApp {
             detail_scroll: 0,
             filter: String::new(),
             search_active: false,
+            chat_filter_input: String::new(),
+            chat_filter_active: false,
             last_seq: 0,
             chat_filter,
             kind_filter,
@@ -94,8 +101,28 @@ impl TuiApp {
         self.last_seq = events.first().map(|e| e.seq).unwrap_or(0);
         self.events = events;
         self.events.reverse();
+        self.rebuild_filter();
         self.follow_end();
         Ok(())
+    }
+
+    fn rebuild_filter(&mut self) {
+        self.filtered = self
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                if !self.filter.is_empty() {
+                    EventDisplay::from_event(e)
+                        .is_some_and(|d| d.one_liner.contains(&self.filter))
+                } else {
+                    true
+                }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let max = self.filtered.len().saturating_sub(1);
+        self.selected = self.selected.min(max);
     }
 
     async fn poll_new(&mut self) {
@@ -115,6 +142,7 @@ impl TuiApp {
         }
         self.last_seq = events.last().map(|e| e.seq).unwrap_or(self.last_seq);
         self.events.extend(events);
+        self.rebuild_filter();
         if self.follow {
             self.follow_end();
         }
@@ -123,13 +151,13 @@ impl TuiApp {
     // ── Selection ───────────────────────────────────────────────
 
     fn select_at(&mut self, index: usize) {
-        if self.events.is_empty() {
+        if self.filtered.is_empty() {
             return;
         }
-        self.selected = index.clamp(0, self.events.len() - 1);
+        self.selected = index.clamp(0, self.filtered.len() - 1);
         self.follow = false;
         if self.detail_seq.is_some() {
-            self.detail_seq = Some(self.events[self.selected].seq);
+            self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
             self.detail_scroll = 0;
         }
         self.clamp_list_offset();
@@ -137,19 +165,17 @@ impl TuiApp {
 
     fn move_selection(&mut self, delta: isize) {
         let new = (self.selected as isize + delta).max(0) as usize;
-        self.select_at(new.min(self.events.len().saturating_sub(1)));
+        self.select_at(new.min(self.filtered.len().saturating_sub(1)));
     }
 
     fn follow_end(&mut self) {
-        if self.events.is_empty() {
+        if self.filtered.is_empty() {
             return;
         }
-        self.selected = self.events.len() - 1;
+        self.selected = self.filtered.len() - 1;
         self.follow = true;
-        if self.detail_seq.is_some() {
-            self.detail_seq = Some(self.events[self.selected].seq);
-            self.detail_scroll = 0;
-        }
+        self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
+        self.detail_scroll = 0;
         self.clamp_list_offset();
     }
 
@@ -184,6 +210,7 @@ impl TuiApp {
             (KeyCode::Enter | KeyCode::Right, _, _) => Some(Nav::OpenOrToggleFullscreen),
             (KeyCode::Esc | KeyCode::Left, _, _) => Some(Nav::CloseDetail),
             (KeyCode::Char('/'), _, _) => Some(Nav::Search),
+            (KeyCode::Char('c'), _, _) => Some(Nav::FilterChat),
             _ => None,
         }
     }
@@ -203,15 +230,18 @@ impl TuiApp {
                 }
             }
             Nav::OpenOrToggleFullscreen => {
-                if self.detail_seq.is_none() && !self.events.is_empty() {
-                    self.detail_seq = Some(self.events[self.selected].seq);
-                    self.detail_scroll = 0;
-                    self.focus = Focus::Detail;
-                } else {
+                if self.focus == Focus::Detail {
                     self.detail_layout = match self.detail_layout {
                         DetailLayout::Split => DetailLayout::Full,
                         DetailLayout::Full => DetailLayout::Split,
                     };
+                } else if self.detail_seq.is_some() {
+                    self.detail_seq = None;
+                    self.detail_scroll = 0;
+                    self.follow = false;
+                } else if !self.filtered.is_empty() {
+                    self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
+                    self.detail_scroll = 0;
                 }
             }
             Nav::CloseDetail => {
@@ -226,7 +256,12 @@ impl TuiApp {
                 self.search_active = true;
                 self.filter.clear();
             }
-            Nav::Search => {} // already active, ignore
+            Nav::Search => {}
+            Nav::FilterChat if !self.search_active && !self.chat_filter_active => {
+                self.chat_filter_active = true;
+                self.chat_filter_input.clear();
+            }
+            Nav::FilterChat => {}
         }
     }
 
@@ -275,10 +310,39 @@ impl TuiApp {
 
         if self.search_active {
             match key.code {
-                KeyCode::Esc | KeyCode::Enter => self.search_active = false,
-                KeyCode::Char(c) => self.filter.push(c),
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.search_active = false;
+                    self.rebuild_filter();
+                }
+                KeyCode::Char(c) => {
+                    self.filter.push(c);
+                    self.rebuild_filter();
+                }
                 KeyCode::Backspace => {
                     self.filter.pop();
+                    self.rebuild_filter();
+                }
+                _ => {}
+            }
+            return Control::Continue;
+        }
+
+        if self.chat_filter_active {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.chat_filter_active = false;
+                    self.chat_filter = if self.chat_filter_input.is_empty() {
+                        None
+                    } else {
+                        self.chat_filter_input.parse::<i64>().ok().filter(|&n| n != 0)
+                    };
+                    let _ = self.load_initial().await;
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '-' => {
+                    self.chat_filter_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.chat_filter_input.pop();
                 }
                 _ => {}
             }
@@ -314,19 +378,24 @@ impl TuiApp {
         self.render_status(f, *bot);
 
         if self.search_active {
-            self.render_search(f, f.area());
+            self.render_search(f, f.area(), " search ");
+        } else if self.chat_filter_active {
+            self.render_search(f, f.area(), " chat filter ");
         }
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
         let left = format!(
-            " hai {} {}events ",
+            " hai {} {}/{}events ",
             self.chat_filter
                 .map(|c| format!("Chat {c:+}"))
                 .unwrap_or_default(),
+            self.filtered.len(),
             self.events.len(),
         );
-        let right = if !self.filter.is_empty() {
+        let right = if self.chat_filter_active {
+            format!(" chat: {} ", self.chat_filter_input)
+        } else if !self.filter.is_empty() {
             format!(" filter: {} ", self.filter)
         } else {
             String::new()
@@ -359,7 +428,7 @@ impl TuiApp {
                 Span::styled(label, Style::new().fg(Color::Black).bg(Color::Cyan)),
                 Span::raw("  "),
                 Span::styled(nav, Style::new().fg(Color::DarkGray)),
-                Span::raw("  Tab focus  Enter full  / search  q quit"),
+                Span::raw("  Tab focus  Enter full  / search  c chat  q quit"),
             ]),
             area,
         );
@@ -401,16 +470,17 @@ impl TuiApp {
             .border_style(Style::new().fg(focus));
 
         self.list_vp_h = block.inner(area).height as usize;
-        let max_off = self.events.len().saturating_sub(self.list_vp_h);
+        let max_off = self.filtered.len().saturating_sub(self.list_vp_h);
         self.list_offset = self.list_offset.min(max_off);
 
         let items: Vec<ListItem> = self
-            .events
+            .filtered
             .iter()
-            .map(|e| {
-                let d = EventDisplay::from_event(e);
+            .filter_map(|&i| {
+                let e = &self.events[i];
+                let d = EventDisplay::from_event(e)?;
                 let (cr, cg, cb) = display::color_rgb(e);
-                ListItem::new(Line::from(Span::styled(
+                Some(ListItem::new(Line::from(Span::styled(
                     format!(
                         "#{:>5}  {}  {}  {}",
                         e.seq,
@@ -419,7 +489,7 @@ impl TuiApp {
                         d.one_liner
                     ),
                     Style::new().fg(Color::Rgb(cr, cg, cb)),
-                )))
+                ))))
             })
             .collect();
 
@@ -440,10 +510,10 @@ impl TuiApp {
     }
 
     fn clamp_list_offset(&mut self) {
-        if self.events.is_empty() || self.list_vp_h == 0 {
+        if self.filtered.is_empty() || self.list_vp_h == 0 {
             return;
         }
-        let max_off = self.events.len().saturating_sub(self.list_vp_h);
+        let max_off = self.filtered.len().saturating_sub(self.list_vp_h);
 
         if self.selected < self.list_offset {
             self.list_offset = self.selected;
@@ -479,7 +549,8 @@ impl TuiApp {
 
         let text = self
             .detail_event()
-            .map(|e| EventDisplay::from_event(e).detail_text.clone())
+            .and_then(EventDisplay::from_event)
+            .map(|d| d.detail_text)
             .unwrap_or_default();
         let scroll_len: usize = text.lines().count().max(1);
         let inner = block.inner(area);
@@ -503,24 +574,35 @@ impl TuiApp {
     }
 
     fn detail_event(&self) -> Option<&crate::domain::model::Event> {
-        self.detail_seq
-            .and_then(|seq| self.events.iter().find(|e| e.seq == seq))
+        self.detail_seq.and_then(|seq| {
+            self.filtered
+                .iter()
+                .find_map(|&i| (self.events[i].seq == seq).then(|| &self.events[i]))
+        })
     }
 
     fn detail_text_lines(&self) -> u16 {
         self.detail_event()
-            .map(|e| EventDisplay::from_event(e).detail_text.lines().count() as u16)
+            .and_then(EventDisplay::from_event)
+            .map(|d| d.detail_text.lines().count() as u16)
             .unwrap_or(0)
     }
 
-    fn render_search(&self, f: &mut Frame, area: Rect) {
+    fn render_search(&self, f: &mut Frame, area: Rect, title: &str) {
         let popup = centered_rect(50, 3, area);
         f.render_widget(
-            Paragraph::new(self.filter.as_str())
-                .block(Block::default().title(" search ").borders(Borders::ALL)),
+            Paragraph::new(
+                if self.chat_filter_active { self.chat_filter_input.as_str() } else { self.filter.as_str() },
+            )
+            .block(Block::default().title(title).borders(Borders::ALL)),
             popup,
         );
-        f.set_cursor_position((popup.x + 1 + self.filter.len() as u16, popup.y + 1));
+        let input_len = if self.chat_filter_active {
+            self.chat_filter_input.len()
+        } else {
+            self.filter.len()
+        };
+        f.set_cursor_position((popup.x + 1 + input_len as u16, popup.y + 1));
     }
 }
 

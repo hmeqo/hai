@@ -1,47 +1,9 @@
 use std::time::Duration;
 
-use serde_json::Value;
 use tokio::sync::mpsc;
 
-pub use crate::domain::vo::AgentEventPayload as AgentEvent;
-
-// ── AgentEvent ─────────────────────────────────────────────────────────────────
-
-impl AgentEvent {
-    pub fn chat_id(&self) -> Option<i64> {
-        match self {
-            Self::SessionCreated { chat_id, .. }
-            | Self::SessionDone { chat_id }
-            | Self::WakeStarted { chat_id, .. }
-            | Self::ContextBuilt { chat_id, .. }
-            | Self::ToolCall { chat_id, .. }
-            | Self::ToolCallResult { chat_id, .. }
-            | Self::RunCompleted { chat_id, .. }
-            | Self::ModelRetry { chat_id, .. }
-            | Self::RunFailed { chat_id, .. }
-            | Self::Preempted { chat_id, .. } => Some(chat_id.0),
-        }
-    }
-
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::SessionCreated { .. } => "session_created",
-            Self::SessionDone { .. } => "session_done",
-            Self::WakeStarted { .. } => "wake_started",
-            Self::ContextBuilt { .. } => "context_built",
-            Self::ToolCall { .. } => "tool_call",
-            Self::ToolCallResult { .. } => "tool_call_result",
-            Self::ModelRetry { .. } => "model_retry",
-            Self::RunCompleted { .. } => "run_completed",
-            Self::RunFailed { .. } => "run_failed",
-            Self::Preempted { .. } => "preempted",
-        }
-    }
-
-    pub fn payload(&self) -> Value {
-        serde_json::to_value(self).unwrap()
-    }
-}
+use crate::domain::vo::ChatId;
+pub use crate::domain::vo::{AgentEvent, AgentEventPayload};
 
 // ── AgentEventBus ──────────────────────────────────────────────────────────────
 
@@ -60,8 +22,8 @@ impl AgentEventBus {
         Self { tx }
     }
 
-    pub fn emit(&self, event: AgentEvent) {
-        let _ = self.tx.send(event);
+    pub fn emit(&self, chat_id: ChatId, payload: AgentEventPayload) {
+        let _ = self.tx.send(AgentEvent { chat_id, payload });
     }
 }
 
@@ -93,12 +55,12 @@ async fn flush(batch: &[AgentEvent], db: &toasty::Db) {
     for event in batch {
         if let Err(e) = toasty::create!(Event {
             domain: "agent".to_string(),
-            payload: toasty::Json(event.payload()),
+            payload: toasty::Json(serde_json::to_value(event).unwrap()),
         })
         .exec(&mut db.clone())
         .await
         {
-            tracing::warn!(kind = event.kind(), error = %e, "Failed to flush agent event");
+            tracing::warn!(kind = event.payload.kind(), error = %e, "Failed to flush agent event");
         }
     }
 }
