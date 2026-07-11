@@ -1,7 +1,9 @@
 use std::fmt;
 
 use teloxide::{
-    Bot, net::Download, prelude::Requester,
+    Bot,
+    net::Download,
+    prelude::Requester,
     types::{FileId, ReplyParameters},
 };
 
@@ -54,7 +56,10 @@ impl TelegramService {
             payload["reply_parameters"] = serde_json::to_value(params)?;
         }
 
-        let url = format!("https://api.telegram.org/bot{}/sendRichMessage", self.bot.token());
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendRichMessage",
+            self.bot.token()
+        );
         let resp: serde_json::Value = self
             .http
             .post(url)
@@ -66,13 +71,11 @@ impl TelegramService {
 
         if resp["ok"].as_bool() != Some(true) {
             let desc = resp["description"].as_str().unwrap_or("unknown error");
-            return Err(ErrorKind::External.msg(format!(
-                "sendRichMessage failed: {desc}"
-            )));
+            return Err(ErrorKind::External.msg(format!("sendRichMessage failed: {desc}")));
         }
 
-        let msg: teloxide::types::Message =
-            serde_json::from_value(resp["result"].clone()).map_err(|e| {
+        let msg: teloxide::types::Message = serde_json::from_value(resp["result"].clone())
+            .map_err(|e| {
                 ErrorKind::DataParse.msg(format!("sendRichMessage response parse: {e}"))
             })?;
         Ok(msg)

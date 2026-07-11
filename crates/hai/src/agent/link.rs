@@ -1,10 +1,10 @@
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::{self, Debug};
 
 use genai::chat::ChatMessage;
 use uuid::Uuid;
 
 pub use crate::agent::context::ContentParser;
-use crate::{domain::vo::ChatId, error::Result};
+use crate::{config::schema::BotPlatform, domain::vo::ChatId, error::Result};
 
 /// 平台构建好的上下文，供 agent 直接使用
 #[derive(Debug)]
@@ -20,13 +20,31 @@ pub struct BuiltContext {
     pub shown_topic_ids: Vec<Uuid>,
 }
 
-/// 唯一标识一个 bot 实例
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-pub struct BotId(pub Arc<str>);
+/// Bot 实例标识，按平台区分。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BotId {
+    Telegram { key: String },
+}
 
 impl BotId {
-    pub fn new(s: impl AsRef<str>) -> Self {
-        Self(Arc::from(s.as_ref()))
+    pub fn new(key: String, platform: BotPlatform) -> Self {
+        match platform {
+            BotPlatform::Telegram => BotId::Telegram { key },
+        }
+    }
+
+    pub fn key(&self) -> &str {
+        match self {
+            BotId::Telegram { key } => key,
+        }
+    }
+}
+
+impl fmt::Display for BotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BotId::Telegram { key } => write!(f, "telegram:{key}"),
+        }
     }
 }
 
@@ -66,9 +84,21 @@ pub struct SentMessageMeta {
 
 // ─── PlatformHandler ─────────────────────────────────────────────────────────
 
+/// 平台消息格式能力。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageCapability {
+    Rich,
+    MarkdownV2,
+    Plain,
+}
+
 /// 平台无关的 bot 能力抽象，由各平台实现。
 #[async_trait::async_trait]
 pub trait PlatformHandler: Debug + Send + Sync + 'static {
+    /// 平台标识
+    fn bot_id(&self) -> BotId;
+    /// Bot 身份信息（name + username + account_id）
+    fn profile(&self) -> BotProfile;
     /// 发送消息
     async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta>;
     /// 发送语音消息
@@ -87,51 +117,6 @@ pub trait PlatformHandler: Debug + Send + Sync + 'static {
     ) -> Result<String>;
     /// 平台消息解析器
     fn content_parser(&self) -> &'static dyn ContentParser;
-}
-
-// ─── BotHandle ─────────────────────────────────────────────────────────────────
-
-/// Agent 侧持有的 bot 操作句柄
-#[derive(Debug, Clone)]
-pub struct BotHandle {
-    pub bot_id: BotId,
-    pub profile: BotProfile,
-    pub handler: Arc<dyn PlatformHandler>,
-    pub rich_message: bool,
-}
-
-impl BotHandle {
-    pub fn new(
-        bot_id: BotId,
-        profile: BotProfile,
-        handler: Arc<dyn PlatformHandler>,
-        rich_message: bool,
-    ) -> Self {
-        Self {
-            bot_id,
-            profile,
-            handler,
-            rich_message,
-        }
-    }
-
-    pub async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta> {
-        self.handler.send_message(req).await
-    }
-
-    pub async fn send_voice(&self, req: SendVoiceReq) -> Result<SentMessageMeta> {
-        self.handler.send_voice(req).await
-    }
-
-    pub async fn send_typing(&self, chat_id: ChatId) {
-        self.handler.send_typing(chat_id).await;
-    }
-
-    pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>> {
-        self.handler.download_file(file_id).await
-    }
-
-    pub async fn get_file_url(&self, file_id: &str) -> Result<String> {
-        self.handler.get_file_url(file_id).await
-    }
+    /// 平台消息格式能力（用于 tool description 差异化描述）
+    fn message_capability(&self) -> MessageCapability;
 }

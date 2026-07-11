@@ -1,23 +1,14 @@
-pub mod model;
-pub mod tts;
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-use derive_more::Deref;
-pub use model::*;
 use serde_json::{Value, json};
-pub use tts::*;
 
 use crate::{
-    agentcore::{
-        embedding::EmbeddingService,
-        rawclient::{RawAgent, RawClient},
-    },
-    config::{AppConfig, ProviderManager},
+    agentcore::{ApiClient, Endpoint, embedding::EmbeddingService},
+    config::{ProviderRegistry, schema::MultimodalSubConfig},
     domain::vo::MediaCodec,
-    error::{OptionAppExt, Result},
+    error::{ErrorKind, Result},
 };
 
 const DEFAULT_IMAGE_PROMPT: &str = "请详细描述这张图片的全部内容，包括：画面中的主体、人物（表情、动作、着装）、物体、场景与环境、文字信息、色彩与构图、氛围与情绪，以及其他任何值得注意的细节。";
@@ -25,52 +16,17 @@ const DEFAULT_VIDEO_PROMPT: &str = "请全面分析这个视频的内容，包�
 const DEFAULT_AUDIO_PROMPT: &str = "请全面分析这段音频：按时间顺序描述不同时间段发生的事，识别说话人并逐字转写其内容（多人对话需区分说话人），分析说话人的语气、情绪和态度，识别背景音和环境信息，判断可能的场景和上下文。";
 const DEFAULT_OCR_PROMPT: &str = "请提取这张图片中的所有文字内容，按原文返回。";
 
-// ── 媒体输入 ──────────────────────────────────────────────────────────────────
+// ── 媒体源 ──────────────────────────────────────────────────────────────────────
 
-/// 多模态媒体输入：统一表示图片、音频、视频的数据来源和可选格式。
-///
-/// - 图片场景不需要 `format`，直接构造 `Url` / `Bytes` 即可。
-/// - 音频 / 视频场景通过 `format` 携带编码格式；`None` 时由各 `analyze_*` 方法回退到默认值。
 pub enum MediaSource {
     Url(String),
     Bytes(Vec<u8>),
-    /// 已经完成 base64 编码的数据（避免重复编码）。
     Base64(String),
 }
 
-/// 携带数据来源和可选格式的媒体输入，用于音频 / 视频分析。
-pub struct MediaInput {
-    pub source: MediaSource,
-    pub format: Option<MediaCodec>,
-}
-
-impl MediaInput {
-    pub fn from_bytes(bytes: Vec<u8>, format: Option<MediaCodec>) -> Self {
-        Self {
-            source: MediaSource::Bytes(bytes),
-            format,
-        }
-    }
-
-    pub fn from_url(url: String, format: Option<MediaCodec>) -> Self {
-        Self {
-            source: MediaSource::Url(url),
-            format,
-        }
-    }
-
-    /// 序列化为 `input_audio` / `video_url` 兼容的 JSON 对象。
-    fn into_api_value(self, format: &str) -> Value {
-        match self.source {
-            MediaSource::Url(u) => json!({ "url": u }),
-            MediaSource::Base64(b) => json!({ "data": b, "format": format }),
-            MediaSource::Bytes(d) => json!({ "data": BASE64_STANDARD.encode(d), "format": format }),
-        }
-    }
-
-    /// 序列化为图片 `image_url` 兼容的 data URL 或原始 URL。
+impl MediaSource {
     fn into_image_url(self) -> String {
-        match self.source {
+        match self {
             MediaSource::Url(u) => u,
             MediaSource::Base64(b) => format!("data:image/jpeg;base64,{b}"),
             MediaSource::Bytes(d) => {
@@ -78,165 +34,243 @@ impl MediaInput {
             }
         }
     }
-}
 
-impl From<Vec<u8>> for MediaInput {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self::from_bytes(bytes, None)
+    fn into_api_value(self, fmt: &str) -> Value {
+        match self {
+            MediaSource::Url(u) => json!({ "url": u }),
+            MediaSource::Base64(b) => json!({ "data": b, "format": fmt }),
+            MediaSource::Bytes(d) => {
+                json!({ "data": BASE64_STANDARD.encode(d), "format": fmt })
+            }
+        }
     }
 }
 
-// ── MultimodalService ─────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct MultimodalServiceInner {
-    image: RawAgent,
-    video: RawAgent,
-    audio: RawAgent,
-    embedding: RawAgent,
-    pub(crate) tts: TtsService,
+impl From<Vec<u8>> for MediaSource {
+    fn from(bytes: Vec<u8>) -> Self {
+        MediaSource::Bytes(bytes)
+    }
 }
 
-#[derive(Debug, Clone, Deref)]
+// ── Modality 配置 ───────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct ModalityCfg {
+    endpoint: Endpoint,
+    params: ModalityParams,
+}
+
+#[derive(Debug)]
+enum ModalityParams {
+    Vision { default_prompt: String },
+    Speech { voice: String, speed: f32 },
+    None,
+}
+
+impl ModalityCfg {
+    fn from_input(
+        registry: &ProviderRegistry,
+        sub: &MultimodalSubConfig,
+        fallback: &str,
+        default_prompt: &str,
+    ) -> Result<Option<Self>> {
+        if !sub.enabled() {
+            return Ok(None);
+        }
+        let provider = sub.provider.as_deref().unwrap_or(fallback);
+        let model = sub.model.as_deref().unwrap_or("");
+        resolve_modality(
+            registry,
+            provider,
+            model,
+            ModalityParams::Vision {
+                default_prompt: sub
+                    .default_prompt
+                    .clone()
+                    .unwrap_or_else(|| default_prompt.into()),
+            },
+        )
+        .map(Some)
+    }
+}
+
+fn resolve_modality(
+    registry: &ProviderRegistry,
+    provider: &str,
+    model: &str,
+    params: ModalityParams,
+) -> Result<ModalityCfg> {
+    Ok(ModalityCfg {
+        endpoint: registry.resolve(provider, model)?,
+        params,
+    })
+}
+
+// ── 服务 ────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub(crate) struct MultimodalServiceInner {
+    client: ApiClient,
+    vision: Option<ModalityCfg>,
+    video: Option<ModalityCfg>,
+    audio: Option<ModalityCfg>,
+    tts: Option<ModalityCfg>,
+    embedding: ModalityCfg,
+}
+
+#[derive(Debug, Clone)]
 pub struct MultimodalService(Arc<MultimodalServiceInner>);
 
 #[async_trait]
 impl EmbeddingService for MultimodalService {
     async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        self.0.embedding.embedding(text).await
+        self.0.client.embed(&self.0.embedding.endpoint, text).await
     }
 }
 
 impl MultimodalService {
-    pub fn from_config(config: &AppConfig, providers: &ProviderManager) -> Self {
+    pub fn from_config(
+        config: &crate::config::AppConfig,
+        registry: &ProviderRegistry,
+    ) -> Result<Self> {
+        let fallback = &config.agent.provider;
         let mc = &config.multimodal;
 
-        let build_agent = |provider: Option<&str>, model: Option<&str>| {
-            providers.build_agent(
-                provider.unwrap_or(&config.agent.provider),
-                model.unwrap_or(""),
-            )
-        };
-        let build_input_agent = |sub: &crate::config::schema::MultimodalSubConfig,
-                                 default_prompt: &str| {
-            build_agent(sub.provider.as_deref(), sub.model.as_deref()).with_default_prompt(
-                sub.default_prompt
-                    .clone()
-                    .unwrap_or_else(|| default_prompt.into()),
-            )
-        };
+        let vision =
+            ModalityCfg::from_input(registry, &mc.input.image, fallback, DEFAULT_IMAGE_PROMPT)?;
+        let video =
+            ModalityCfg::from_input(registry, &mc.input.video, fallback, DEFAULT_VIDEO_PROMPT)?;
+        let audio =
+            ModalityCfg::from_input(registry, &mc.input.audio, fallback, DEFAULT_AUDIO_PROMPT)?;
 
-        let tts_cfg = &mc.tts;
-        let tts_agent = if tts_cfg.enabled() {
-            let provider = tts_cfg
-                .provider
-                .as_deref()
-                .unwrap_or(&config.agent.provider);
-            let model = tts_cfg.model.clone().unwrap_or_else(|| "tts-1".into());
-            providers.build_agent(provider, &model)
-        } else {
-            RawAgent::new(RawClient::new(None, ""), "")
-        };
+        let tts = mc
+            .tts
+            .enabled()
+            .then(|| -> Result<_> {
+                let p = mc.tts.provider.as_deref().unwrap_or(fallback);
+                let m = mc.tts.model.clone().unwrap_or_else(|| "tts-1".into());
+                resolve_modality(
+                    registry,
+                    p,
+                    &m,
+                    ModalityParams::Speech {
+                        voice: mc.tts.voice.clone(),
+                        speed: mc.tts.speed,
+                    },
+                )
+            })
+            .transpose()?;
 
-        Self(Arc::new(MultimodalServiceInner {
-            image: build_input_agent(&mc.input.image, DEFAULT_IMAGE_PROMPT),
-            video: build_input_agent(&mc.input.video, DEFAULT_VIDEO_PROMPT),
-            audio: build_input_agent(&mc.input.audio, DEFAULT_AUDIO_PROMPT),
-            embedding: build_agent(
-                mc.embedding.provider.as_deref(),
-                mc.embedding.model.as_deref(),
-            ),
-            tts: TtsService::new(tts_agent, tts_cfg),
-        }))
+        let embedding = resolve_modality(
+            registry,
+            &mc.embedding.provider(fallback),
+            &mc.embedding.model(),
+            ModalityParams::None,
+        )?;
+
+        Ok(Self(Arc::new(MultimodalServiceInner {
+            client: ApiClient::new(),
+            vision,
+            video,
+            audio,
+            tts,
+            embedding,
+        })))
     }
 
-    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        self.0.embedding.embedding(text).await
-    }
-
-    pub async fn analyze_image(
-        &self,
-        image: impl Into<MediaInput>,
-        custom: Option<&str>,
-    ) -> Result<String> {
-        let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.image.default_prompt(), c),
-            None => self.0.image.default_prompt().to_string(),
-        };
-        let url = image.into().into_image_url();
-        let content = json!([
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": url}},
+    pub async fn analyze_image(&self, source: MediaSource, prompt: Option<&str>) -> Result<String> {
+        let cfg = self.0.vision.as_ref().ok_or_else(|| unavailable("图片"))?;
+        let text = resolve_prompt(&cfg.params, prompt);
+        let body = json!([
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": source.into_image_url()}},
         ]);
-        self.completion(&self.0.image, content, "vision").await
+        self.complete_and_extract(&cfg.endpoint, body, "vision")
+            .await
     }
 
-    pub async fn ocr(&self, image: impl Into<MediaInput>) -> Result<String> {
-        let url = image.into().into_image_url();
-        let content = json!([
+    pub async fn ocr(&self, source: MediaSource) -> Result<String> {
+        let cfg = self.0.vision.as_ref().ok_or_else(|| unavailable("图片"))?;
+        let body = json!([
             {"type": "text", "text": DEFAULT_OCR_PROMPT},
-            {"type": "image_url", "image_url": {"url": url}},
+            {"type": "image_url", "image_url": {"url": source.into_image_url()}},
         ]);
-        self.completion(&self.0.image, content, "vision").await
+        self.complete_and_extract(&cfg.endpoint, body, "vision")
+            .await
     }
 
     pub async fn analyze_video(
         &self,
-        video: impl Into<MediaInput>,
-        custom: Option<&str>,
+        source: MediaSource,
+        format: Option<MediaCodec>,
+        prompt: Option<&str>,
     ) -> Result<String> {
-        let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.video.default_prompt(), c),
-            None => self.0.video.default_prompt().to_string(),
-        };
-        let video = video.into();
-        let format = video.format.map(|c| c.api_format()).unwrap_or("mp4");
-        let content = json!([
-            {"type": "text", "text": prompt},
-            {"type": "video_url", "video_url": video.into_api_value(format)},
+        let cfg = self.0.video.as_ref().ok_or_else(|| unavailable("视频"))?;
+        let text = resolve_prompt(&cfg.params, prompt);
+        let fmt = format.as_ref().map(|c| c.api_format()).unwrap_or("mp4");
+        let body = json!([
+            {"type": "text", "text": text},
+            {"type": "video_url", "video_url": source.into_api_value(fmt)},
         ]);
-        self.completion(&self.0.video, content, "video").await
+        self.complete_and_extract(&cfg.endpoint, body, "video")
+            .await
     }
 
     pub async fn analyze_audio(
         &self,
-        audio: impl Into<MediaInput>,
-        custom: Option<&str>,
+        source: MediaSource,
+        format: Option<MediaCodec>,
+        prompt: Option<&str>,
     ) -> Result<String> {
-        let prompt = match custom {
-            Some(c) => format!("{}。聚焦：{}", self.0.audio.default_prompt(), c),
-            None => self.0.audio.default_prompt().to_string(),
-        };
-        let audio = audio.into();
-        let format = audio.format.map(|c| c.api_format()).unwrap_or("wav");
-        tracing::debug!(format, "analyze_audio");
-        let content = json!([
-            {"type": "text", "text": prompt},
-            {"type": "input_audio", "input_audio": audio.into_api_value(format)},
+        let cfg = self.0.audio.as_ref().ok_or_else(|| unavailable("音频"))?;
+        let text = resolve_prompt(&cfg.params, prompt);
+        let fmt = format.as_ref().map(|c| c.api_format()).unwrap_or("wav");
+        let body = json!([
+            {"type": "text", "text": text},
+            {"type": "input_audio", "input_audio": source.into_api_value(fmt)},
         ]);
-        self.completion(&self.0.audio, content, "audio").await
+        self.complete_and_extract(&cfg.endpoint, body, "audio")
+            .await
     }
 
-    pub async fn speech(&self, prompt: &str) -> Result<Vec<u8>> {
-        self.0.tts.speech(prompt).await
+    pub async fn speech(&self, text: &str) -> Result<Vec<u8>> {
+        let cfg = self.0.tts.as_ref().ok_or_else(|| unavailable("语音"))?;
+        let ModalityParams::Speech { voice, speed } = &cfg.params else {
+            unreachable!()
+        };
+        self.0
+            .client
+            .speech(&cfg.endpoint, text, voice, *speed)
+            .await
     }
 
-    async fn completion(&self, agent: &RawAgent, content: Value, tag: &str) -> Result<String> {
-        let resp = agent.completion(content, None::<Value>).await?;
+    async fn complete_and_extract(&self, ep: &Endpoint, body: Value, tag: &str) -> Result<String> {
+        let resp = self.0.client.complete(ep, body).await?;
         extract_text(&resp, tag)
     }
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────────
+
+fn unavailable(name: &str) -> crate::error::AppError {
+    ErrorKind::BadRequest.msg(format!("{name}分析不可用"))
+}
+
+fn resolve_prompt(params: &ModalityParams, custom: Option<&str>) -> String {
+    let ModalityParams::Vision { default_prompt } = params else {
+        unreachable!()
+    };
+    match custom {
+        Some(c) => format!("{default_prompt}。聚焦：{c}"),
+        None => default_prompt.to_string(),
+    }
+}
+
 pub(crate) fn extract_text(resp: &Value, tag: &str) -> Result<String> {
-    use crate::error::ErrorKind;
-    resp.get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.as_str())
-        .ok_or_err_msg(
-            ErrorKind::DataParse,
-            format!("Failed to parse {tag} response: {resp:?}"),
-        )
-        .map(|s| s.to_string())
+    resp.pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ErrorKind::DataParse.msg(format!("Failed to parse {tag} response: {resp:?}"))
+        })
 }

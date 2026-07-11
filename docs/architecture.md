@@ -5,8 +5,9 @@ graph TB
   TG["Telegram API"]
 
   subgraph Platform["Platform Layer"]
+    PB["TelegramPlatform<br/>spawn() 自举 + tokio::spawn"]
     DP["TelegramDispatcher<br/>事件入口 + 聊天/用户解析"]
-    TH["TelegramPlatformHandler<br/>send_message / send_voice / analyze_attachment"]
+    TH["TelegramPlatformHandler<br/>PlatformHandler trait impl<br/>自举身份 + 消息发送"]
   end
 
   subgraph Session["Session Layer"]
@@ -80,7 +81,7 @@ graph TB
 | `EventScheduler` | debounce + heat + window 时机决策 | `enqueue()` + `decide()` |
 | `AgentEngine` | LLM 调用 + MCP 管理 | `Arc` 共享 |
 | `McpManager` | 启动/管理 MCP server 连接 | `rmcp` 库 |
-| `BotHandle` | 包装 `Arc<dyn PlatformHandler>` | 直接 `async fn` |
+| `Arc<dyn PlatformHandler>` | 平台操作句柄（SessionManager/AgentSession/RunContext 共享同一 handler） | Arc clone |
 | `RunContext` | 一轮 processing 的完整执行上下文 | 纯数据 |
 | `ReactRun` | `run_react_loop` 的捆绑参数 | `Client + Messages + Config + Inbox + AgentEventBus` |
 
@@ -98,7 +99,7 @@ Platform → TelegramDispatcher
       → on_complete → Idle
 
 agent 工具调用:
-  send_message tool → BotHandle.send_message()
+  send_message tool → PlatformHandler.send_message()
   → TelegramPlatformHandler → resolve_platform_chat_id()
   → teloxide bot.send_message()
 
@@ -171,7 +172,7 @@ agent/               业务逻辑层
   context/            提示词渲染
   tools/              工具实现（每个模块一个工厂函数）
 platform/            平台集成
-  telegram/             teloxide 路由 + 消息处理
+  telegram/             TelegramPlatform::spawn() + dispatcher + handler
 app/                 应用上下文 + 启动
 ```
 

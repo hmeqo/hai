@@ -14,7 +14,7 @@ use tokio::{sync::Mutex, time::Duration};
 use self::{conversation::Conversation, event_loop::ActiveRun, scheduler::EventScheduler};
 use super::{AgentEngine, shell::ShellRuntime};
 use crate::{
-    agent::link::BotHandle,
+    agent::link::PlatformHandler,
     domain::{
         model::ChatType,
         vo::{AttachmentParser, ChatId},
@@ -46,7 +46,7 @@ pub(super) struct AgentSession {
     tts_enabled: bool,
     chat_id: ChatId,
     chat_type: ChatType,
-    bot: BotHandle,
+    handler: Arc<dyn PlatformHandler>,
     shell: Arc<Mutex<ShellRuntime>>,
 }
 
@@ -54,7 +54,7 @@ impl AgentSession {
     pub(super) async fn new(
         engine: AgentEngine,
         chat_id: ChatId,
-        bot: BotHandle,
+        handler: Arc<dyn PlatformHandler>,
         shell: Arc<Mutex<ShellRuntime>>,
         base_heat: f64,
         window_secs: f64,
@@ -94,7 +94,7 @@ impl AgentSession {
             engine,
             chat_id,
             chat_type,
-            bot,
+            handler,
             shell,
             enabled_parsers,
             tts_enabled,

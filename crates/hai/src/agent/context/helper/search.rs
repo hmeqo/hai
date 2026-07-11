@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     agent::context::types::{ParsedContent, SearchResult},
+    agentcore::embedding::EmbeddingService,
     config::AppConfig,
     domain::{
         model::{Perception, Topic},

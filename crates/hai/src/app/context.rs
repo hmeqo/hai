@@ -4,11 +4,8 @@ use arc_swap::ArcSwap;
 use derive_more::Deref;
 
 use crate::{
-    agent::{
-        multimodal::{ModelService, MultimodalService},
-        runtime::AgentEventBus,
-    },
-    config::{AppConfig, AppConfigManager, ProviderManager},
+    agent::{multimodal::MultimodalService, runtime::AgentEventBus},
+    config::{AppConfig, AppConfigManager, ProviderRegistry},
     domain::{db, service::DbServices},
     error::Result,
 };
@@ -31,8 +28,8 @@ impl AppContext {
     pub async fn new(cfg_mgr: AppConfigManager) -> Result<Self> {
         let cfg = cfg_mgr.load();
 
-        let providers = ProviderManager::new(&cfg)?;
-        let multimodal = MultimodalService::from_config(&cfg, &providers);
+        let providers = ProviderRegistry::new(&cfg)?;
+        let multimodal = MultimodalService::from_config(&cfg, &providers)?;
 
         let (db_handle, pool) = db::init_db(&cfg.database).await?;
         let db_srv = DbServices::new(db_handle.clone(), pool, multimodal.clone());
@@ -42,7 +39,6 @@ impl AppContext {
         let provider = ProviderContext {
             provider: providers,
             multimodal,
-            model: ModelService::new(cfg.model.clone()),
         };
         let agent = AgentContext {
             current_model: ArcSwap::from_pointee(cfg.agent.model.clone()),
@@ -72,9 +68,8 @@ pub struct DbContext {
 #[derive(Deref)]
 pub struct ProviderContext {
     #[deref]
-    pub provider: ProviderManager,
+    pub provider: ProviderRegistry,
     pub multimodal: MultimodalService,
-    pub model: ModelService,
 }
 
 pub struct AgentContext {

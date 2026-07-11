@@ -6,11 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    agent::{
-        link::{BotHandle, SendVoiceReq},
-        multimodal::MultimodalService,
-        runtime::context::ToolContext,
-    },
+    agent::{link::SendVoiceReq, multimodal::MultimodalService, runtime::context::ToolContext},
     agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_ok},
     domain::vo::ChatId,
 };
@@ -29,7 +25,7 @@ pub struct SendVoiceArgs {
 #[hai_macros::tool]
 pub struct SendVoice {
     pub chat_id: ChatId,
-    pub bot: BotHandle,
+    pub handler: Arc<dyn crate::agent::link::PlatformHandler>,
     pub multimodal: MultimodalService,
 }
 
@@ -37,7 +33,7 @@ impl SendVoice {
     async fn exec(&self, args: SendVoiceArgs) -> Result<Value, ToolError> {
         let audio_bytes = self.multimodal.speech(&args.prompt).await.into_tool_err()?;
 
-        self.bot
+        self.handler
             .send_voice(SendVoiceReq {
                 chat_id: self.chat_id,
                 audio_bytes,
@@ -59,7 +55,7 @@ pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
 
     vec![Arc::new(SendVoice {
         chat_id: ctx.chat_id,
-        bot: ctx.bot.clone(),
+        handler: ctx.handler.clone(),
         multimodal: ctx.multimodal.clone(),
     })]
 }

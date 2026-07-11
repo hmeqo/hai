@@ -28,7 +28,7 @@ hai/src/
 │   ├── node/               agent 节点定义
 │   │   └── main/           MainAgent（SystemPromptBuilder + ReactLoopConfig）
 │   ├── runtime/            共享运行时
-│   │   ├── context.rs       RunContext + ToolContext
+│   │   ├── context.rs       RunContext + ToolContext（handler: Arc<dyn PlatformHandler>）
 │   │   ├── types.rs         Messages / Inbox / ProcessingOutput / Turn
 │   │   ├── react.rs         ReactRun + run_react_loop（纯函数，node 无关）
 │   │   ├── engine.rs        AgentEngine（Arc 共享单例）
@@ -48,7 +48,7 @@ hai/src/
 │   │       └── attention.rs   Heat + Window（调度器数学原语）
 │   ├── tools/              工具实现（每个文件一个工具集）
 │   ├── context/            提示词渲染（XML → prompt string）
-│   ├── link.rs             BotHandle + PlatformHandler trait
+│   ├── link.rs             BotId + BotProfile + PlatformHandler trait + MessageCapability
 │   ├── personality/        性格配置渲染
 │   └── multimodal/         多媒体服务
 ├── agentcore/           agent 核心库（不依赖 agent/domain）
@@ -73,6 +73,7 @@ hai/src/
 │   └── vo/              值对象（ChatId, MessageId, TopicSearchResult 等）
 ├── platform/            Telegram 平台集成
 │   └── telegram/
+│       ├── builder.rs         TelegramPlatform::spawn() 自举 + start/stop 日志
 │       ├── dispatcher.rs      teloxide 路由（薄层）
 │       └── message_handler.rs  消息处理（账号解析 + 持久化 + 事件分发）
 ├── config/              配置系统
@@ -86,6 +87,7 @@ Platform → SessionHandle.wake(WakeEvent)
   → Inbox.push(event)
     → idle_tick (Inbox.drain → scheduler.enqueue → scheduler.decide)
       → dispatch(events)
+        → assemble_run (build_run_context → handler.profile())
         → spawn_processing → run_react_loop
           → ReactLoopOutput → oneshot → on_complete
             → on_complete → Idle
@@ -210,6 +212,7 @@ MemoryKind { UserFact, Note, Knowledge }
 - nightly toolchain, edition 2024
 - 无 CI / 无 pre-commit
 - `pub(super)` 对 `runtime/` 内可见；`pub(crate)` 对 `agent/` 内可见；TUI 模块内部一律零 visibility 标记
+- `let _handle =` 是 `JoinHandle` 的标准 discard 写法（`_` 前缀压制 unused，不 drop 任务）
 - 倾向 RAII 封装（`HeartbeatTask`、`ContainerGuard`）和语义封装
 - Service 直接调 toasty ORM，无 repo 层
 
@@ -220,6 +223,10 @@ MemoryKind { UserFact, Note, Knowledge }
 bot-token = "xxx"
 allowed-chat-ids = [123456]
 ```
+
+`BotId` 按平台区分（`BotId::Telegram { key }`），`key` 是 TOML 配置块名。
+`TelegramPlatform::spawn()` 内部自举身份（get_me / get_my_name / ensure_bot_account），
+外部只需提供 `BotConfig`。生命周期日志（started / stopped）由 spawn 闭包自管。
 
 Config 覆盖链：`.hai/config.toml` → `HAI_` 环境变量 → 运行时热加载。
 `HAI_LOCAL_MODE=1` 强制使用 `.hai/`，否则回退 `$XDG_CONFIG_HOME/hai/`。

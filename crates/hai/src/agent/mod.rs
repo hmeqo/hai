@@ -6,5 +6,5 @@ pub(crate) mod personality;
 pub(crate) mod runtime;
 pub(crate) mod tools;
 
-pub use multimodal::{MediaInput, MediaSource, ModelService, MultimodalService};
+pub use multimodal::{MediaSource, MultimodalService};
 pub(crate) use runtime::event;

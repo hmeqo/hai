@@ -30,7 +30,6 @@ reqwest = { workspace = true }
 mime = { workspace = true }
 arc-swap = { workspace = true }
 derive_more = { workspace = true }
-tap = { workspace = true }
 jiff = { workspace = true }
 toasty = { workspace = true }
 toasty-cli = { workspace = true }

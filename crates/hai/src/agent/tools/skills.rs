@@ -32,7 +32,7 @@ impl LoadSkill {
             .find(&args.command)
             .ok_or_else(|| ToolError::Msg(format!("Skill '{}' not found", args.command)))?;
 
-        let body = skill.resolved_body();
+        let body = skill.body();
 
         Ok(serde_json::json!({
             "skill": args.command,

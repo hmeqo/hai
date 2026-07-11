@@ -1,4 +1,4 @@
-use serde_json::Value;
+use toasty::stmt::Value;
 
 use crate::domain::{
     model::Event,
@@ -236,8 +236,8 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
 fn display_json_value(s: &str) -> String {
-    match serde_json::from_str::<Value>(s) {
-        Ok(Value::String(s)) => s,
+    match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(serde_json::Value::String(s)) => s,
         Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
         Err(_) => s.to_string(),
     }
@@ -278,33 +278,113 @@ pub(super) fn color_rgb(event: &Event) -> (u8, u8, u8) {
 
 // ── Queries ────────────────────────────────────────────────────────────────────
 
-pub(super) async fn query_events(
-    db: &toasty::Db,
+/// Raw SQL query with optional JSONB-based filters.
+/// Result order: seq DESC (if `desc=true`) or seq ASC (if `desc=false`).
+pub(super) async fn raw_query(
+    db: &mut toasty::Db,
     chat_id: Option<i64>,
-    event_kind: Option<&str>,
+    kind: Option<&str>,
+    before_seq: Option<i64>,
+    after_seq: Option<i64>,
+    desc: bool,
     limit: usize,
 ) -> crate::error::Result<Vec<Event>> {
-    let raw = Event::filter(Event::fields().seq().gt(0_i64))
-        .order_by(Event::fields().seq().desc())
-        .limit(limit.max(200))
-        .exec(&mut db.clone())
-        .await?;
+    let mut params: Vec<String> = Vec::new();
+    let mut binds: Vec<Box<dyn FnOnce(toasty::sql::Query) -> toasty::sql::Query>> = Vec::new();
+    let mut idx = 0usize;
 
-    Ok(filter_in_rust(raw, chat_id, event_kind))
+    fn push_p<T: Into<toasty::stmt::Value> + 'static>(
+        params: &mut Vec<String>,
+        binds: &mut Vec<Box<dyn FnOnce(toasty::sql::Query) -> toasty::sql::Query>>,
+        idx: &mut usize,
+        val: T,
+        expr: &str,
+    ) {
+        *idx += 1;
+        params.push(expr.replace("?", &format!("${}", *idx)));
+        binds.push(Box::new(move |q| q.bind(val)));
+    }
+
+    let mut sql = "SELECT seq, domain, payload, created_at FROM event WHERE seq > 0".to_string();
+
+    if let Some(cid) = chat_id {
+        push_p(
+            &mut params,
+            &mut binds,
+            &mut idx,
+            cid,
+            "AND (payload->>'chat_id')::bigint = ?",
+        );
+    }
+    if let Some(k) = kind {
+        push_p(
+            &mut params,
+            &mut binds,
+            &mut idx,
+            k.to_string(),
+            "AND payload->>'event' = ?",
+        );
+    }
+    if let Some(b) = before_seq {
+        push_p(&mut params, &mut binds, &mut idx, b, "AND seq < ?");
+    }
+    if let Some(a) = after_seq {
+        push_p(&mut params, &mut binds, &mut idx, a, "AND seq > ?");
+    }
+
+    sql.push_str(&params.join(" "));
+    sql.push_str(&format!(
+        " ORDER BY seq {} LIMIT {}",
+        if desc { "DESC" } else { "ASC" },
+        limit
+    ));
+
+    let mut q = toasty::sql::query(&sql);
+    for bind in binds {
+        q = bind(q);
+    }
+
+    let rows = q.exec(db).await?;
+    let events: Vec<Event> = rows.into_iter().filter_map(row_to_event).collect();
+    Ok(events)
 }
 
-pub(super) async fn query_new_events(
-    db: &toasty::Db,
-    after_seq: i64,
-    chat_id: Option<i64>,
-    event_kind: Option<&str>,
-) -> crate::error::Result<Vec<Event>> {
-    let raw = Event::filter(Event::fields().seq().gt(after_seq))
-        .order_by(Event::fields().seq().asc())
-        .exec(&mut db.clone())
-        .await?;
+fn row_to_event(row: Value) -> Option<Event> {
+    let fields = row.as_record()?.fields.as_slice();
+    if fields.len() < 4 {
+        return None;
+    }
 
-    Ok(filter_in_rust(raw, chat_id, event_kind))
+    let seq = match &fields[0] {
+        Value::I64(v) => *v,
+        _ => return None,
+    };
+    let domain = match &fields[1] {
+        Value::String(s) => s.clone(),
+        _ => return None,
+    };
+    let payload = parse_jsonb(&fields[2])?;
+    let created_at = match &fields[3] {
+        Value::Timestamp(ts) => *ts,
+        _ => return None,
+    };
+
+    Some(Event {
+        seq,
+        domain,
+        payload,
+        created_at,
+    })
+}
+
+fn parse_jsonb(v: &Value) -> Option<toasty::Json<serde_json::Value>> {
+    let bytes = match v {
+        Value::Bytes(b) => b.as_slice(),
+        Value::String(s) => s.as_bytes(),
+        _ => return None,
+    };
+    let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some(toasty::Json(val))
 }
 
 pub(super) async fn query_event_by_seq(
@@ -316,21 +396,4 @@ pub(super) async fn query_event_by_seq(
         .exec(&mut db.clone())
         .await?;
     Ok(events.pop())
-}
-
-fn filter_in_rust(raw: Vec<Event>, chat_id: Option<i64>, event_kind: Option<&str>) -> Vec<Event> {
-    if chat_id.is_none() && event_kind.is_none() {
-        return raw;
-    }
-    raw.into_iter()
-        .filter(|e| {
-            let ae: AgentEvent = match serde_json::from_value(e.payload.0.clone()) {
-                Ok(ae) => ae,
-                Err(_) => return false,
-            };
-            let chat_ok = chat_id.is_none_or(|cid| ae.chat_id.0 == cid);
-            let kind_ok = event_kind.is_none_or(|k| ae.payload.kind() == k);
-            chat_ok && kind_ok
-        })
-        .collect()
 }

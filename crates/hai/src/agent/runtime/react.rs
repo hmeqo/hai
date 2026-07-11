@@ -26,7 +26,8 @@ use crate::{
     domain::vo::{AgentEventPayload, ChatId, ModelRetryReason, TurnOutput},
 };
 
-const DIRECT_OUTPUT_ERROR: &str = "Error: direct output is not allowed. Use send_message / send_voice to reply, or done to end.";
+const DIRECT_OUTPUT_ERROR: &str =
+    "Error: direct output is not allowed. Use send_message / send_voice to reply, or done to end.";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -224,10 +225,7 @@ pub(super) struct PreemptResult {
     pub content: String,
 }
 
-async fn inject_preempt(
-    messages: &mut Messages,
-    inbox: &Inbox,
-) -> Option<PreemptResult> {
+async fn inject_preempt(messages: &mut Messages, inbox: &Inbox) -> Option<PreemptResult> {
     let events = inbox.drain();
     if events.is_empty() {
         return None;

@@ -36,7 +36,7 @@ struct RunData {
 
 async fn prepare_run_data(ctx: &RunContext, messages: &[Message]) -> Result<RunData> {
     let services = &ctx.app.db.srv;
-    let parser = ctx.bot.handler.content_parser();
+    let parser = ctx.handler.content_parser();
     let chat_id = ctx.chat_id;
 
     let (all_messages, message_ids) = prepare_messages(services, messages).await?;
@@ -82,7 +82,7 @@ pub async fn build_first_run_prompt(
 ) -> Result<BuiltContext> {
     let services = &ctx.app.db.srv;
     let cfg = &ctx.app.cfg;
-    let parser = ctx.bot.handler.content_parser();
+    let parser = ctx.handler.content_parser();
     let chat_id = ctx.chat_id;
 
     let data = prepare_run_data(ctx, messages).await?;
@@ -105,7 +105,7 @@ pub async fn build_first_run_prompt(
     let total_unread = services.message.count_unread_by_chat(chat_id).await?;
 
     let context_data = RenderContextData {
-        bot: ctx.bot.profile.clone(),
+        bot: ctx.handler.profile(),
         chat: data.chat,
         current_time: jiff::Zoned::now().to_string(),
         messages: data.all_messages,
@@ -141,7 +141,7 @@ pub async fn build_next_run_prompt(
 ) -> Result<BuiltContext> {
     let services = &ctx.app.db.srv;
     let cfg = &ctx.app.cfg;
-    let parser = ctx.bot.handler.content_parser();
+    let parser = ctx.handler.content_parser();
     let chat_id = ctx.chat_id;
 
     if messages.is_empty() {
@@ -175,7 +175,7 @@ pub async fn build_next_run_prompt(
     let renderer = parser.create_renderer(&perception_map);
     let render_ctx = RenderContext::new(
         RenderContextData {
-            bot: ctx.bot.profile.clone(),
+            bot: ctx.handler.profile(),
             chat: data.chat,
             current_time: jiff::Zoned::now().to_string(),
             messages: data.all_messages.clone(),

@@ -12,12 +12,22 @@ use ratatui::{
     },
 };
 
+use super::event_store::EventStore;
 use crate::cli::display::{self, EventDisplay};
 
 const POLL_MS: u64 = 200;
 const PAGE_STEP: usize = 10;
 const CTRL_STEP: usize = 15;
 const PADDING: usize = 3;
+
+// ── Action ──────────────────────────────────────────────────────
+
+enum Action {
+    JumpStart,
+    JumpEnd,
+    ExtendBack,
+    ApplyChatFilter(Option<i64>),
+}
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -50,8 +60,10 @@ enum Nav {
 // ── TuiApp ──────────────────────────────────────────────────────
 
 pub(super) struct TuiApp {
-    events: Vec<crate::domain::model::Event>,
-    filtered: Vec<usize>,
+    store: EventStore,
+
+    /// Indices into store.window() for events matching text_filter
+    visible: Vec<usize>,
     selected: usize,
     list_offset: usize,
     list_vp_h: usize,
@@ -59,22 +71,20 @@ pub(super) struct TuiApp {
     detail_layout: DetailLayout,
     detail_seq: Option<i64>,
     detail_scroll: u16,
-    filter: String,
+    text_filter: String,
     search_active: bool,
     chat_filter_input: String,
     chat_filter_active: bool,
-    last_seq: i64,
-    chat_filter: Option<i64>,
-    kind_filter: Option<String>,
     follow: bool,
-    db: toasty::Db,
+    back_loading: bool,
+    pending: Vec<Action>,
 }
 
 impl TuiApp {
     fn new(db: toasty::Db, chat_filter: Option<i64>, kind_filter: Option<String>) -> Self {
         Self {
-            events: Vec::new(),
-            filtered: Vec::new(),
+            store: EventStore::new(db, chat_filter, kind_filter),
+            visible: Vec::new(),
             selected: 0,
             list_offset: 0,
             list_vp_h: 20,
@@ -82,101 +92,83 @@ impl TuiApp {
             detail_layout: DetailLayout::Split,
             detail_seq: None,
             detail_scroll: 0,
-            filter: String::new(),
+            text_filter: String::new(),
             search_active: false,
             chat_filter_input: String::new(),
             chat_filter_active: false,
-            last_seq: 0,
-            chat_filter,
-            kind_filter,
             follow: false,
-            db,
+            back_loading: false,
+            pending: Vec::new(),
         }
     }
 
     async fn load_initial(&mut self) -> crate::error::Result<()> {
-        let events =
-            display::query_events(&self.db, self.chat_filter, self.kind_filter.as_deref(), 200)
-                .await?;
-        self.last_seq = events.first().map(|e| e.seq).unwrap_or(0);
-        self.events = events;
-        self.events.reverse();
-        self.rebuild_filter();
+        self.store.load_end().await;
+        self.rebuild_visible();
         self.follow_end();
         Ok(())
     }
 
-    fn rebuild_filter(&mut self) {
-        self.filtered = self
-            .events
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                if !self.filter.is_empty() {
+    fn rebuild_visible(&mut self) {
+        self.visible = if self.text_filter.is_empty() {
+            (0..self.store.window().len()).collect()
+        } else {
+            self.store
+                .window()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
                     EventDisplay::from_event(e)
-                        .is_some_and(|d| d.one_liner.contains(&self.filter))
-                } else {
-                    true
-                }
-            })
-            .map(|(i, _)| i)
-            .collect();
-        let max = self.filtered.len().saturating_sub(1);
+                        .is_some_and(|d| d.one_liner.contains(&self.text_filter))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let max = self.visible.len().saturating_sub(1);
         self.selected = self.selected.min(max);
     }
 
-    async fn poll_new(&mut self) {
-        let Ok(events) = display::query_new_events(
-            &self.db,
-            self.last_seq,
-            self.chat_filter,
-            self.kind_filter.as_deref(),
-        )
-        .await
-        else {
-            return;
-        };
-
-        if events.is_empty() {
-            return;
-        }
-        self.last_seq = events.last().map(|e| e.seq).unwrap_or(self.last_seq);
-        self.events.extend(events);
-        self.rebuild_filter();
-        if self.follow {
-            self.follow_end();
-        }
-    }
-
-    // ── Selection ───────────────────────────────────────────────
-
     fn select_at(&mut self, index: usize) {
-        if self.filtered.is_empty() {
+        if self.visible.is_empty() {
             return;
         }
-        self.selected = index.clamp(0, self.filtered.len() - 1);
-        self.follow = false;
+        self.selected = index.clamp(0, self.visible.len() - 1);
+        self.follow = self.selected == self.visible.len() - 1;
         if self.detail_seq.is_some() {
-            self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
+            self.detail_seq = Some(self.store.window()[self.visible[self.selected]].seq);
             self.detail_scroll = 0;
         }
-        self.clamp_list_offset();
+        self.clamp_offset();
     }
 
     fn move_selection(&mut self, delta: isize) {
         let new = (self.selected as isize + delta).max(0) as usize;
-        self.select_at(new.min(self.filtered.len().saturating_sub(1)));
+        self.select_at(new.min(self.visible.len().saturating_sub(1)));
     }
 
     fn follow_end(&mut self) {
-        if self.filtered.is_empty() {
+        if self.visible.is_empty() {
             return;
         }
-        self.selected = self.filtered.len() - 1;
+        self.selected = self.visible.len() - 1;
         self.follow = true;
-        self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
+        self.detail_seq = Some(self.store.window()[self.visible[self.selected]].seq);
         self.detail_scroll = 0;
-        self.clamp_list_offset();
+        self.clamp_offset();
+    }
+
+    fn selected_seq(&self) -> Option<i64> {
+        self.visible
+            .get(self.selected)
+            .map(|&i| self.store.window()[i].seq)
+    }
+
+    fn select_seq(&mut self, seq: i64) {
+        self.selected = self
+            .visible
+            .iter()
+            .position(|&i| self.store.window()[i].seq == seq)
+            .unwrap_or(0);
     }
 
     fn scroll_detail(&mut self, delta: i16) {
@@ -219,8 +211,8 @@ impl TuiApp {
         match nav {
             Nav::MoveUp(n) => self.move_selection(-(n as isize)),
             Nav::MoveDown(n) => self.move_selection(n as isize),
-            Nav::GoTop => self.select_at(0),
-            Nav::GoEnd => self.follow_end(),
+            Nav::GoTop => self.pending.push(Action::JumpStart),
+            Nav::GoEnd => self.pending.push(Action::JumpEnd),
             Nav::ScrollUp(n) => self.scroll_detail(-(n as i16)),
             Nav::ScrollDown(n) => self.scroll_detail(n as i16),
             Nav::ToggleFocus => {
@@ -239,8 +231,8 @@ impl TuiApp {
                     self.detail_seq = None;
                     self.detail_scroll = 0;
                     self.follow = false;
-                } else if !self.filtered.is_empty() {
-                    self.detail_seq = Some(self.events[self.filtered[self.selected]].seq);
+                } else if !self.visible.is_empty() {
+                    self.detail_seq = Some(self.store.window()[self.visible[self.selected]].seq);
                     self.detail_scroll = 0;
                 }
             }
@@ -254,7 +246,7 @@ impl TuiApp {
             }
             Nav::Search if !self.search_active => {
                 self.search_active = true;
-                self.filter.clear();
+                self.text_filter.clear();
             }
             Nav::Search => {}
             Nav::FilterChat if !self.search_active && !self.chat_filter_active => {
@@ -282,7 +274,7 @@ impl TuiApp {
         let mut tick = tokio::time::interval(Duration::from_millis(POLL_MS));
         loop {
             tokio::select! {
-                _ = tick.tick() => self.poll_new().await,
+                _ = tick.tick() => self.tick().await,
                 result = self.handle_input() => if result == Control::Quit { break; },
             }
             terminal.draw(|f| self.render(f))?;
@@ -312,15 +304,15 @@ impl TuiApp {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.search_active = false;
-                    self.rebuild_filter();
+                    self.rebuild_visible();
                 }
                 KeyCode::Char(c) => {
-                    self.filter.push(c);
-                    self.rebuild_filter();
+                    self.text_filter.push(c);
+                    self.rebuild_visible();
                 }
                 KeyCode::Backspace => {
-                    self.filter.pop();
-                    self.rebuild_filter();
+                    self.text_filter.pop();
+                    self.rebuild_visible();
                 }
                 _ => {}
             }
@@ -331,12 +323,15 @@ impl TuiApp {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.chat_filter_active = false;
-                    self.chat_filter = if self.chat_filter_input.is_empty() {
+                    let filter = if self.chat_filter_input.is_empty() {
                         None
                     } else {
-                        self.chat_filter_input.parse::<i64>().ok().filter(|&n| n != 0)
+                        self.chat_filter_input
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|&n| n != 0)
                     };
-                    let _ = self.load_initial().await;
+                    self.pending.push(Action::ApplyChatFilter(filter));
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '-' => {
                     self.chat_filter_input.push(c);
@@ -360,9 +355,58 @@ impl TuiApp {
         Control::Continue
     }
 
+    async fn tick(&mut self) {
+        let actions: Vec<Action> = std::mem::take(&mut self.pending);
+        for action in actions {
+            match action {
+                Action::JumpStart => {
+                    self.store.load_start().await;
+                    self.rebuild_visible();
+                    self.select_at(0);
+                    self.list_offset = 0;
+                }
+                Action::JumpEnd => {
+                    self.store.load_end().await;
+                    self.rebuild_visible();
+                    self.follow_end();
+                }
+                Action::ExtendBack => {
+                    self.back_loading = true;
+                    let prev = self.selected_seq();
+                    let n = self.store.extend_back().await;
+                    self.back_loading = false;
+                    if n > 0 {
+                        self.rebuild_visible();
+                        if let Some(seq) = prev {
+                            self.select_seq(seq);
+                        }
+                        self.clamp_offset();
+                    }
+                }
+                Action::ApplyChatFilter(filter) => {
+                    self.store.chat_filter = filter;
+                    self.store.load_end().await;
+                    self.rebuild_visible();
+                    self.follow_end();
+                }
+            }
+        }
+
+        let new = self.store.poll().await;
+
+        if new > 0 {
+            self.rebuild_visible();
+            if self.follow {
+                self.follow_end();
+            }
+        }
+    }
+
     // ── Render ──────────────────────────────────────────────────
 
     fn render(&mut self, f: &mut Frame) {
+        self.store.set_viewport(self.list_vp_h);
+
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
@@ -387,16 +431,17 @@ impl TuiApp {
     fn render_header(&self, f: &mut Frame, area: Rect) {
         let left = format!(
             " hai {} {}/{}events ",
-            self.chat_filter
+            self.store
+                .chat_filter
                 .map(|c| format!("Chat {c:+}"))
                 .unwrap_or_default(),
-            self.filtered.len(),
-            self.events.len(),
+            self.visible.len(),
+            self.store.window().len(),
         );
         let right = if self.chat_filter_active {
             format!(" chat: {} ", self.chat_filter_input)
-        } else if !self.filter.is_empty() {
-            format!(" filter: {} ", self.filter)
+        } else if !self.text_filter.is_empty() {
+            format!(" filter: {} ", self.text_filter)
         } else {
             String::new()
         };
@@ -417,10 +462,9 @@ impl TuiApp {
             (Focus::Detail, Some(_), DetailLayout::Split) => " detail ",
             _ => " list ",
         };
-        let follow = if self.follow { " G tail" } else { "" };
-        let nav = match self.focus {
-            Focus::List => format!("↑↓/PgUp/PgDn/Ctrl+U/D events{follow}"),
-            Focus::Detail => "↑↓/PgUp/PgDn scroll".into(),
+        let nav: &str = match self.focus {
+            Focus::List => "↑↓/PgUp/PgDn/Ctrl+U/D events",
+            Focus::Detail => "↑↓/PgUp/PgDn scroll",
         };
 
         f.render_widget(
@@ -428,7 +472,7 @@ impl TuiApp {
                 Span::styled(label, Style::new().fg(Color::Black).bg(Color::Cyan)),
                 Span::raw("  "),
                 Span::styled(nav, Style::new().fg(Color::DarkGray)),
-                Span::raw("  Tab focus  Enter full  / search  c chat  q quit"),
+                Span::raw("  Tab focus  Enter full  / search  g start  G end  c chat  q quit"),
             ]),
             area,
         );
@@ -470,14 +514,15 @@ impl TuiApp {
             .border_style(Style::new().fg(focus));
 
         self.list_vp_h = block.inner(area).height as usize;
-        let max_off = self.filtered.len().saturating_sub(self.list_vp_h);
+        let max_off = self.visible.len().saturating_sub(self.list_vp_h);
         self.list_offset = self.list_offset.min(max_off);
 
+        let window = self.store.window();
         let items: Vec<ListItem> = self
-            .filtered
+            .visible
             .iter()
             .filter_map(|&i| {
-                let e = &self.events[i];
+                let e = &window[i];
                 let d = EventDisplay::from_event(e)?;
                 let (cr, cg, cb) = display::color_rgb(e);
                 Some(ListItem::new(Line::from(Span::styled(
@@ -509,11 +554,11 @@ impl TuiApp {
         );
     }
 
-    fn clamp_list_offset(&mut self) {
-        if self.filtered.is_empty() || self.list_vp_h == 0 {
+    fn clamp_offset(&mut self) {
+        if self.visible.is_empty() || self.list_vp_h == 0 {
             return;
         }
-        let max_off = self.filtered.len().saturating_sub(self.list_vp_h);
+        let max_off = self.visible.len().saturating_sub(self.list_vp_h);
 
         if self.selected < self.list_offset {
             self.list_offset = self.selected;
@@ -534,6 +579,10 @@ impl TuiApp {
             self.list_offset = (self.list_offset + overshoot).min(max_off);
         }
         self.list_offset = self.list_offset.min(max_off);
+
+        if self.list_offset < PADDING && !self.store.at_start && !self.back_loading {
+            self.pending.push(Action::ExtendBack);
+        }
     }
 
     fn render_detail(&mut self, f: &mut Frame, area: Rect) {
@@ -574,11 +623,8 @@ impl TuiApp {
     }
 
     fn detail_event(&self) -> Option<&crate::domain::model::Event> {
-        self.detail_seq.and_then(|seq| {
-            self.filtered
-                .iter()
-                .find_map(|&i| (self.events[i].seq == seq).then(|| &self.events[i]))
-        })
+        self.detail_seq
+            .and_then(|seq| self.store.window().iter().find(|e| e.seq == seq))
     }
 
     fn detail_text_lines(&self) -> u16 {
@@ -591,16 +637,18 @@ impl TuiApp {
     fn render_search(&self, f: &mut Frame, area: Rect, title: &str) {
         let popup = centered_rect(50, 3, area);
         f.render_widget(
-            Paragraph::new(
-                if self.chat_filter_active { self.chat_filter_input.as_str() } else { self.filter.as_str() },
-            )
+            Paragraph::new(if self.chat_filter_active {
+                self.chat_filter_input.as_str()
+            } else {
+                self.text_filter.as_str()
+            })
             .block(Block::default().title(title).borders(Borders::ALL)),
             popup,
         );
         let input_len = if self.chat_filter_active {
             self.chat_filter_input.len()
         } else {
-            self.filter.len()
+            self.text_filter.len()
         };
         f.set_cursor_position((popup.x + 1 + input_len as u16, popup.y + 1));
     }

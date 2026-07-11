@@ -68,7 +68,7 @@ pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     }
     let extra_desc = format!("仅支持解析类型：{:?}。", ctx.enabled_parsers.join(", "));
     vec![Arc::new(AnalyzeAttachment::new(
-        ctx.bot.handler.clone(),
+        ctx.handler.clone(),
         &extra_desc,
     ))]
 }

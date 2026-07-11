@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{
     agent::{
-        link::{BotHandle, SendMessageReq},
+        link::{MessageCapability, SendMessageReq},
         runtime::context::ToolContext,
         tools::util::deserialize_option_lenient_i64_vec,
     },
@@ -30,7 +30,7 @@ pub struct SendMessageArgs {
 
 pub struct SendMessage {
     pub chat_id: ChatId,
-    pub bot: BotHandle,
+    pub handler: Arc<dyn crate::agent::link::PlatformHandler>,
     pub services: DbServices,
 }
 
@@ -41,10 +41,9 @@ impl AgentTool for SendMessage {
     }
 
     fn description(&self) -> &str {
-        if self.bot.rich_message {
-            "发送消息，支持富文本"
-        } else {
-            "发送消息"
+        match self.handler.message_capability() {
+            MessageCapability::Rich => "发送消息，支持富文本",
+            _ => "发送消息",
         }
     }
 
@@ -68,7 +67,7 @@ impl AgentTool for SendMessage {
         }
 
         let meta = self
-            .bot
+            .handler
             .send_message(SendMessageReq {
                 chat_id: self.chat_id,
                 content: args.content,
@@ -87,7 +86,7 @@ impl AgentTool for SendMessage {
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     vec![Arc::new(SendMessage {
         chat_id: ctx.chat_id,
-        bot: ctx.bot.clone(),
+        handler: ctx.handler.clone(),
         services: ctx.db.clone(),
     })]
 }

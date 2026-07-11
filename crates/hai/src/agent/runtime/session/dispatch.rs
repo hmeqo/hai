@@ -105,7 +105,7 @@ pub(super) fn spawn_run(
     inbox: Inbox,
     run_number: usize,
 ) -> (JoinHandle<()>, oneshot::Receiver<RunSignal>) {
-    let bot = ctx.bot.clone();
+    let handler = ctx.handler.clone();
     let chat_id = ctx.chat_id;
     let message_ids = payload.message_ids.clone();
     let payload_since_id = payload.since_id;
@@ -118,7 +118,7 @@ pub(super) fn spawn_run(
     let task = tokio::spawn(async move {
         let started_at = tokio::time::Instant::now();
 
-        let _hb = HeartbeatTask::spawn(bot, chat_id);
+        let _hb = HeartbeatTask::spawn(handler, chat_id);
 
         let all_tools = collect_run_tools(&ctx, &engine).await;
 

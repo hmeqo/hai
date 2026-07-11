@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tap::Tap;
 use teloxide::{
     Bot,
     dispatching::{HandlerExt, UpdateFilterExt, dialogue::InMemStorage},
@@ -18,7 +17,6 @@ use super::{
 use crate::{
     agent::{
         event::{WakeEvent, WakeReason},
-        link::{BotHandle, BotId},
         runtime::registry::SessionManager,
     },
     app::AppContext,
@@ -26,29 +24,22 @@ use crate::{
     error::{AppError, Result},
 };
 
-/// Telegram 分发器
 pub struct TelegramDispatcher {
-    pub bot_id: BotId,
-    pub bot: Bot,
-    pub handle: BotHandle,
-    pub allowed_chat_ids: Vec<i64>,
+    bot: Bot,
+    allowed_chat_ids: Vec<i64>,
     msg_handler: MessageHandler,
 }
 
 impl TelegramDispatcher {
     pub async fn new(
-        bot_id: BotId,
         bot: Bot,
         ctx: AppContext,
         registry: SessionManager,
-        handle: BotHandle,
         allowed_chat_ids: Vec<i64>,
     ) -> Result<Self> {
         bot.set_my_commands(Command::bot_commands()).await?;
         Ok(Self {
-            bot_id,
             bot,
-            handle,
             allowed_chat_ids,
             msg_handler: MessageHandler::new(ctx, registry),
         })
@@ -110,7 +101,6 @@ impl TelegramDispatcher {
             .enable_ctrlc_handler()
             .build()
             .dispatch()
-            .tap(|_| tracing::info!(bot_id = %this.bot_id, "Telegram dispatcher started"))
             .await;
 
         Ok(())

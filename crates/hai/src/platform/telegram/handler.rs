@@ -1,6 +1,5 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
 
-use derive_more::Deref;
 use teloxide::{
     Bot,
     payloads::{SendMessageSetters, SendVoiceSetters},
@@ -14,8 +13,12 @@ use super::{
     util::escape_md_v2,
 };
 use crate::{
-    agent::link::{ContentParser, PlatformHandler, SendMessageReq, SendVoiceReq, SentMessageMeta},
+    agent::link::{
+        BotId, BotProfile, ContentParser, MessageCapability, PlatformHandler, SendMessageReq,
+        SendVoiceReq, SentMessageMeta,
+    },
     app::AppContext,
+    config::schema::BotConfig,
     domain::{
         service::NewAgentMessage,
         vo::{ChatId, FileId, TelegramContentPart, VoiceMeta},
@@ -25,29 +28,36 @@ use crate::{
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
-pub struct TelegramPlatformHandlerInner {
+pub struct TelegramPlatformHandler {
     bot: Bot,
     srv: TelegramService,
+    bot_id: BotId,
     account_id: i64,
+    name: String,
+    username: String,
     ctx: AppContext,
     media: TelegramMediaAnalyzer,
     rich_message: bool,
 }
 
-#[derive(Clone, Deref)]
-pub struct TelegramPlatformHandler(Arc<TelegramPlatformHandlerInner>);
-
 impl TelegramPlatformHandler {
-    pub fn new(bot: Bot, account_id: i64, ctx: AppContext, rich_message: bool) -> Self {
+    pub async fn new(bot: Bot, ctx: AppContext, cfg: &BotConfig) -> Result<Self> {
+        let bot_id = BotId::new(cfg.key.clone(), cfg.platform);
+        let account_id = ctx.db.srv.platform.ensure_bot_account().await?.id;
+        let me = bot.get_me().await?;
+        let name = bot.get_my_name().await?.name;
         let srv = TelegramService::new(bot.clone());
-        Self(Arc::new(TelegramPlatformHandlerInner {
+        Ok(Self {
             media: TelegramMediaAnalyzer::new(srv.clone(), ctx.clone()),
             srv,
             bot,
+            bot_id,
             account_id,
+            name,
+            username: me.username.clone().unwrap_or_default(),
             ctx,
-            rich_message,
-        }))
+            rich_message: cfg.rich_message,
+        })
     }
 
     async fn resolve_platform_chat_id(&self, chat_id: ChatId) -> Result<i64> {
@@ -162,9 +172,11 @@ impl PlatformHandler for TelegramPlatformHandler {
             .await?;
 
         let sent_msg = if self.rich_message {
-            self.send_with_rich_fallback(&req.content, cid, &reply_params).await?
+            self.send_with_rich_fallback(&req.content, cid, &reply_params)
+                .await?
         } else {
-            self.send_with_markdown_fallback(&req.content, cid, &reply_params).await?
+            self.send_with_markdown_fallback(&req.content, cid, &reply_params)
+                .await?
         };
 
         let content = serde_json::to_value(vec![TelegramContentPart::Text { text: req.content }])?;
@@ -258,8 +270,28 @@ impl PlatformHandler for TelegramPlatformHandler {
         Ok(content)
     }
 
+    fn bot_id(&self) -> BotId {
+        self.bot_id.clone()
+    }
+
+    fn profile(&self) -> BotProfile {
+        BotProfile {
+            account_id: self.account_id,
+            name: self.name.clone(),
+            username: self.username.clone(),
+        }
+    }
+
     fn content_parser(&self) -> &'static dyn ContentParser {
         &TelegramContentParser
+    }
+
+    fn message_capability(&self) -> MessageCapability {
+        if self.rich_message {
+            MessageCapability::Rich
+        } else {
+            MessageCapability::MarkdownV2
+        }
     }
 }
 

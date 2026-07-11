@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 pub use manager::Config;
 pub use paths::PathResolver;
-pub use provider_manager::ProviderManager;
+pub use provider_manager::ProviderRegistry;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use struct_patch::Patch;

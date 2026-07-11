@@ -27,7 +27,6 @@ reqwest = "0.13"
 mime = "0.3"
 arc-swap = "1.7"
 derive_more = { version = "2", features = ["full"] }
-tap = "1"
 jiff = { version = "0.2", features = ["serde"] }
 toasty = { version = "0.7", features = ["postgresql", "jiff", "serde"] }
 toasty-cli = "0.7"

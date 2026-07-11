@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -9,6 +9,7 @@ use self::super::scheduler::SchedulerStatus;
 use crate::{
     agent::{
         event::WakeEvent,
+        link::PlatformHandler,
         runtime::{event::Inbox, types::RunOutput},
     },
     domain::vo::ChatId,
@@ -64,12 +65,12 @@ impl SessionHandle {
 pub(super) struct HeartbeatTask(JoinHandle<()>);
 
 impl HeartbeatTask {
-    pub fn spawn(bot: crate::agent::link::BotHandle, chat_id: ChatId) -> Self {
+    pub fn spawn(handler: Arc<dyn PlatformHandler>, chat_id: ChatId) -> Self {
         Self(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                bot.send_typing(chat_id).await;
+                handler.send_typing(chat_id).await;
             }
         }))
     }

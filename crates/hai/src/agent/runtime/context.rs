@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 
 use super::shell::ShellRuntime;
 use crate::{
-    agent::{event::WakeEvents, link::BotHandle, multimodal::MultimodalService},
+    agent::{event::WakeEvents, link::PlatformHandler, multimodal::MultimodalService},
     agentcore::skills::SkillManager,
     app::AppContext,
     domain::{model::ChatType, service::DbServices, vo::ChatId},
@@ -15,7 +15,7 @@ pub struct RunContext {
     pub app: AppContext,
     pub chat_id: ChatId,
     pub chat_type: ChatType,
-    pub bot: BotHandle,
+    pub handler: Arc<dyn PlatformHandler>,
     pub events: WakeEvents,
     pub skill_manager: SkillManager,
     pub db: DbServices,
@@ -30,7 +30,7 @@ impl RunContext {
     pub fn tool_ctx(&self) -> ToolContext {
         ToolContext {
             chat_id: self.chat_id,
-            bot: self.bot.clone(),
+            handler: self.handler.clone(),
             db: self.db.clone(),
             shell: self.shell.clone(),
             skill_manager: self.skill_manager.clone(),
@@ -46,7 +46,7 @@ impl RunContext {
 /// 工具层窄上下文（不含 `AppContext`）。
 pub struct ToolContext {
     pub chat_id: ChatId,
-    pub bot: BotHandle,
+    pub handler: Arc<dyn PlatformHandler>,
     pub db: DbServices,
     pub shell: Arc<Mutex<ShellRuntime>>,
     pub skill_manager: SkillManager,

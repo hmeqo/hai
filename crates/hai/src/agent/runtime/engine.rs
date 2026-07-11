@@ -32,7 +32,7 @@ impl AgentEngine {
 
         let client = provider::create_genai_client(provider)?;
 
-        let model = provider::genai_model_name(provider, &cfg.agent.model);
+        let model = cfg.agent.model.clone();
 
         Ok(Self(Arc::new(AgentEngineInner {
             app,

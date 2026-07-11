@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use super::TelegramService;
 use crate::{
-    agent::multimodal::MediaInput,
+    agent::multimodal::MediaSource,
     app::AppContext,
     domain::{
         model::Platform,
@@ -74,7 +74,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_image(MediaInput::from_bytes(data, None), prompt)
+                    .analyze_image(MediaSource::Bytes(data), prompt)
                     .await
             }
             AttachmentParser::Image => {
@@ -82,7 +82,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_image(MediaInput::from_url(url, None), prompt)
+                    .analyze_image(MediaSource::Url(url), prompt)
                     .await
             }
             AttachmentParser::Ocr => {
@@ -90,7 +90,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .ocr(MediaInput::from_url(url, None))
+                    .ocr(MediaSource::Url(url))
                     .await
             }
             AttachmentParser::Video => {
@@ -98,7 +98,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_video(MediaInput::from_url(url, part.media_format()), prompt)
+                    .analyze_video(MediaSource::Url(url), part.media_format(), prompt)
                     .await
             }
             AttachmentParser::Audio => {
@@ -106,7 +106,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_audio(MediaInput::from_bytes(data, part.media_format()), prompt)
+                    .analyze_audio(MediaSource::Bytes(data), part.media_format(), prompt)
                     .await
             }
         }

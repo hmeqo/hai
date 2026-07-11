@@ -1,37 +1,31 @@
 use std::{collections::HashMap, str::FromStr};
 
-use genai::Client;
-
 use crate::{
-    agentcore::{
-        provider::{self, Vendor},
-        rawclient::{RawAgent, RawClient},
-    },
+    agentcore::{Endpoint, provider::Vendor},
     config::AppConfig,
     error::{AppResultExt, ErrorKind, OptionAppExt, Result},
 };
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProviderEntry {
     pub config: crate::config::schema::ProviderConfig,
     pub vendor: Vendor,
 }
 
-/// 统一管理的 provider 集合。
-/// 启动时一次性解析配置文件中所有 provider（按名称存储），后续按需取用。
-#[derive(Clone)]
-pub struct ProviderManager {
+#[derive(Debug, Clone)]
+pub struct ProviderRegistry {
     providers: HashMap<String, ProviderEntry>,
 }
 
-impl ProviderManager {
+impl ProviderRegistry {
     pub fn new(config: &AppConfig) -> Result<Self> {
         let mut providers = HashMap::new();
 
         for (name, provider_cfg) in &config.providers {
-            let vendor = Vendor::from_str(name).err_kind_msg(
+            let vendor_name = provider_cfg.r#type.as_deref().unwrap_or(name);
+            let vendor = Vendor::from_str(vendor_name).err_kind_msg(
                 ErrorKind::Config,
-                format!("Invalid provider type '{}'", name),
+                format!("Invalid provider type '{vendor_name}'"),
             )?;
 
             providers.insert(
@@ -53,24 +47,21 @@ impl ProviderManager {
     pub(crate) fn get_checked(&self, provider: &str) -> Result<&ProviderEntry> {
         self.get(provider).ok_or_err_msg(
             ErrorKind::Config,
-            format!("Provider '{}' not found", provider),
+            format!("Provider '{provider}' not found"),
         )
     }
 
-    pub fn build_client(&self, provider: &str) -> RawClient {
-        let entry = self.get_checked(provider).expect("provider configured");
+    /// 解析 provider 的连接参数 + 模型名，返回 `Endpoint`。
+    pub fn resolve(&self, provider: &str, model: &str) -> Result<Endpoint> {
+        let entry = self.get_checked(provider)?;
         let base_url = entry
             .vendor
             .resolve_base_url(entry.config.base_url.as_deref());
-        RawClient::new(entry.config.api_key.as_deref(), base_url)
-    }
-
-    pub fn build_agent(&self, provider: &str, model: &str) -> RawAgent {
-        self.build_client(provider).agent(model)
-    }
-
-    pub fn build_genai_client(&self, provider: &str) -> Result<Client> {
-        let entry = self.get_checked(provider)?;
-        provider::create_genai_client(entry)
+        let api_key = entry.config.api_key.clone().unwrap_or_default();
+        Ok(Endpoint {
+            base_url,
+            api_key,
+            model: model.to_owned(),
+        })
     }
 }

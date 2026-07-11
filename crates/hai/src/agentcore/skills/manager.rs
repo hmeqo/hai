@@ -20,7 +20,7 @@ pub struct Skill {
 }
 
 impl Skill {
-    pub fn resolved_body(&self) -> String {
+    pub fn body(&self) -> String {
         let base = self.base_dir.to_string_lossy();
         self.body.replace("{baseDir}", &base)
     }

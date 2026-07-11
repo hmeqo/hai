@@ -6,11 +6,11 @@ use tokio::{
 };
 
 use super::{AgentEngine, event::Inbox, session::SessionHandle, shell::ShellRuntime};
-use crate::{agent::link::BotHandle, domain::vo::ChatId};
+use crate::{agent::link::PlatformHandler, domain::vo::ChatId};
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<ChatId, SessionEntry>>>,
-    bot: BotHandle,
+    handler: Arc<dyn PlatformHandler>,
     engine: AgentEngine,
 }
 
@@ -20,10 +20,10 @@ struct SessionEntry {
 }
 
 impl SessionManager {
-    pub fn new(bot: BotHandle, engine: AgentEngine) -> Self {
+    pub fn new(handler: Arc<dyn PlatformHandler>, engine: AgentEngine) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            bot,
+            handler,
             engine,
         }
     }
@@ -52,14 +52,14 @@ impl SessionManager {
             std::sync::Arc::new(Mutex::new(ShellRuntime::new(&self.engine.app.cfg.sandbox)));
 
         let engine = self.engine.clone();
-        let bot = self.bot.clone();
+        let handler = self.handler.clone();
         let inbox_for_run = inbox.clone();
 
         let task = tokio::spawn(async move {
             let session = super::session::AgentSession::new(
                 engine,
                 chat_id,
-                bot,
+                handler,
                 shell,
                 base_heat,
                 window_secs,

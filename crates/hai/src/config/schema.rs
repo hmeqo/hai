@@ -268,6 +268,18 @@ pub struct EmbeddingConfig {
     pub dimension: Option<i32>,
 }
 
+impl EmbeddingConfig {
+    pub fn provider(&self, fallback: &str) -> String {
+        self.provider.as_deref().unwrap_or(fallback).to_owned()
+    }
+    pub fn model(&self) -> String {
+        self.model.as_deref().unwrap_or("").to_owned()
+    }
+    pub fn dimension(&self) -> i32 {
+        self.dimension.unwrap_or(1024)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
@@ -276,7 +288,7 @@ pub struct TtsConfig {
     /// provider 名称（对应 AppConfig.providers 中的 key），为空时使用 agent.provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// 模型名称，为空时使用 "tts-1"
+    /// 模型名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// 发音人
@@ -533,7 +545,7 @@ pub struct BotConfig {
     pub rich_message: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, EnumIter, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "lowercase")]
 pub enum BotPlatform {
     Telegram,

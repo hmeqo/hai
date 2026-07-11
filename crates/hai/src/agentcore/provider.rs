@@ -1,10 +1,13 @@
 use genai::{
     Client, ServiceTarget,
+    adapter::AdapterKind,
     resolver::{AuthData, Endpoint},
 };
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::{config::provider_manager::ProviderEntry, error::Result};
+use crate::{
+    config::provider_manager::ProviderEntry, error::Result, util::url::ensure_trailing_slash,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr)]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -47,41 +50,38 @@ impl Vendor {
             .unwrap_or_else(|| self.default_base_url().to_string())
     }
 
-    fn genai_model_prefix(&self) -> &'static str {
+    fn genai_adapter_kind(&self) -> AdapterKind {
         match self {
-            Self::OpenRouter => "open_router::",
-            Self::OpenAI => "",
-            Self::Anthropic => "",
-            Self::Google => "",
-            Self::DeepSeek => "deepseek::",
-            Self::Groq => "groq::",
-            Self::Ollama => "",
-            Self::XAI => "xai::",
-            Self::AzureOpenAI => "",
-            Self::MiniMax => "minimax::",
-            Self::Phind => "phind::",
-            Self::Requesty => "",
+            Self::OpenRouter => AdapterKind::OpenRouter,
+            Self::OpenAI => AdapterKind::OpenAI,
+            Self::Anthropic => AdapterKind::Anthropic,
+            Self::Google => AdapterKind::Gemini,
+            Self::DeepSeek => AdapterKind::DeepSeek,
+            Self::Groq => AdapterKind::Groq,
+            Self::Ollama => AdapterKind::Ollama,
+            Self::XAI => AdapterKind::Xai,
+            Self::AzureOpenAI => AdapterKind::OpenAI,
+            Self::MiniMax => AdapterKind::MiniMax,
+            Self::Phind => AdapterKind::OpenAI,
+            Self::Requesty => AdapterKind::OpenAI,
         }
     }
 }
 
-pub(crate) fn genai_model_name(entry: &ProviderEntry, model: &str) -> String {
-    let prefix = entry.vendor.genai_model_prefix();
-    format!("{prefix}{model}")
-}
-
 pub(crate) fn create_genai_client(entry: &ProviderEntry) -> Result<Client> {
     let api_key = entry.config.api_key.clone().unwrap_or_default();
-    let mut builder = Client::builder()
-        .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(api_key.clone()))));
+    let base_url = ensure_trailing_slash(
+        entry
+            .vendor
+            .resolve_base_url(entry.config.base_url.as_deref()),
+    );
 
-    if let Some(base_url) = &entry.config.base_url {
-        let url = base_url.clone();
-        builder = builder.with_service_target_resolver_fn(move |mut target: ServiceTarget| {
-            target.endpoint = Endpoint::from_owned(url.clone());
+    Ok(Client::builder()
+        .with_adapter_kind(entry.vendor.genai_adapter_kind())
+        .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(api_key))))
+        .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
+            target.endpoint = Endpoint::from_owned(base_url);
             Ok(target)
-        });
-    }
-
-    Ok(builder.build())
+        })
+        .build())
 }

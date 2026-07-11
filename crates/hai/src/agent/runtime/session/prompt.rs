@@ -28,7 +28,7 @@ impl AgentSession {
             app: self.engine.app.clone(),
             chat_id: self.chat_id,
             chat_type: self.chat_type,
-            bot: self.bot.clone(),
+            handler: self.handler.clone(),
             events,
             skill_manager: self.engine.skill_manager.clone(),
             db: self.engine.app.db.srv.clone(),
