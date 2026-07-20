@@ -56,8 +56,7 @@ fn build_character_sketch(p: &PersonalityConfig) -> String {
     ];
 
     let dims = format!(
-        "### 维度数值\n\
-        按你理解来微调表现即可\n{}",
+        "### 具体维度数值\n{}",
         p.dims()
             .iter()
             .map(|(name, value, meaning)| { format!("- {name}: {value:.2} ({meaning})") })

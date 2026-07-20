@@ -4,7 +4,9 @@ use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    macros::{line, vertical},
+    prelude::Stylize,
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -407,19 +409,11 @@ impl TuiApp {
     fn render(&mut self, f: &mut Frame) {
         self.store.set_viewport(self.list_vp_h);
 
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-        let Some([top, body, bot]) = chunks.first_chunk::<3>() else {
-            return;
-        };
+        let [top, body, bot] = vertical![==1, >=0, ==1].areas(f.area());
 
-        self.render_header(f, *top);
-        self.render_body(f, *body);
-        self.render_status(f, *bot);
+        self.render_header(f, top);
+        self.render_body(f, body);
+        self.render_status(f, bot);
 
         if self.search_active {
             self.render_search(f, f.area(), " search ");
@@ -446,14 +440,7 @@ impl TuiApp {
             String::new()
         };
 
-        f.render_widget(
-            Line::from(vec![
-                Span::styled(left, Style::new().bold()),
-                Span::raw(" "),
-                Span::styled(right, Style::new().fg(Color::DarkGray).italic()),
-            ]),
-            area,
-        );
+        f.render_widget(line![left.bold(), " ", right.dark_gray().italic()], area);
     }
 
     fn render_status(&self, f: &mut Frame, area: Rect) {
@@ -468,12 +455,12 @@ impl TuiApp {
         };
 
         f.render_widget(
-            Line::from(vec![
-                Span::styled(label, Style::new().fg(Color::Black).bg(Color::Cyan)),
-                Span::raw("  "),
-                Span::styled(nav, Style::new().fg(Color::DarkGray)),
-                Span::raw("  Tab focus  Enter full  / search  g start  G end  c chat  q quit"),
-            ]),
+            line![
+                label.black().on_cyan(),
+                "  ",
+                nav.dark_gray(),
+                "  Tab focus  Enter full  / search  g start  G end  c chat  q quit"
+            ],
             area,
         );
     }

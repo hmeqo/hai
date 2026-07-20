@@ -42,7 +42,7 @@ impl AgentTool for SendMessage {
 
     fn description(&self) -> &str {
         match self.handler.message_capability() {
-            MessageCapability::Rich => "发送消息，支持富文本",
+            MessageCapability::Rich => "发送消息（支持富文本）",
             _ => "发送消息",
         }
     }

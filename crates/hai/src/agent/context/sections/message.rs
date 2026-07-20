@@ -1,28 +1,36 @@
-use std::collections::HashSet;
-
 use crate::{
-    agent::context::{RenderContext, fmt::format_time_dyn2},
+    agent::context::{
+        RenderContext,
+        fmt::{format_date_label, format_time_only},
+    },
     agentcore::render::elements::Node,
     domain::model::{Message, MessageStatus},
 };
 
 pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
-    let sent_at = format_time_dyn2(msg.sent_at);
     let is_replied = msg.status() == Some(MessageStatus::Replied);
+    let own = msg.account_id == Some(ctx.bot.account_id);
+    let is_new = msg.interaction_status == MessageStatus::Unread.as_str();
 
-    let mut b = Node::tag("message")
+    let mut b = Node::tag("msg")
         .attr("id", msg.id)
-        .attr("sent_at", sent_at.as_str());
+        .attr("from", ctx.sender_name(msg))
+        .attr("at", format_time_only(msg.sent_at));
 
     if is_replied {
         b = b.attr("replied", true);
+    }
+    if own {
+        b = b.attr("own", true);
+    }
+    if is_new {
+        b = b.attr("new", true);
     }
 
     if let Some(reply_id) = msg.reply_to_id
         && let Some(replied_msg) = ctx.get_message(reply_id)
     {
         let replied_sender = ctx.sender_name(replied_msg);
-        let replied_sent_at = format_time_dyn2(replied_msg.sent_at);
         let replied_is_replied = replied_msg.status() == Some(MessageStatus::Replied);
 
         let mut elements = (ctx.content_renderer)(&replied_msg.content);
@@ -30,8 +38,8 @@ pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
 
         let mut reference = Node::tag("reference")
             .attr("id", reply_id)
-            .attr("sender", replied_sender.as_str())
-            .attr("sent_at", replied_sent_at.as_str());
+            .attr("from", replied_sender.as_str())
+            .attr("at", format_time_only(replied_msg.sent_at));
 
         if replied_is_replied {
             reference = reference.attr("replied", true);
@@ -45,95 +53,30 @@ pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
     b.children(content_elements)
 }
 
-pub(crate) fn messages_elements(messages: &[&Message], ctx: &RenderContext) -> Vec<Node> {
-    let mut result = Vec::new();
-    let mut i = 0;
-
-    while i < messages.len() {
-        let topic_hint = ctx.topic_hint(messages[i]);
-
-        let mut j = i + 1;
-        while j < messages.len() && ctx.topic_hint(messages[j]) == topic_hint {
-            j += 1;
-        }
-
-        let topic_msgs = &messages[i..j];
-        let mut sender_groups = Vec::new();
-        let mut si = 0;
-
-        while si < topic_msgs.len() {
-            let sender = ctx.sender_name(topic_msgs[si]);
-            let mut sj = si + 1;
-            while sj < topic_msgs.len() && ctx.sender_name(topic_msgs[sj]) == sender {
-                sj += 1;
-            }
-
-            let msg_nodes: Vec<Node> = topic_msgs[si..sj]
-                .iter()
-                .map(|m| message_element(m, ctx))
-                .collect();
-
-            sender_groups.push(
-                Node::tag("sender")
-                    .attr("name", sender.as_str())
-                    .children(msg_nodes),
-            );
-
-            si = sj;
-        }
-
-        if !topic_hint.is_empty() {
-            result.push(
-                Node::tag("topic")
-                    .attr("title", topic_hint.trim())
-                    .children(sender_groups),
-            );
-        } else {
-            result.extend(sender_groups);
-        }
-
-        i = j;
-    }
-
-    result
-}
-
 pub fn conversation_element(messages: &[&Message], ctx: &RenderContext) -> Node {
     if messages.is_empty() {
-        return Node::tag("conversation");
+        return Node::tag("conversation").attr("total", 0);
     }
 
-    let main_ids: HashSet<i64> = messages.iter().map(|m| m.id).collect();
-
-    let mut seen_reply_ids = HashSet::<i64>::new();
-    let reply_context_msgs: Vec<&Message> = messages
+    let first_unread = messages
         .iter()
-        .filter_map(|m| m.reply_to_id)
-        .filter(|rid| !main_ids.contains(rid) && seen_reply_ids.insert(*rid))
-        .filter_map(|rid| ctx.get_message(rid))
-        .collect();
+        .position(|m| m.interaction_status == MessageStatus::Unread.as_str());
 
-    let (history, unread): (Vec<_>, Vec<_>) = messages
-        .iter()
-        .partition(|m| m.interaction_status != MessageStatus::Unread.as_str());
+    let mut root = Node::tag("conversation").attr("total", messages.len() as i64);
+    let mut prev_date: Option<String> = None;
 
-    let mut root = Node::tag("conversation");
+    for (i, msg) in messages.iter().enumerate() {
+        let label = format_date_label(msg.sent_at);
+        if prev_date.as_ref() != Some(&label) {
+            root = root.child(Node::tag("date").attr("value", &label));
+            prev_date = Some(label);
+        }
 
-    if !reply_context_msgs.is_empty() {
-        root = root.child(
-            Node::tag("reply_context")
-                .children(messages_elements(reply_context_msgs.as_slice(), ctx)),
-        );
-    }
+        if Some(i) == first_unread {
+            root = root.child(Node::tag("separator"));
+        }
 
-    root = root.child(
-        Node::tag("history")
-            .attr("limit", history.len() as i64)
-            .children(messages_elements(&history, ctx)),
-    );
-
-    if !unread.is_empty() {
-        root = root.child(Node::tag("unread").children(messages_elements(&unread, ctx)));
+        root = root.child(message_element(msg, ctx));
     }
 
     root

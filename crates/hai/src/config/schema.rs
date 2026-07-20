@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
+use genai::chat::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use struct_patch::Patch;
@@ -102,24 +103,13 @@ pub struct AgentConfig {
     pub attention: AttentionConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ReasoningEffort {
-    Low,
-    Medium,
-    High,
-}
-
 impl AgentConfig {
-    pub fn reasoning_effort(&self) -> Result<ReasoningEffort> {
-        match self.reasoning_effort.as_str() {
-            "low" => Ok(ReasoningEffort::Low),
-            "medium" => Ok(ReasoningEffort::Medium),
-            "high" => Ok(ReasoningEffort::High),
-            _ => Err(ErrorKind::InvalidParameter.msg(format!(
-                "Invalid reasoning effort: {}",
-                self.reasoning_effort
-            ))),
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        let r = ReasoningEffort::from_keyword(&self.reasoning_effort);
+        if r.is_none() {
+            tracing::warn!("Invalid reasoning_effort '{}'", self.reasoning_effort);
         }
+        r
     }
 }
 
@@ -329,38 +319,6 @@ pub struct MultimodalConfig {
     pub tts: TtsConfig,
 }
 
-// ── Misc ──
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
-#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
-#[patch(attribute(skip_serializing_none))]
-#[serde(default, rename_all = "kebab-case")]
-pub struct GenerationModelConfig {
-    pub provider: String,
-    pub model: String,
-    pub enabled: bool,
-    pub input_type: ModalityType,
-    pub output_type: ModalityType,
-}
-
-impl Default for GenerationModelConfig {
-    fn default() -> Self {
-        Self {
-            provider: String::new(),
-            model: String::new(),
-            enabled: true,
-            input_type: ModalityType::Text,
-            output_type: ModalityType::Image,
-        }
-    }
-}
-
-impl GenerationModelConfig {
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
@@ -417,13 +375,9 @@ pub struct BotConfigRaw {
     pub bot_type: Option<String>,
     pub bot_token: Option<String>,
     pub allowed_chat_ids: Option<Vec<i64>>,
-    /// 启用 sendRichMessage（默认 true）
-    #[serde(default = "default_true")]
+    /// 启用 sendRichMessage
+    // #[serde(default = "default_true")]
     pub rich_message: Option<bool>,
-}
-
-fn default_true() -> Option<bool> {
-    Some(true)
 }
 
 /// 单个 provider 的配置
@@ -584,13 +538,4 @@ impl BotConfig {
             ),
         )
     }
-}
-
-/// 模态类型
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ModalityType {
-    Text,
-    Image,
-    Audio,
-    Video,
 }

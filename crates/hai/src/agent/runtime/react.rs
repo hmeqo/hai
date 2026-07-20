@@ -3,8 +3,8 @@ use std::sync::Arc;
 use genai::{
     Client,
     chat::{
-        ChatMessage, ChatOptions, ChatRequest, ContentPart, MessageContent, ReasoningEffort, Tool,
-        ToolCall, ToolResponse,
+        ChatMessage, ChatOptions, ChatRequest, ContentPart, MessageContent, Tool, ToolCall,
+        ToolResponse,
     },
 };
 
@@ -43,7 +43,7 @@ impl ReactLoopConfig {
             opts = opts.with_max_tokens(maxt);
         }
         if cfg.reasoning
-            && let Some(effort) = ReasoningEffort::from_keyword(&cfg.reasoning_effort)
+            && let Some(effort) = cfg.reasoning_effort()
         {
             opts = opts.with_reasoning_effort(effort);
         }

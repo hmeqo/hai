@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use derive_more::Deref;
-use uuid::Uuid;
 
 use crate::{
     agent::{context::fmt::display_name, link::BotProfile},
@@ -30,7 +29,6 @@ pub struct RenderContext {
     // ── 内置索引（构建时一次性建立，O(1) 查询）──────────────────────────
     accounts_by_id: HashMap<i64, usize>,
     messages_by_id: HashMap<i64, usize>,
-    topics_by_id: HashMap<Uuid, usize>,
 }
 
 /// 构建 `RenderContext` 所需的输入数据（平台无关）
@@ -70,7 +68,6 @@ impl RenderContext {
         let mut ctx = Self {
             accounts_by_id: HashMap::new(),
             messages_by_id: HashMap::new(),
-            topics_by_id: HashMap::new(),
             data,
             content_renderer,
         };
@@ -84,9 +81,6 @@ impl RenderContext {
         }
         for (i, msg) in self.data.messages.iter().enumerate() {
             self.messages_by_id.insert(msg.id, i);
-        }
-        for (i, topic) in self.data.topics.iter().enumerate() {
-            self.topics_by_id.insert(topic.id, i);
         }
     }
 
@@ -102,18 +96,6 @@ impl RenderContext {
             .get(&id)
             .copied()
             .and_then(|i| self.data.accounts.get(i))
-    }
-
-    pub fn topic_hint(&self, msg: &Message) -> String {
-        msg.topic_id
-            .and_then(|tid| {
-                self.topics_by_id
-                    .get(&tid)
-                    .copied()
-                    .and_then(|i| self.data.topics.get(i))
-                    .and_then(|t| t.title.as_deref().map(|s| s.to_string()))
-            })
-            .unwrap_or_default()
     }
 
     pub fn sender_name(&self, msg: &Message) -> String {

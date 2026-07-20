@@ -29,7 +29,7 @@ impl TelegramPlatform {
         Ok(tokio::spawn(async move {
             tracing::info!(bot = %bot_label, "dispatcher started");
             if let Err(e) = dispatcher.run().await {
-                tracing::error!(bot = %bot_label, "dispatcher stopped: {e}");
+                tracing::error!(bot = %bot_label, "dispatcher stopped with error: {e}");
             } else {
                 tracing::info!(bot = %bot_label, "dispatcher stopped");
             }

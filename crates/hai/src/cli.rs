@@ -2,7 +2,7 @@ pub mod display;
 pub mod log;
 pub mod tui;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum, builder::Styles};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, styles = Styles::styled())]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
