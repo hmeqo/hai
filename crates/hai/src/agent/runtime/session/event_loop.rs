@@ -1,49 +1,23 @@
 //! Event loop + 状态类型 + build_status
 
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-    time::Instant,
-};
+use tokio::sync::{mpsc, oneshot};
 
 use super::{
     super::event::{Inbox, WakeEvents},
     AgentSession, SessionState, proxy,
     scheduler::Decision,
 };
-use crate::agent::runtime::types::RunOutput;
+use crate::{
+    agent::runtime::types::{BusySignal, RunOutput},
+    domain::vo::AgentEventPayload,
+};
 
-// ── Active Run ────────────────────────────────────────────────────────────
+// ── Busy Outcome ──────────────────────────────────────────────────────────
 
-pub(super) struct ActiveRun {
-    #[allow(dead_code)]
-    pub(super) handle: JoinHandle<()>,
-    pub(super) result_rx: oneshot::Receiver<proxy::RunSignal>,
-    pub(super) started_at: Instant,
-}
-
-impl ActiveRun {
-    pub(super) async fn await_completion(
-        &mut self,
-        status_rx: &mut mpsc::UnboundedReceiver<oneshot::Sender<proxy::SessionStatus>>,
-    ) -> RunOutcome {
-        tokio::select! {
-            biased;
-            Some(query) = status_rx.recv() => RunOutcome::Status(query),
-            result = &mut self.result_rx => match result {
-                Ok(Some(output)) => RunOutcome::Success(output),
-                Ok(None) => RunOutcome::Failed,
-                Err(_) => RunOutcome::Cancelled,
-            },
-        }
-    }
-}
-
-// ── Run Outcome ───────────────────────────────────────────────────────────
-
-pub(super) enum RunOutcome {
+enum BusyOutcome {
     Status(oneshot::Sender<proxy::SessionStatus>),
     Success(RunOutput),
+    CompactDone(String),
     Failed,
     Cancelled,
 }
@@ -53,9 +27,9 @@ pub(super) enum RunOutcome {
 enum NextStep {
     Status(oneshot::Sender<proxy::SessionStatus>),
     Activate(WakeEvents),
+    Compact,
     Idle,
-    Done,
-    Closed,
+    Exit,
 }
 
 // ── Event Loop ────────────────────────────────────────────────────────────
@@ -75,42 +49,71 @@ impl AgentSession {
                         self.state = SessionState::Idle;
                     }
                     NextStep::Idle => self.state = SessionState::Idle,
-                    NextStep::Done | NextStep::Closed => break,
+                    NextStep::Compact => {
+                        let (handle, result_rx) = self
+                            .runtime
+                            .spawn_compact(self.conversation.messages_for_compact());
+                        self.state = SessionState::Busy {
+                            handle,
+                            result_rx,
+                            started_at: tokio::time::Instant::now(),
+                        };
+                    }
+                    NextStep::Exit => break,
                 },
-                SessionState::Active(mut active) => {
-                    let outcome = active.await_completion(&mut status_rx).await;
+                SessionState::Busy {
+                    handle,
+                    mut result_rx,
+                    started_at,
+                } => {
+                    let outcome = tokio::select! {
+                        biased;
+                        Some(query) = status_rx.recv() => BusyOutcome::Status(query),
+                        result = &mut result_rx => match result {
+                            Ok(BusySignal::Run(output)) => BusyOutcome::Success(output),
+                            Ok(BusySignal::Compact(text)) => BusyOutcome::CompactDone(text),
+                            Ok(BusySignal::Failed) => BusyOutcome::Failed,
+                            Err(_) => BusyOutcome::Cancelled,
+                        },
+                    };
                     match outcome {
-                        RunOutcome::Status(query) => {
+                        BusyOutcome::Status(query) => {
                             self.answer_status(query);
-                            self.state = SessionState::Active(active);
+                            self.state = SessionState::Busy {
+                                handle,
+                                result_rx,
+                                started_at,
+                            };
                         }
-                        RunOutcome::Success(output) => {
+                        BusyOutcome::Success(output) => {
                             self.on_complete(output, &inbox).await;
                         }
-                        RunOutcome::Failed => {
-                            tracing::warn!(
-                                %self.chat_id,
-                                elapsed_secs = %active.started_at.elapsed().as_secs_f64(),
-                                "Run failed",
-                            );
-                            let events = inbox.drain();
-                            self.schedule.enqueue(events);
-                            self.state = SessionState::Idle;
+                        BusyOutcome::CompactDone(text) => {
+                            self.on_compact_done(text).await;
+                            if self.drain_into_idle_or_exit(&inbox) {
+                                break;
+                            }
                         }
-                        RunOutcome::Cancelled => {
-                            tracing::warn!(
-                                %self.chat_id,
-                                elapsed_secs = %active.started_at.elapsed().as_secs_f64(),
-                                "Run panicked",
-                            );
-                            let events = inbox.drain();
-                            self.schedule.enqueue(events);
-                            self.state = SessionState::Idle;
+                        BusyOutcome::Failed => {
+                            tracing::warn!(%self.chat_id, "Busy task failed");
+                            if self.drain_into_idle_or_exit(&inbox) {
+                                break;
+                            }
+                        }
+                        BusyOutcome::Cancelled => {
+                            tracing::warn!(%self.chat_id, "Busy task panicked");
+                            if self.drain_into_idle_or_exit(&inbox) {
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    fn should_compact(&self) -> bool {
+        self.run_count > 0
     }
 
     async fn idle_tick(
@@ -129,7 +132,7 @@ impl AgentSession {
             } else {
                 futures::future::Either::Right(futures::future::pending())
             } => {},
-            else => return NextStep::Closed,
+            else => return NextStep::Exit,
         }
 
         let events = inbox.drain();
@@ -138,37 +141,73 @@ impl AgentSession {
         match self.schedule.decide(timeout) {
             Decision::Ready(events) => NextStep::Activate(events),
             Decision::Defer => NextStep::Idle,
-            Decision::Done => NextStep::Done,
+            Decision::Done => {
+                if self.should_compact() {
+                    NextStep::Compact
+                } else {
+                    NextStep::Exit
+                }
+            }
         }
+    }
+
+    async fn on_compact_done(&mut self, compact: String) {
+        self.conversation.open_new_chapter(compact);
+        self.run_count = 0;
+        self.engine.app.event_bus.emit(
+            self.chat_id,
+            AgentEventPayload::CompactCompleted {
+                run_count: self.run_count,
+            },
+        );
+
+        let snap = self.conversation.snapshot();
+        if let Err(e) = self
+            .engine
+            .app
+            .db
+            .srv
+            .conversation
+            .save(&snap, self.chat_id)
+            .await
+        {
+            tracing::warn!(%self.chat_id, "Failed to save compact: {e}");
+        }
+    }
+
+    fn drain_into_idle_or_exit(&mut self, inbox: &Inbox) -> bool {
+        let events = inbox.drain();
+        if events.is_empty() {
+            return true;
+        }
+        self.schedule.enqueue(events);
+        self.state = SessionState::Idle;
+        false
     }
 }
 
 // ── Status ────────────────────────────────────────────────────────────────
 
 impl AgentSession {
-    pub(super) fn build_status(&mut self) -> super::proxy::SessionStatus {
+    pub fn build_status(&mut self) -> proxy::SessionStatus {
         let (run_in_progress, run_elapsed) = match &self.state {
-            SessionState::Active(active) => (true, Some(active.started_at.elapsed().as_secs_f64())),
+            SessionState::Busy { started_at, .. } => {
+                (true, Some(started_at.elapsed().as_secs_f64()))
+            }
             SessionState::Idle => (false, None),
         };
-        let (turns_count, last_turns) = {
-            let c = &self.conversation;
-            (c.run_count(), Some(c.last_turns.clone()))
-        };
-        super::proxy::SessionStatus {
+        proxy::SessionStatus {
             scheduler: self.schedule.snapshot(),
-            turns_count,
-            prompt_tokens: self.conversation.prompt_tokens,
-            conversation_msgs: self.conversation.messages.len(),
-            mode: self.conversation.mode.label(),
+            turns_count: self.conversation.turn_count(),
+            context_tokens: self.conversation.context_tokens(),
+            conversation_msgs: self.conversation.message_count(),
             run_in_progress,
             run_elapsed_secs: run_elapsed,
             model: self.engine.app.cfg.agent.model.clone(),
-            last_turns,
         }
     }
 
-    pub(super) fn answer_status(&mut self, query: oneshot::Sender<super::proxy::SessionStatus>) {
+    pub fn answer_status(&mut self, query: oneshot::Sender<proxy::SessionStatus>) {
         let _ = query.send(self.build_status());
     }
 }

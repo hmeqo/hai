@@ -12,11 +12,11 @@ pub struct Memory {
     pub id: uuid::Uuid,
 
     pub account_id: Option<i64>,
-    #[belongs_to(key = account_id, references = id)]
+    #[belongs_to]
     pub account: toasty::Deferred<Option<Account>>,
 
     pub chat_id: Option<i64>,
-    #[belongs_to(key = chat_id, references = id)]
+    #[belongs_to]
     pub chat: toasty::Deferred<Option<Chat>>,
 
     pub kind: String,

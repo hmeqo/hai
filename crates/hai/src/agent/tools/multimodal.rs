@@ -8,13 +8,13 @@ use uuid::Uuid;
 
 use crate::{
     agent::{link::PlatformHandler, runtime::context::ToolContext},
-    agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_data, tool_err},
+    agentcore::tool::{AgentTool, MapToolErr, ToolError, tool_data},
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeAttachmentArgs {
     /// 附件 ID
-    pub attachment_id: String,
+    pub attachment_id: Uuid,
     /// 聚焦分析方向，留空默认全面分析
     pub prompt: Option<String>,
 }
@@ -51,22 +51,17 @@ impl AgentTool for AnalyzeAttachment {
 
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
         let typed: AnalyzeAttachmentArgs = serde_json::from_value(args)?;
-        let uuid = Uuid::parse_str(&typed.attachment_id)
-            .map_err(|_| tool_err(format!("无效的 attachment_id: {}", typed.attachment_id)))?;
         let result = self
             .handler
-            .analyze_attachment(uuid, typed.prompt.as_deref())
+            .analyze_attachment(typed.attachment_id, typed.prompt.as_deref())
             .await
             .into_tool_err()?;
         tool_data(serde_json::json!({ "content": result }))
     }
 }
 
-pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    if ctx.enabled_parsers.is_empty() {
-        return vec![];
-    }
-    let extra_desc = format!("仅支持解析类型：{:?}。", ctx.enabled_parsers.join(", "));
+pub fn tools(ctx: &ToolContext, enabled_parsers: &[&str]) -> Vec<Arc<dyn AgentTool>> {
+    let extra_desc = format!("仅支持解析类型：{:?}。", enabled_parsers.join(", "));
     vec![Arc::new(AnalyzeAttachment::new(
         ctx.handler.clone(),
         &extra_desc,

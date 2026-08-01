@@ -55,7 +55,7 @@ async fn flush(batch: &[AgentEvent], db: &toasty::Db) {
     for event in batch {
         if let Err(e) = toasty::create!(Event {
             domain: "agent".to_string(),
-            payload: toasty::Json(serde_json::to_value(event).unwrap()),
+            payload: toasty::Json(event.to_json_value()),
         })
         .exec(&mut db.clone())
         .await

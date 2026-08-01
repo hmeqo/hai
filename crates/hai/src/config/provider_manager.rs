@@ -1,15 +1,15 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
 use crate::{
-    agentcore::{Endpoint, provider::Vendor},
+    agentcore::{Endpoint, provider::ProviderKind},
     config::AppConfig,
-    error::{AppResultExt, ErrorKind, OptionAppExt, Result},
+    error::{ErrorKind, OptionAppExt, Result},
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderEntry {
     pub config: crate::config::schema::ProviderConfig,
-    pub vendor: Vendor,
+    pub kind: ProviderKind,
 }
 
 #[derive(Debug, Clone)]
@@ -22,17 +22,13 @@ impl ProviderRegistry {
         let mut providers = HashMap::new();
 
         for (name, provider_cfg) in &config.providers {
-            let vendor_name = provider_cfg.r#type.as_deref().unwrap_or(name);
-            let vendor = Vendor::from_str(vendor_name).err_kind_msg(
-                ErrorKind::Config,
-                format!("Invalid provider type '{vendor_name}'"),
-            )?;
+            let kind = provider_cfg.infer_kind(name)?;
 
             providers.insert(
                 name.to_string(),
                 ProviderEntry {
                     config: provider_cfg.clone(),
-                    vendor,
+                    kind,
                 },
             );
         }
@@ -52,10 +48,10 @@ impl ProviderRegistry {
     }
 
     /// 解析 provider 的连接参数 + 模型名，返回 `Endpoint`。
-    pub fn resolve(&self, provider: &str, model: &str) -> Result<Endpoint> {
+    pub fn get_endpoint(&self, provider: &str, model: &str) -> Result<Endpoint> {
         let entry = self.get_checked(provider)?;
         let base_url = entry
-            .vendor
+            .kind
             .resolve_base_url(entry.config.base_url.as_deref());
         let api_key = entry.config.api_key.clone().unwrap_or_default();
         Ok(Endpoint {

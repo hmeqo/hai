@@ -17,8 +17,21 @@ pub struct AgentEvent {
     pub payload: AgentEventPayload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl AgentEvent {
+    pub fn to_json_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e, kind = %self.payload.kind(),
+                "failed to serialize agent event"
+            );
+            serde_json::Value::Null
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, IntoStaticStr)]
 #[serde(tag = "event", rename_all = "kebab-case")]
+#[strum(serialize_all = "snake_case")]
 pub enum AgentEventPayload {
     RunStarted {
         run: usize,
@@ -65,20 +78,15 @@ pub enum AgentEventPayload {
         elapsed_ms: u64,
         error: String,
     },
+
+    CompactCompleted {
+        run_count: usize,
+    },
 }
 
 impl AgentEventPayload {
     pub fn kind(&self) -> &'static str {
-        match self {
-            Self::RunStarted { .. } => "run_started",
-            Self::ToolCall { .. } => "tool_call",
-            Self::ToolCallResult { .. } => "tool_call_result",
-            Self::TurnCompleted(..) => "turn_completed",
-            Self::RunCompleted { .. } => "run_completed",
-            Self::ModelRetry { .. } => "model_retry",
-            Self::Preempted { .. } => "preempted",
-            Self::RunFailed { .. } => "run_failed",
-        }
+        self.into()
     }
 }
 

@@ -81,14 +81,12 @@ impl AgentTool for RunShell {
     }
 }
 
-pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    let description = if ctx.sandbox_enabled {
-        format!(
-            "执行 shell 命令。运行在容器中（镜像: {}）。可通过 skill 参数自动挂载 skill 目录。",
-            ctx.sandbox_image.as_deref().unwrap_or("unknown"),
-        )
-    } else {
-        "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into()
+pub fn tools(ctx: &ToolContext, sandbox_image: Option<&str>) -> Vec<Arc<dyn AgentTool>> {
+    let description = match sandbox_image {
+        Some(img) => format!(
+            "执行 shell 命令。运行在容器中（镜像: {img}）。可通过 skill 参数自动挂载 skill 目录。",
+        ),
+        None => "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into(),
     };
     vec![Arc::new(RunShell {
         description,

@@ -1,11 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::{
-    sync::{Mutex, RwLock, mpsc},
+    sync::{RwLock, mpsc},
     task::JoinHandle,
 };
 
-use super::{AgentEngine, event::Inbox, session::SessionHandle, shell::ShellRuntime};
+use super::{
+    AgentEngine,
+    event::Inbox,
+    session::{Conversation, SessionHandle},
+};
 use crate::{agent::link::PlatformHandler, domain::vo::ChatId};
 
 pub struct SessionManager {
@@ -41,30 +45,29 @@ impl SessionManager {
     }
 
     async fn spawn(&self, chat_id: ChatId) -> SessionEntry {
-        let attention_cfg = &self.engine.app.cfg.agent.attention;
-        let personality = &self.engine.app.cfg.agent.personality;
-        let base_heat = personality.base_attention(attention_cfg);
-        let window_secs = personality.attention_window_secs();
+        let conversation = self
+            .engine
+            .app
+            .db
+            .srv
+            .conversation
+            .get(chat_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| Conversation::from_snapshot(self.engine.app.db.srv.conversation.restore(&r)))
+            .unwrap_or_else(Conversation::new);
 
         let inbox = Inbox::new();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
-        let shell =
-            std::sync::Arc::new(Mutex::new(ShellRuntime::new(&self.engine.app.cfg.sandbox)));
 
         let engine = self.engine.clone();
         let handler = self.handler.clone();
         let inbox_for_run = inbox.clone();
 
         let task = tokio::spawn(async move {
-            let session = super::session::AgentSession::new(
-                engine,
-                chat_id,
-                handler,
-                shell,
-                base_heat,
-                window_secs,
-            )
-            .await;
+            let session =
+                super::session::AgentSession::new(engine, chat_id, handler, conversation).await;
             match session {
                 Ok(mut s) => s.run(inbox_for_run, status_rx).await,
                 Err(e) => tracing::error!(%chat_id, "Failed to create session: {e}"),

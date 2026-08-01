@@ -12,7 +12,7 @@ pub mod render_context;
 pub mod sections;
 pub mod types;
 
-pub(crate) use builder::{build_first_run_prompt, build_next_run_prompt};
+pub(crate) use builder::build_prompt;
 pub(crate) use render_context::RenderContext;
 pub(crate) use sections::{
     account::account_element,

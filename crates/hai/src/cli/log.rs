@@ -1,7 +1,7 @@
 use clap::Args;
 
 use crate::{
-    config::{AppConfigManager, PathResolver, env::ENV_PREFIX},
+    config::{AppConfigManager, Paths, env::ENV_PREFIX},
     domain::db,
 };
 
@@ -21,8 +21,8 @@ pub struct LogArgs {
 }
 
 pub async fn execute(args: LogArgs) -> crate::error::Result<()> {
-    let config = AppConfigManager::from_file(PathResolver::config_file().to_str().unwrap())?
-        .with_env(ENV_PREFIX)?;
+    let config =
+        AppConfigManager::from_file(Paths::inferred().config_file_str())?.with_env(ENV_PREFIX)?;
     let cfg = config.load();
     let (db, _pool) = db::init_db(&cfg.database).await?;
 

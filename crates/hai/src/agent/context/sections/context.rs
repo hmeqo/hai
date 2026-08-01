@@ -32,7 +32,6 @@ pub(crate) fn render_context(ctx: &RenderContext, instruction: Node, root_tag: &
                 .related_memories()
                 .related_topics()
                 .topics()
-                .scratchpad()
                 .perceptions()
                 .conversation()
                 .build(),
@@ -170,14 +169,6 @@ impl<'a> ContextBuilder<'a> {
                         .collect::<Vec<_>>(),
                 ),
         )
-    }
-
-    fn scratchpad(self) -> Self {
-        if let Some(note) = &self.ctx.scratchpad {
-            self.add(Node::tag("scratchpad").with_text(note))
-        } else {
-            self
-        }
     }
 
     fn perceptions(self) -> Self {

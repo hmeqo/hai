@@ -1,32 +1,17 @@
-//! 事件派发：dispatch + on_complete + spawn_run
+//! 事件派发：dispatch + on_complete
 
-use std::sync::Arc;
-
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::time::Instant;
 
 use super::{
     super::{context::RunContext, event::WakeEvents},
-    ActiveRun, AgentSession, Conversation, SessionState,
+    AgentSession, SessionState,
+    conversation::RunInput,
 };
 use crate::{
-    agent::{
-        runtime::{
-            AgentEngine,
-            event::Inbox,
-            react::{ReactRun, run_react_loop},
-            session::{
-                prompt::RunInput,
-                proxy::{HeartbeatTask, RunSignal},
-            },
-            types::RunOutput,
-        },
-        tools::get_main_agent_tools,
-    },
-    agentcore::tool::AgentTool,
-    config::schema::ConversationMode,
+    agent::runtime::{event::Inbox, types::RunOutput},
     domain::{
-        service::DbServices,
-        vo::{AgentEventPayload, MessageId, TurnOutput},
+        model::Message,
+        vo::{AgentEventPayload, MessageId},
     },
     error::Result,
 };
@@ -34,16 +19,43 @@ use crate::{
 // ── 生命周期 ───────────────────────────────────────────────────────────────
 
 impl AgentSession {
-    pub(super) async fn dispatch(&mut self, events: WakeEvents, inbox: &Inbox) {
-        if !matches!(self.conversation.mode, ConversationMode::Persistent) {
-            self.conversation = Conversation::new(ConversationMode::Ephemeral);
-        }
-        let Some((ctx, payload)) = self.assemble_run(events).await else {
-            self.state = SessionState::Idle;
-            return;
+    pub async fn dispatch(&mut self, events: WakeEvents, inbox: &Inbox) {
+        let ctx = self.build_run_context(events);
+        let (messages, next_since_id) = match self.gather_messages().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(%self.chat_id, "gather_messages failed: {e}");
+                self.state = SessionState::Idle;
+                return;
+            }
         };
 
-        let run_number = self.conversation.next_run_number();
+        self.conversation.set_since_id(next_since_id);
+
+        let built = match self
+            .runtime
+            .build_prompt(
+                &ctx,
+                &messages,
+                self.conversation.shown_memory_ids(),
+                self.conversation.shown_topic_ids(),
+                self.run_count == 0,
+            )
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(%self.chat_id, "build_prompt failed: {e}");
+                self.state = SessionState::Idle;
+                return;
+            }
+        };
+
+        self.conversation
+            .record_shown(&built.shown_memory_ids, &built.shown_topic_ids);
+        let messages = self.conversation.build_full_messages(built.messages);
+        let run_number = self.run_count + 1;
+
         let reason = ctx
             .events
             .first()
@@ -56,133 +68,88 @@ impl AgentSession {
             AgentEventPayload::RunStarted {
                 run: run_number,
                 reason,
-                msg_count: payload.message_ids.len(),
-                full_prompt: payload.prompt.clone(),
+                msg_count: built.message_ids.len(),
+                full_prompt: built.rendered_prompt.clone(),
             },
         );
 
-        let (proc_handle, result_rx) =
-            spawn_run(self.engine.clone(), ctx, payload, inbox.clone(), run_number);
+        let (handle, result_rx) = self.runtime.spawn_run(
+            ctx,
+            RunInput {
+                messages,
+                message_ids: built.message_ids.iter().map(|id| MessageId(*id)).collect(),
+                since_id: next_since_id,
+            },
+            inbox.clone(),
+            run_number,
+        );
 
-        self.state = SessionState::Active(ActiveRun {
-            handle: proc_handle,
+        self.state = SessionState::Busy {
+            handle,
             result_rx,
-            started_at: tokio::time::Instant::now(),
-        });
+            started_at: Instant::now(),
+        };
     }
 
-    pub(super) async fn on_complete(&mut self, output: RunOutput, inbox: &Inbox) {
-        if output.has_spoken {
+    pub async fn on_complete(&mut self, output: RunOutput, inbox: &Inbox) {
+        let has_spoken = output
+            .turns
+            .iter()
+            .flat_map(|t| &t.tool_calls)
+            .any(|tc| matches!(tc.tool_name.as_str(), "send_message" | "send_voice"));
+
+        if has_spoken {
             self.schedule.refresh();
         }
-        self.conversation.update(&output);
+
+        self.conversation.update(output.turns, output.messages);
+        self.run_count += 1;
+
+        let snap = self.conversation.snapshot();
+        if let Err(e) = self
+            .engine
+            .app
+            .db
+            .srv
+            .conversation
+            .save(&snap, self.chat_id)
+            .await
+        {
+            tracing::warn!(%self.chat_id, "Failed to persist conversation: {e}");
+        }
         let events = inbox.drain();
         self.schedule.enqueue(events);
         self.state = SessionState::Idle;
     }
-}
 
-// ── Run Task ─────────────────────────────────────────────────────────────
-
-async fn collect_run_tools(ctx: &RunContext, engine: &AgentEngine) -> Vec<Arc<dyn AgentTool>> {
-    let mut tools = get_main_agent_tools(&ctx.tool_ctx());
-    tools.extend(engine.mcp_manager.list_all_tools().await);
-    tools
-}
-
-async fn mark_seen(msg_ids: &[MessageId], db: &DbServices) -> Result<()> {
-    if msg_ids.is_empty() {
-        return Ok(());
-    }
-    db.message.mark_unread_seen(msg_ids).await?;
-    Ok(())
-}
-
-pub(super) fn spawn_run(
-    engine: AgentEngine,
-    ctx: RunContext,
-    payload: RunInput,
-    inbox: Inbox,
-    run_number: usize,
-) -> (JoinHandle<()>, oneshot::Receiver<RunSignal>) {
-    let handler = ctx.handler.clone();
-    let chat_id = ctx.chat_id;
-    let message_ids = payload.message_ids.clone();
-    let payload_since_id = payload.since_id;
-    let event_bus = engine.app.event_bus.clone();
-
-    let run = ReactRun::new(&engine, &ctx, payload.messages, inbox, run_number);
-
-    let (tx, rx) = oneshot::channel();
-
-    let task = tokio::spawn(async move {
-        let started_at = tokio::time::Instant::now();
-
-        let _hb = HeartbeatTask::spawn(handler, chat_id);
-
-        let all_tools = collect_run_tools(&ctx, &engine).await;
-
-        let result = run_react_loop(run, all_tools).await;
-
-        let elapsed = started_at.elapsed();
-
-        match result {
-            Ok(output) => {
-                let tool_calls: usize = output.turns.iter().map(|t| t.tool_calls.len()).sum();
-                let has_spoken = output
-                    .turns
-                    .iter()
-                    .flat_map(|t| &t.tool_calls)
-                    .any(|tc| matches!(tc.tool_name.as_str(), "send_message" | "send_voice"));
-
-                let last = output.turns.last().map(|t| TurnOutput {
-                    run: run_number,
-                    turn: output.turns.len(),
-                    reasoning: t.reasoning.clone(),
-                    response: t.response.clone(),
-                });
-
-                event_bus.emit(
-                    chat_id,
-                    AgentEventPayload::RunCompleted {
-                        output: last.unwrap_or(TurnOutput {
-                            run: run_number,
-                            turn: 0,
-                            reasoning: None,
-                            response: String::new(),
-                        }),
-                        tool_calls,
-                        elapsed_ms: elapsed.as_millis() as u64,
-                        prompt_tokens: output.prompt_tokens,
-                        completion_tokens: output.completion_tokens,
-                        has_spoken,
-                    },
-                );
-
-                let _ = mark_seen(&message_ids, &ctx.db).await;
-
-                let _ = tx.send(Some(RunOutput {
-                    messages: output.messages,
-                    turns: output.turns,
-                    prompt_tokens: output.prompt_tokens,
-                    since_id: payload_since_id,
-                    has_spoken,
-                }));
-            }
-            Err(e) => {
-                tracing::warn!(%chat_id, elapsed_secs = %elapsed.as_secs_f64(), error = %e, "Agent run failed");
-                event_bus.emit(
-                    chat_id,
-                    AgentEventPayload::RunFailed {
-                        run: run_number,
-                        elapsed_ms: elapsed.as_millis() as u64,
-                        error: e.to_string(),
-                    },
-                );
-                let _ = tx.send(None);
-            }
+    pub fn build_run_context(&self, events: WakeEvents) -> RunContext {
+        RunContext {
+            app: self.engine.app.clone(),
+            chat_id: self.chat_id,
+            chat_type: self.chat_type,
+            handler: self.runtime.handler.clone(),
+            events,
+            skill_manager: self.engine.skill_manager.clone(),
+            db: self.engine.app.db.srv.clone(),
+            shell: self.runtime.shell.clone(),
+            multimodal: self.engine.app.provider.multimodal.clone(),
         }
-    });
+    }
 
-    (task, rx)
+    pub async fn gather_messages(&self) -> Result<(Vec<Message>, MessageId)> {
+        let srv = &self.engine.app.db.srv.message;
+        let cfg = &self.engine.app.cfg.agent.context;
+
+        if self.conversation.is_fresh() {
+            let (msgs, last_id) = srv.get_context_messages(self.chat_id, 10).await?;
+            Ok((msgs, MessageId(last_id)))
+        } else {
+            let since_id = self.conversation.since_id();
+            let msgs = srv
+                .get_messages_window(self.chat_id, Some(since_id), cfg.history_cap)
+                .await?;
+            let next_id = msgs.last().map(|m| m.id_()).unwrap_or(since_id);
+            Ok((msgs, next_id))
+        }
+    }
 }

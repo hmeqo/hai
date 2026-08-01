@@ -62,8 +62,7 @@ impl SkillManager {
                 continue;
             }
 
-            let skill_file = Self::find_skill_file(&path);
-            let Some(skill_file) = skill_file else {
+            let Some(skill_file) = Self::find_skill_file(&path) else {
                 continue;
             };
 

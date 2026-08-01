@@ -1,9 +1,12 @@
 use tokio::time::{Duration, Instant};
 
 use super::attention::{Heat, Window};
-use crate::agent::event::{WakeEvent, WakeEvents};
+use crate::{
+    agent::event::{WakeEvent, WakeEvents},
+    config::schema::AttentionConfig,
+};
 
-const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+const DEBOUNCE_DURATION: Duration = Duration::from_millis(1500);
 
 /// 调度器决策。
 pub enum Decision {
@@ -24,11 +27,11 @@ pub struct EventScheduler {
 }
 
 impl EventScheduler {
-    pub fn new(base_heat: f64, window_secs: f64) -> Self {
+    pub fn new(cfg: &AttentionConfig) -> Self {
         Self {
             queue: WakeEvents::default(),
-            heat: Heat::new(base_heat),
-            window: Window::new(window_secs),
+            heat: Heat::new(cfg.base_attention),
+            window: Window::new(cfg.window_secs),
             debounce_until: None,
         }
     }
@@ -85,6 +88,9 @@ impl EventScheduler {
         self.refresh_heat();
 
         if self.window.is_active() {
+            if self.queue.is_empty() {
+                return Decision::Defer;
+            }
             return Decision::Ready(self.queue.take());
         }
 

@@ -49,7 +49,6 @@ impl TopicService {
             status: "active",
             started_at: now,
             last_active_at: now,
-            token_count: 0,
             message_count: 0,
             meta: meta.map(toasty::Json),
             created_at: now,

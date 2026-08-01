@@ -1,60 +1,107 @@
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use crate::config::{env, meta::PROJECT_NAME};
 
-pub struct PathResolver;
+#[derive(Clone, Debug)]
+pub struct Paths {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    config_file: PathBuf,
+    config_file_str: String,
+    file_cache_dir: PathBuf,
+    skill_dirs: Vec<PathBuf>,
+}
 
-impl PathResolver {
-    fn local_dir() -> PathBuf {
-        PathBuf::from(format!(".{PROJECT_NAME}"))
+impl Paths {
+    pub fn inferred() -> &'static Self {
+        static PATHS: OnceLock<Paths> = OnceLock::new();
+        PATHS.get_or_init(Self::resolve)
     }
 
-    fn config_dir() -> PathBuf {
-        let local = Self::local_dir();
+    fn resolve() -> Self {
+        let local = PathBuf::from(format!(".{PROJECT_NAME}"));
+        let use_local = local.exists() || env::local_mode();
+        let config_dir = if use_local {
+            local.clone()
+        } else {
+            dirs::config_dir()
+                .map(|p| p.join(PROJECT_NAME))
+                .unwrap_or_else(|| local.clone())
+        };
+        let data_dir = if use_local {
+            local
+        } else {
+            dirs::data_dir()
+                .map(|p| p.join(PROJECT_NAME))
+                .unwrap_or(local)
+        };
 
-        if local.exists() || env::local_mode() {
-            return local;
+        let config_file = config_dir.join("config.toml");
+        let config_file_str = config_file
+            .to_str()
+            .expect("config file path is valid UTF-8")
+            .to_owned();
+        let file_cache_dir = data_dir.join("files");
+
+        let mut skill_dirs = vec![config_dir.join("skills")];
+        let local_dir = PathBuf::from(format!(".{PROJECT_NAME}"));
+        let local_skills = local_dir.join("skills");
+        if local_skills != config_dir.join("skills") {
+            skill_dirs.push(local_skills);
         }
+        skill_dirs.push(PathBuf::from(".agents/skills"));
+        skill_dirs.retain(|d| d.exists());
 
-        dirs::config_dir()
-            .map(|p| p.join(PROJECT_NAME))
-            .unwrap_or(local)
-    }
-
-    /// 数据目录
-    fn data_dir() -> PathBuf {
-        let local = Self::local_dir();
-
-        if local.exists() || env::local_mode() {
-            return local;
+        Self {
+            config_dir,
+            data_dir,
+            config_file,
+            config_file_str,
+            file_cache_dir,
+            skill_dirs,
         }
-
-        dirs::data_dir()
-            .map(|p| p.join(PROJECT_NAME))
-            .unwrap_or(local)
     }
 
-    /// 解析配置文件路径（支持多路径回退）
-    pub fn config_file() -> PathBuf {
-        let config_dir = Self::config_dir();
-        config_dir.join("config.toml")
+    pub fn with_dirs(config_dir: PathBuf, data_dir: PathBuf) -> Self {
+        let config_file = config_dir.join("config.toml");
+        let config_file_str = config_file.to_str().expect("valid UTF-8").to_owned();
+        let file_cache_dir = data_dir.join("files");
+        let mut skill_dirs = vec![config_dir.join("skills")];
+        skill_dirs.retain(|d| d.exists());
+        Self {
+            config_dir,
+            data_dir,
+            config_file,
+            config_file_str,
+            file_cache_dir,
+            skill_dirs,
+        }
     }
 
-    /// 解析 skills 目录列表
-    pub fn skill_dirs() -> Vec<PathBuf> {
-        let dirs = vec![
-            Self::config_dir().join("skills"),
-            Self::local_dir().join("skills"),
-            PathBuf::from(".agents/skills"),
-        ];
-
-        dirs.into_iter().filter(|d| d.exists()).collect()
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
     }
 
-    /// 附件缓存目录
-    pub fn file_cache_dir() -> PathBuf {
-        let mut path = Self::data_dir();
-        path.push("files");
-        path
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn config_file(&self) -> &Path {
+        &self.config_file
+    }
+
+    pub fn config_file_str(&self) -> &str {
+        &self.config_file_str
+    }
+
+    pub fn file_cache_dir(&self) -> &Path {
+        &self.file_cache_dir
+    }
+
+    pub fn skill_dirs(&self) -> &[PathBuf] {
+        &self.skill_dirs
     }
 }

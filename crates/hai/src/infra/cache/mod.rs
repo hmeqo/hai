@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{config::PathResolver, error::Result, util::path::sanitize_path};
+use crate::{config::Paths, error::Result, util::path::sanitize_path};
 
 #[derive(Debug)]
 pub struct FileCache {
@@ -9,7 +9,7 @@ pub struct FileCache {
 
 impl FileCache {
     pub fn new() -> Self {
-        let cache_dir = PathResolver::file_cache_dir();
+        let cache_dir = Paths::inferred().file_cache_dir().to_owned();
         if !cache_dir.exists() {
             std::fs::create_dir_all(&cache_dir).ok();
         }
@@ -17,7 +17,7 @@ impl FileCache {
     }
 
     pub fn with_tag(tag: &str) -> Self {
-        let cache_dir = PathResolver::file_cache_dir().join(tag);
+        let cache_dir = Paths::inferred().file_cache_dir().join(tag);
         if !cache_dir.exists() {
             std::fs::create_dir_all(&cache_dir).ok();
         }
@@ -26,13 +26,13 @@ impl FileCache {
 
     /// 查找磁盘缓存。
     pub fn find(&self, key: &str) -> Option<Vec<u8>> {
-        let path = self.resolve_path(key);
+        let path = self.key_to_path(key);
         std::fs::read(path).ok()
     }
 
     /// 写入磁盘缓存。
     pub fn add(&self, key: &str, data: &[u8]) -> Result<()> {
-        let path = self.resolve_path(key);
+        let path = self.key_to_path(key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -40,7 +40,7 @@ impl FileCache {
         Ok(())
     }
 
-    fn resolve_path(&self, key: &str) -> PathBuf {
+    fn key_to_path(&self, key: &str) -> PathBuf {
         self.cache_dir.join(sanitize_path(key))
     }
 }

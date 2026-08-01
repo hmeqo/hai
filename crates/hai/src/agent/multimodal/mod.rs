@@ -101,7 +101,7 @@ fn resolve_modality(
     params: ModalityParams,
 ) -> Result<ModalityCfg> {
     Ok(ModalityCfg {
-        endpoint: registry.resolve(provider, model)?,
+        endpoint: registry.get_endpoint(provider, model)?,
         params,
     })
 }
@@ -163,7 +163,7 @@ impl MultimodalService {
 
         let embedding = resolve_modality(
             registry,
-            &mc.embedding.provider(fallback),
+            &mc.embedding.provider_or(fallback),
             &mc.embedding.model(),
             ModalityParams::None,
         )?;

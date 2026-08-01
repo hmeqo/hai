@@ -13,7 +13,7 @@ pub struct Account {
 
     #[index]
     pub identity_id: Option<uuid::Uuid>,
-    #[belongs_to(key = identity_id, references = id)]
+    #[belongs_to]
     pub identity: toasty::Deferred<Option<Identity>>,
 
     pub platform: String,

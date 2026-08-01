@@ -38,7 +38,7 @@ pub struct RecordMemoryArgs {
     pub references: Option<serde_json::Value>,
 }
 
-/// 记录记忆（群友特征/知识/笔记）
+/// 记住一条信息：群友的情况、有用的知识、重要的结论。
 #[hai_macros::tool]
 pub struct RecordMemory {
     pub chat_id: ChatId,
@@ -83,7 +83,7 @@ pub struct CorrectMemoryArgs {
     pub importance: Option<i32>,
 }
 
-/// 更新记忆
+/// 修改已记住的信息。
 #[hai_macros::tool]
 pub struct CorrectMemory {
     pub services: DbServices,
@@ -108,7 +108,7 @@ pub struct SearchMemoryArgs {
     pub limit: Option<i64>,
 }
 
-/// 搜索记忆
+/// 翻一下之前记过的东西。
 #[hai_macros::tool]
 pub struct SearchMemory {
     pub chat_id: ChatId,
@@ -118,6 +118,9 @@ pub struct SearchMemory {
 impl SearchMemory {
     async fn exec(&self, args: SearchMemoryArgs) -> Result<Value, ToolError> {
         let limit = args.limit.unwrap_or(10);
+        if limit < 0 {
+            return Err(ToolError::Msg("limit 不能为负数".into()));
+        }
 
         let memories = self
             .services
@@ -137,7 +140,7 @@ pub struct DeleteMemoryArgs {
     pub id: Uuid,
 }
 
-/// 删除记忆
+/// 删除一条记忆。
 #[hai_macros::tool]
 pub struct DeleteMemory {
     pub services: DbServices,

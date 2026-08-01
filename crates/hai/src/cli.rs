@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     App,
-    config::{AppConfigManager, PathResolver, env::ENV_PREFIX},
+    config::{AppConfigManager, Paths, env::ENV_PREFIX},
     domain::db,
     rebuild,
     util::pgvector,
@@ -67,7 +67,7 @@ pub enum ConfigFormat {
 
 impl Cli {
     pub async fn execute(self) -> crate::error::Result<()> {
-        let config = AppConfigManager::from_file(PathResolver::config_file().to_str().unwrap())?
+        let config = AppConfigManager::from_file(Paths::inferred().config_file_str())?
             .with_env(ENV_PREFIX)?;
 
         if let Some(command) = self.command {

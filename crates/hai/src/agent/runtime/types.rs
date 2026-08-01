@@ -1,47 +1,8 @@
 use std::sync::Arc;
 
 use genai::chat::ChatMessage;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::domain::vo::MessageId;
-
-/// 工具调用的执行结果。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallResult {
-    pub tool_name: String,
-    pub success: bool,
-    pub arguments: Value,
-    pub result: Value,
-}
-
-impl ToolCallResult {
-    pub fn ok(tool_name: impl Into<String>, args: Value, result: Value) -> Self {
-        Self {
-            tool_name: tool_name.into(),
-            success: true,
-            arguments: args,
-            result,
-        }
-    }
-
-    pub fn err(tool_name: impl Into<String>, args: Value, error: impl Into<String>) -> Self {
-        Self {
-            tool_name: tool_name.into(),
-            success: false,
-            arguments: args,
-            result: Value::String(error.into()),
-        }
-    }
-}
-
-/// 一次 exec_chat 的完整记录。
-#[derive(Clone)]
-pub struct Turn {
-    pub tool_calls: Vec<ToolCallResult>,
-    pub response: String,
-    pub reasoning: Option<String>,
-}
+use crate::domain::vo::Turn;
 
 /// CoW 消息容器。沿整条 run 链路共享，clone = Arc bump。
 #[derive(Clone)]
@@ -73,7 +34,11 @@ impl Messages {
 pub struct RunOutput {
     pub messages: Messages,
     pub turns: Vec<Turn>,
-    pub prompt_tokens: u32,
-    pub since_id: MessageId,
-    pub has_spoken: bool,
+}
+
+/// Busy 态的完成信号：一次 run 或 compact 的结果。
+pub(crate) enum BusySignal {
+    Run(RunOutput),
+    Compact(String),
+    Failed,
 }

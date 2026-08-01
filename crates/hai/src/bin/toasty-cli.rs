@@ -4,11 +4,10 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
 
-    let cfg = hai::config::AppConfigManager::from_file(
-        hai::config::PathResolver::config_file().to_str().unwrap(),
-    )?
-    .with_env(hai::config::env::ENV_PREFIX)?
-    .load();
+    let cfg =
+        hai::config::AppConfigManager::from_file(hai::config::Paths::inferred().config_file_str())?
+            .with_env(hai::config::env::ENV_PREFIX)?
+            .load();
 
     let cli_config = toasty_cli::Config::load()?;
 

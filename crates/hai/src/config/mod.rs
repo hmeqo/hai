@@ -8,7 +8,7 @@ pub mod schema;
 use std::collections::HashMap;
 
 pub use manager::Config;
-pub use paths::PathResolver;
+pub use paths::Paths;
 pub use provider_manager::ProviderRegistry;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;

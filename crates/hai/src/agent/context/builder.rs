@@ -75,76 +75,20 @@ async fn prepare_messages(
 
 // ── Builder ─────────────────────────────────────────────────────────────────
 
-/// 首轮全量上下文渲染（含感知、话题、记忆等完整信息）
-pub async fn build_first_run_prompt(
-    ctx: &RunContext,
-    messages: &[Message],
-) -> Result<BuiltContext> {
-    let services = &ctx.app.db.srv;
-    let cfg = &ctx.app.cfg;
-    let parser = ctx.handler.content_parser();
-    let chat_id = ctx.chat_id;
-
-    let data = prepare_run_data(ctx, messages).await?;
-    let search = search_related_context(SearchRelatedParams {
-        services,
-        cfg,
-        chat_id,
-        topics: &data.topics,
-        parsed: &data.parsed,
-        perceptions: &data.perception.items,
-        shown_memory_ids: &HashSet::new(),
-        shown_topic_ids: &HashSet::new(),
-    })
-    .await?;
-
-    let shown_memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
-    let shown_topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
-
-    let scratchpad = services.scratchpad.get(chat_id).await?.map(|s| s.content);
-    let total_unread = services.message.count_unread_by_chat(chat_id).await?;
-
-    let context_data = RenderContextData {
-        bot: ctx.handler.profile(),
-        chat: data.chat,
-        current_time: jiff::Zoned::now().to_string(),
-        messages: data.all_messages,
-        total_unread: total_unread as i64,
-        topics: data.topics,
-        related_topics: search.topics,
-        related_memories: search.memories,
-        accounts: data.accounts,
-        perceptions: data.perception.items,
-        scratchpad,
-        topic_idle_hours: cfg.agent.context.topic_idle_hours,
-    };
-    let renderer = parser.create_renderer(&data.perception.map);
-    let render_ctx = RenderContext::new(context_data, renderer);
-    let rendered_prompt =
-        render_main_context(&render_ctx, build_situation_section(&ctx.events.coalesce()));
-
-    Ok(BuiltContext {
-        messages: vec![ChatMessage::user(&rendered_prompt)],
-        rendered_prompt,
-        message_ids: data.message_ids,
-        shown_memory_ids,
-        shown_topic_ids,
-    })
-}
-
-/// 后续轮次增量上下文渲染（<new> 块）
-pub async fn build_next_run_prompt(
+/// 构建上下文 prompt。首轮全量渲染，后续轮次增量。
+pub async fn build_prompt(
     ctx: &RunContext,
     messages: &[Message],
     shown_memory_ids: &HashSet<Uuid>,
     shown_topic_ids: &HashSet<Uuid>,
+    is_first: bool,
 ) -> Result<BuiltContext> {
     let services = &ctx.app.db.srv;
     let cfg = &ctx.app.cfg;
     let parser = ctx.handler.content_parser();
     let chat_id = ctx.chat_id;
 
-    if messages.is_empty() {
+    if !is_first && messages.is_empty() {
         return Ok(BuiltContext {
             rendered_prompt: String::new(),
             messages: vec![],
@@ -156,43 +100,77 @@ pub async fn build_next_run_prompt(
 
     let data = prepare_run_data(ctx, messages).await?;
 
-    let search = search_related_dedup(SearchRelatedParams {
-        services,
-        cfg,
-        chat_id,
-        topics: &data.topics,
-        parsed: &data.parsed,
-        perceptions: &data.perception.items,
-        shown_memory_ids,
-        shown_topic_ids,
-    })
-    .await?;
+    let (search, new_shown_memory_ids, new_shown_topic_ids) = if is_first {
+        let search = search_related_context(SearchRelatedParams {
+            services,
+            cfg,
+            chat_id,
+            topics: &data.topics,
+            parsed: &data.parsed,
+            perceptions: &data.perception.items,
+            shown_memory_ids: &HashSet::new(),
+            shown_topic_ids: &HashSet::new(),
+        })
+        .await?;
+        let memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
+        let topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
+        (Some(search), memory_ids, topic_ids)
+    } else {
+        let search = search_related_dedup(SearchRelatedParams {
+            services,
+            cfg,
+            chat_id,
+            topics: &data.topics,
+            parsed: &data.parsed,
+            perceptions: &data.perception.items,
+            shown_memory_ids,
+            shown_topic_ids,
+        })
+        .await?;
+        let memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
+        let topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
+        (Some(search), memory_ids, topic_ids)
+    };
+    let search = search.unwrap();
 
-    let new_shown_memory_ids: Vec<Uuid> = search.memories.iter().map(|m| m.id.0).collect();
-    let new_shown_topic_ids: Vec<Uuid> = search.topics.iter().map(|t| t.topic.id).collect();
+    let total_unread = if is_first {
+        services.message.count_unread_by_chat(chat_id).await? as i64
+    } else {
+        0
+    };
 
-    let perception_map = build_attachment_maps(services, parser, &data.all_messages).await?;
+    let perception_map = if is_first {
+        data.perception.map
+    } else {
+        build_attachment_maps(services, parser, &data.all_messages).await?
+    };
     let renderer = parser.create_renderer(&perception_map);
-    let render_ctx = RenderContext::new(
-        RenderContextData {
-            bot: ctx.handler.profile(),
-            chat: data.chat,
-            current_time: jiff::Zoned::now().to_string(),
-            messages: data.all_messages.clone(),
-            total_unread: 0,
-            topics: vec![],
-            related_topics: search.topics,
-            related_memories: search.memories,
-            accounts: data.accounts,
-            perceptions: vec![],
-            scratchpad: None,
-            topic_idle_hours: cfg.agent.context.topic_idle_hours,
-        },
-        renderer,
-    );
 
+    let context_data = RenderContextData {
+        bot: ctx.handler.profile(),
+        chat: data.chat,
+        current_time: jiff::Zoned::now().to_string(),
+        messages: data.all_messages,
+        total_unread,
+        topics: if is_first { data.topics } else { vec![] },
+        related_topics: search.topics,
+        related_memories: search.memories,
+        accounts: data.accounts,
+        perceptions: if is_first {
+            data.perception.items
+        } else {
+            vec![]
+        },
+        topic_idle_hours: cfg.agent.context.topic_idle_hours,
+    };
+    let render_ctx = RenderContext::new(context_data, renderer);
     let instruction = build_situation_section(&ctx.events.coalesce());
-    let rendered = render_context(&render_ctx, instruction, "new");
+
+    let rendered = if is_first {
+        render_main_context(&render_ctx, instruction)
+    } else {
+        render_context(&render_ctx, instruction, "new")
+    };
 
     Ok(BuiltContext {
         messages: vec![ChatMessage::user(&rendered)],

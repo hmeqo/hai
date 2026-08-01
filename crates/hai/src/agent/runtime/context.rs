@@ -21,8 +21,6 @@ pub struct RunContext {
     pub db: DbServices,
     pub shell: Arc<Mutex<ShellRuntime>>,
     pub multimodal: MultimodalService,
-    pub enabled_parsers: Vec<&'static str>,
-    pub tts_enabled: bool,
 }
 
 impl RunContext {
@@ -35,10 +33,6 @@ impl RunContext {
             shell: self.shell.clone(),
             skill_manager: self.skill_manager.clone(),
             multimodal: self.multimodal.clone(),
-            enabled_parsers: self.enabled_parsers.clone(),
-            tts_enabled: self.tts_enabled,
-            sandbox_enabled: self.app.cfg.sandbox.enabled,
-            sandbox_image: Some(self.app.cfg.sandbox.image.clone()),
         }
     }
 }
@@ -51,8 +45,4 @@ pub struct ToolContext {
     pub shell: Arc<Mutex<ShellRuntime>>,
     pub skill_manager: SkillManager,
     pub multimodal: MultimodalService,
-    pub enabled_parsers: Vec<&'static str>,
-    pub tts_enabled: bool,
-    pub sandbox_enabled: bool,
-    pub sandbox_image: Option<String>,
 }

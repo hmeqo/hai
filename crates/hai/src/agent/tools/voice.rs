@@ -49,10 +49,6 @@ impl SendVoice {
 }
 
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    if !ctx.tts_enabled {
-        return vec![];
-    }
-
     vec![Arc::new(SendVoice {
         chat_id: ctx.chat_id,
         handler: ctx.handler.clone(),

@@ -29,7 +29,7 @@ pub struct CreateTopicArgs {
     pub message_ids: Option<Vec<i64>>,
 }
 
-/// 创建话题
+/// 把聊到的内容归成话题，方便以后回顾。
 #[hai_macros::tool]
 pub struct CreateTopic {
     pub chat_id: ChatId,
@@ -63,7 +63,7 @@ pub struct AssignTopicArgs {
     pub message_ids: Vec<i64>,
 }
 
-/// 消息归入话题
+/// 把消息归到已有话题下。
 #[hai_macros::tool]
 pub struct AssignTopic {
     pub services: DbServices,
@@ -95,7 +95,7 @@ pub struct ListTopicsArgs {
     pub offset: Option<i64>,
 }
 
-/// 列出话题
+/// 查看当前有的话题。
 #[hai_macros::tool]
 pub struct ListTopics {
     pub chat_id: ChatId,
@@ -106,6 +106,15 @@ impl ListTopics {
     async fn exec(&self, args: ListTopicsArgs) -> Result<Value, ToolError> {
         let limit = args.limit.unwrap_or(10);
         let offset = args.offset.unwrap_or(0);
+        if limit < 0 || offset < 0 {
+            return Err(ToolError::Msg("limit 和 offset 不能为负数".into()));
+        }
+        if let Some(ref s) = args.status
+            && s != "active"
+            && s != "closed"
+        {
+            return Err(ToolError::Msg("status 只能为 'active' 或 'closed'".into()));
+        }
         let topics = self
             .services
             .topic
@@ -127,7 +136,7 @@ pub struct SearchTopicsArgs {
     pub limit: Option<i64>,
 }
 
-/// 搜索话题
+/// 按关键词找话题。
 #[hai_macros::tool]
 pub struct SearchTopics {
     pub chat_id: ChatId,
@@ -137,6 +146,9 @@ pub struct SearchTopics {
 impl SearchTopics {
     async fn exec(&self, args: SearchTopicsArgs) -> Result<Value, ToolError> {
         let limit = args.limit.unwrap_or(10);
+        if limit < 0 {
+            return Err(ToolError::Msg("limit 不能为负数".into()));
+        }
         let topics = self
             .services
             .topic
@@ -158,7 +170,7 @@ pub struct CorrectTopicArgs {
     pub summary: Option<String>,
 }
 
-/// 修正话题信息
+/// 修改话题的标题或摘要。
 #[hai_macros::tool]
 pub struct CorrectTopic {
     pub services: DbServices,
@@ -187,7 +199,7 @@ pub struct PushTopicSummaryArgs {
     pub summary: String,
 }
 
-/// 向活跃话题追加话题摘要
+/// 给话题追加新的内容摘要（不覆盖已有的）。
 #[hai_macros::tool]
 pub struct PushTopicSummary {
     pub services: DbServices,
@@ -214,7 +226,7 @@ pub struct CloseTopicArgs {
     pub summary: String,
 }
 
-/// 关闭话题
+/// 话题聊完了，归档。
 #[hai_macros::tool]
 pub struct CloseTopic {
     pub services: DbServices,

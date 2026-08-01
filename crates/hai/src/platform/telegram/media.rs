@@ -28,7 +28,7 @@ impl TelegramMediaAnalyzer {
         }
     }
 
-    pub async fn resolve_attachment(
+    pub async fn download_attachment(
         &self,
         attachment_uuid: Uuid,
     ) -> Result<(TelegramContentPart, String, AttachmentParser)> {

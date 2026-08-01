@@ -7,7 +7,8 @@ use struct_patch::Patch;
 use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
 use crate::{
-    config::{PathResolver, meta::AGENT_NAME},
+    agentcore::ProviderKind,
+    config::{Paths, meta::AGENT_NAME},
     error::{AppResultExt, ErrorKind, Result},
 };
 
@@ -19,24 +20,27 @@ use crate::{
 
 // ── Agent ──
 
+/// 人格等级。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PersonalityTier {
+    Low,
+    Mid,
+    High,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct PersonalityConfig {
     pub name: String,
-    /// 社交活跃度：0=沉默潜水，1=活跃话痨
-    pub sociability: f64,
-    /// 话量：0=极简，1=详尽
-    pub verbosity: f64,
-    /// 坦诚度：0=圆滑世故，1=真诚诚实
-    pub honesty: f64,
-    /// 幽默感：0=严肃正经，1=风趣幽默
-    pub humor: f64,
-    /// 理性/感性：0=绝对理性，1=感性丰富
-    pub rationality: f64,
-    /// 情绪：0=情绪稳定，1=情绪外露
-    pub mood: f64,
+    pub sociability: PersonalityTier,
+    pub verbosity: PersonalityTier,
+    pub honesty: PersonalityTier,
+    pub humor: PersonalityTier,
+    pub rationality: PersonalityTier,
+    pub mood: PersonalityTier,
     pub interests: Vec<String>,
     /// 主色调
     pub tone: String,
@@ -46,42 +50,15 @@ impl Default for PersonalityConfig {
     fn default() -> Self {
         Self {
             name: AGENT_NAME.into(),
-            sociability: 0.05,
-            verbosity: 0.35,
-            honesty: 0.60,
-            humor: 0.70,
-            rationality: 0.35,
-            mood: 0.1,
+            sociability: PersonalityTier::Low,
+            verbosity: PersonalityTier::Mid,
+            honesty: PersonalityTier::Mid,
+            humor: PersonalityTier::High,
+            rationality: PersonalityTier::Mid,
+            mood: PersonalityTier::Low,
             interests: vec![],
-            tone: "你是一个有自己的主见的人, 你很友善很聪明, 你不会太过刻意的表达自己的意见或一味附和别人".into(),
+            tone: "你说话不太啰嗦，一句能说清楚的事不会拆成三句。你习惯像跟朋友聊天那样自然、随意。你不爱总结别人说过的话，也不爱分析别人——你知道什么时候该接话、什么时候看看就好。你不太会刻意迎合谁，你有自己的主见。".into(),
         }
-    }
-}
-
-impl PersonalityConfig {
-    fn curve(t: f64) -> f64 {
-        1.0 - (1.0 - t).powf(1.5)
-    }
-
-    pub fn base_attention(&self, cfg: &AttentionConfig) -> f64 {
-        let base = Self::curve(self.sociability) * cfg.base_attention_cap;
-        base.max(cfg.base_attention)
-    }
-
-    /// 注意力窗口时长（秒）：agent 主动参与后保持高注意力的时长
-    pub fn attention_window_secs(&self) -> f64 {
-        5.0 + Self::curve(self.sociability) * 55.0
-    }
-
-    pub fn dims(&self) -> Vec<(&str, f64, &str)> {
-        vec![
-            ("Sociability", self.sociability, "沉默潜水 ←→ 活跃话痨"),
-            ("Verbosity", self.verbosity, "极简 ←→ 详尽"),
-            ("Honesty", self.honesty, "圆滑世故 ←→ 真诚诚实"),
-            ("Humor", self.humor, "严肃正经 ←→ 风趣幽默"),
-            ("Rationality", self.rationality, "绝对理性 ←→ 感性丰富"),
-            ("Mood", self.mood, "情绪稳定 ←→ 情绪外露"),
-        ]
     }
 }
 
@@ -130,8 +107,6 @@ pub struct ContextConfig {
     pub related_topic_limit: i64,
     /// 话题闲置时间（小时），超过此时间的话题标记为 need-close
     pub topic_idle_hours: i64,
-    /// 会话模式：ephemeral（单次执行）或 persistent（跨轮次累积）
-    pub conversation_mode: ConversationMode,
     /// 会话空闲超时（秒），窗口关闭后超过此时无活动则重建 session
     pub session_idle_timeout_secs: u64,
     /// 新消息是否可以插队到当前 processing 的下一轮 Turn（默认开启）
@@ -142,34 +117,18 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
-            group_prompt: "这是群聊，你是有自己的人格的普通群友，默认行为模式按人格模型来，没什么事就保持沉默。".into(),
+            group_prompt:
+                "这是群聊。不要每句话都接，大部分时候你只需要看着。\n别人聊的话题你插不上嘴就别硬接，跟你没关系的事保持安静就好。\n消息是有发送对象的，看清楚是发给谁的。没点你名就别自作多情。\n除非对方明确问到你、或者你真的有别人不太可能想到的话要说，否则不开口。\n不要替别人回答问题，别人问的不是你。\n别人换话题了你也别追着旧话题跑，过去了就过去了。\n没什么好说的就别说。"
+                    .into(),
             private_prompt: String::new(),
             message_history_limit: 10,
             history_cap: 100,
             related_memory_limit: 5,
             related_topic_limit: 3,
             topic_idle_hours: 3,
-            conversation_mode: ConversationMode::default(),
             session_idle_timeout_secs: 300,
             preempt: true,
         }
-    }
-}
-
-/// 会话模式
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, strum::IntoStaticStr)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConversationMode {
-    /// 每次执行使用全新对话，不保留上下文
-    Ephemeral,
-    /// 跨执行保留上下文累积
-    #[default]
-    Persistent,
-}
-
-impl ConversationMode {
-    pub fn label(&self) -> &'static str {
-        self.into()
     }
 }
 
@@ -178,17 +137,17 @@ impl ConversationMode {
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct AttentionConfig {
-    /// 基础注意力（agent idle 时关注 chat 的最低概率）
+    /// 基础注意力（0-1）。agent idle 时随机关注 chat 的概率。
     pub base_attention: f64,
-    /// 基础注意力上限（sociability 能推到的最大值，防止过于频繁）
-    pub base_attention_cap: f64,
+    /// 注意力窗口（秒）。被 @ 或回复后保持高响应的时间。
+    pub window_secs: f64,
 }
 
 impl Default for AttentionConfig {
     fn default() -> Self {
         Self {
-            base_attention: 0.02,
-            base_attention_cap: 0.33,
+            base_attention: 0.05,
+            window_secs: 30.0,
         }
     }
 }
@@ -259,7 +218,7 @@ pub struct EmbeddingConfig {
 }
 
 impl EmbeddingConfig {
-    pub fn provider(&self, fallback: &str) -> String {
+    pub fn provider_or(&self, fallback: &str) -> String {
         self.provider.as_deref().unwrap_or(fallback).to_owned()
     }
     pub fn model(&self) -> String {
@@ -380,13 +339,24 @@ pub struct BotConfigRaw {
     pub rich_message: Option<bool>,
 }
 
+impl ProviderConfig {
+    /// 解析 provider 类型。如果配置了 `type` 则用它，否则从名称推断。
+    pub fn infer_kind(&self, name: &str) -> Result<ProviderKind> {
+        match self.r#type {
+            Some(v) => Ok(v),
+            None => ProviderKind::from_str(name)
+                .err_kind_msg(ErrorKind::Config, format!("Invalid provider type '{name}'")),
+        }
+    }
+}
+
 /// 单个 provider 的配置
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ProviderConfig {
     /// provider 类型，如 openai, anthropic, requesty 等
     /// 如果不提供，则默认使用配置中的 key 名称
-    pub r#type: Option<String>,
+    pub r#type: Option<ProviderKind>,
     /// API key（Ollama 等本地服务可省略）
     pub api_key: Option<String>,
     /// 可选的 base_url 覆盖值
@@ -397,7 +367,6 @@ pub struct ProviderConfig {
     Debug,
     Clone,
     Copy,
-    Default,
     PartialEq,
     Eq,
     Serialize,
@@ -409,7 +378,6 @@ pub struct ProviderConfig {
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum ContainerRuntime {
-    #[default]
     Docker,
     Podman,
 }
@@ -417,6 +385,20 @@ pub enum ContainerRuntime {
 impl ContainerRuntime {
     pub fn as_str(&self) -> &'static str {
         (*self).into()
+    }
+
+    fn detect() -> Self {
+        if which::which("podman").is_ok() {
+            Self::Podman
+        } else {
+            Self::Docker
+        }
+    }
+}
+
+impl Default for ContainerRuntime {
+    fn default() -> Self {
+        Self::detect()
     }
 }
 
@@ -463,7 +445,7 @@ pub struct SkillsConfig {
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
-            dirs: PathResolver::skill_dirs(),
+            dirs: Paths::inferred().skill_dirs().to_vec(),
             disabled: Vec::new(),
         }
     }

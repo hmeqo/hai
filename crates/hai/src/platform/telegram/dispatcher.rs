@@ -179,8 +179,8 @@ impl TelegramDispatcher {
                         lines.push(runs_line);
 
                         // tokens
-                        if s.prompt_tokens > 0 {
-                            lines.push(format!("tokens  {}", fmt_tokens(s.prompt_tokens)));
+                        if s.context_tokens > 0 {
+                            lines.push(format!("tokens  {}", fmt_tokens(s.context_tokens)));
                         }
 
                         lines.push(format!("conv    {} msgs", s.conversation_msgs));

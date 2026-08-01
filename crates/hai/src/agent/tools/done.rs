@@ -7,7 +7,7 @@ use crate::{
     agentcore::tool::{AgentTool, ToolError, tool_ok},
 };
 
-/// 无操作，结束本轮。
+/// 没什么要说的了就结束。确认真的不需要再做什么了再用。
 #[hai_macros::tool(args = none)]
 pub struct Done;
 

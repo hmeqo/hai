@@ -5,7 +5,7 @@ use super::Chat;
 pub struct Scratchpad {
     #[key]
     pub chat_id: i64,
-    #[belongs_to(key = chat_id, references = id)]
+    #[belongs_to]
     pub chat: toasty::Deferred<Chat>,
 
     pub content: String,

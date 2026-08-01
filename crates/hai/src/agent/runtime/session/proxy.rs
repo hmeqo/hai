@@ -7,26 +7,18 @@ use tokio::{
 
 use self::super::scheduler::SchedulerStatus;
 use crate::{
-    agent::{
-        event::WakeEvent,
-        link::PlatformHandler,
-        runtime::{event::Inbox, types::RunOutput},
-    },
+    agent::{event::WakeEvent, link::PlatformHandler, runtime::event::Inbox},
     domain::vo::ChatId,
 };
-
-pub(super) type RunSignal = Option<RunOutput>;
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,
     pub turns_count: usize,
-    pub prompt_tokens: u32,
+    pub context_tokens: u32,
     pub conversation_msgs: usize,
-    pub mode: &'static str,
     pub run_in_progress: bool,
     pub run_elapsed_secs: Option<f64>,
     pub model: String,
-    pub last_turns: Option<Vec<super::super::types::Turn>>,
 }
 
 #[derive(Clone)]
@@ -62,7 +54,7 @@ impl SessionHandle {
     }
 }
 
-pub(super) struct HeartbeatTask(JoinHandle<()>);
+pub(crate) struct HeartbeatTask(JoinHandle<()>);
 
 impl HeartbeatTask {
     pub fn spawn(handler: Arc<dyn PlatformHandler>, chat_id: ChatId) -> Self {

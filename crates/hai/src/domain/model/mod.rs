@@ -1,5 +1,6 @@
 pub mod account;
 pub mod chat;
+pub mod conversation_record;
 pub mod event;
 pub mod identity;
 pub mod memory;
@@ -10,6 +11,7 @@ pub mod topic;
 
 pub use account::*;
 pub use chat::*;
+pub use conversation_record::*;
 pub use event::*;
 pub use identity::*;
 pub use memory::*;

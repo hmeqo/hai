@@ -14,28 +14,27 @@ pub struct Message {
 
     #[index]
     pub chat_id: i64,
-    #[belongs_to(key = chat_id, references = id)]
+    #[belongs_to]
     pub chat: toasty::Deferred<Chat>,
 
     pub account_id: Option<i64>,
-    #[belongs_to(key = account_id, references = id)]
+    #[belongs_to]
     pub account: toasty::Deferred<Option<Account>>,
 
     pub role: String,
     pub content: toasty::Json<serde_json::Value>,
 
     pub topic_id: Option<uuid::Uuid>,
-    #[belongs_to(key = topic_id, references = id)]
+    #[belongs_to]
     pub topic: toasty::Deferred<Option<Topic>>,
 
     pub interaction_status: String,
     pub reply_to_id: Option<i64>,
-    #[belongs_to(key = reply_to_id, references = id)]
+    #[belongs_to]
     pub reply_to: toasty::Deferred<Option<Message>>,
 
     pub external_id: Option<String>,
     pub meta: Option<toasty::Json<serde_json::Value>>,
-    pub token_count: Option<i32>,
     pub sent_at: Option<jiff::Timestamp>,
 
     #[auto]

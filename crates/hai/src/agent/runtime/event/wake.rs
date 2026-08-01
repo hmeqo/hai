@@ -87,7 +87,10 @@ impl WakeReason {
     }
 
     pub fn is_rapid(&self) -> bool {
-        matches!(self, Self::Scheduled(_) | Self::Command(_))
+        matches!(
+            self,
+            Self::Direct | Self::Mention | Self::Scheduled(_) | Self::Command(_)
+        )
     }
 
     pub fn is_mergeable(&self) -> bool {

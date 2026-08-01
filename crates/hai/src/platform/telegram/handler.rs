@@ -74,11 +74,11 @@ impl TelegramPlatformHandler {
             .and_then(|chat| chat.external_id.parse::<i64>().map_err(Into::into))
     }
 
-    async fn resolve_reply_parameters(
+    async fn build_reply_parameters(
         &self,
         platform_reply_to_id: Option<i64>,
     ) -> Result<Option<ReplyParameters>> {
-        resolve_reply_parameters(&self.ctx.db.srv, platform_reply_to_id).await
+        build_reply_parameters(&self.ctx.db.srv, platform_reply_to_id).await
     }
 
     async fn persist_message(
@@ -100,7 +100,6 @@ impl TelegramPlatformHandler {
                 account_id: Some(self.account_id),
                 content,
                 model: model.to_string(),
-                tokens: 0,
                 reply_to_id,
                 external_id: Some(external_id.to_string()),
                 sent_at: Some(jiff::Timestamp::from_second(sent_at_ts)?),
@@ -168,7 +167,7 @@ impl PlatformHandler for TelegramPlatformHandler {
     async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta> {
         let cid = teloxide::types::ChatId(self.resolve_platform_chat_id(req.chat_id).await?);
         let reply_params = self
-            .resolve_reply_parameters(req.platform_reply_to_id)
+            .build_reply_parameters(req.platform_reply_to_id)
             .await?;
 
         let sent_msg = if self.rich_message {
@@ -197,7 +196,7 @@ impl PlatformHandler for TelegramPlatformHandler {
     async fn send_voice(&self, req: SendVoiceReq) -> Result<SentMessageMeta> {
         let platform_chat_id = self.resolve_platform_chat_id(req.chat_id).await?;
         let reply_params = self
-            .resolve_reply_parameters(req.platform_reply_to_id)
+            .build_reply_parameters(req.platform_reply_to_id)
             .await?;
 
         let mut tg_req = self.bot.send_voice(
@@ -259,7 +258,7 @@ impl PlatformHandler for TelegramPlatformHandler {
         attachment_uuid: Uuid,
         prompt: Option<&str>,
     ) -> Result<String> {
-        let (part, file_id, parser) = self.media.resolve_attachment(attachment_uuid).await?;
+        let (part, file_id, parser) = self.media.download_attachment(attachment_uuid).await?;
         let content = self
             .media
             .analyze_part(&part, &file_id, parser, prompt)
@@ -295,7 +294,7 @@ impl PlatformHandler for TelegramPlatformHandler {
     }
 }
 
-async fn resolve_reply_parameters(
+async fn build_reply_parameters(
     services: &crate::domain::service::DbServices,
     platform_reply_to_id: Option<i64>,
 ) -> Result<Option<ReplyParameters>> {

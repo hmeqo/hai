@@ -8,10 +8,7 @@ use genai::{
     },
 };
 
-use super::{
-    event::Inbox,
-    types::{Messages, ToolCallResult, Turn},
-};
+use super::{event::Inbox, types::Messages};
 use crate::{
     agent::{
         context::build_situation_section,
@@ -23,7 +20,7 @@ use crate::{
         render::{Format, render_pretty},
         tool::{AgentTool, ToolError},
     },
-    domain::vo::{AgentEventPayload, ChatId, ModelRetryReason, TurnOutput},
+    domain::vo::{AgentEventPayload, ChatId, ModelRetryReason, ToolCallResult, Turn, TurnOutput},
 };
 
 const DIRECT_OUTPUT_ERROR: &str =
@@ -56,8 +53,6 @@ impl ReactLoopConfig {
 pub(crate) struct ReactLoopOutput {
     pub turns: Vec<Turn>,
     pub messages: Messages,
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
 }
 
 /// 单次 run 所需的全部数据。
@@ -104,7 +99,6 @@ pub(crate) async fn run_react_loop(
 ) -> Result<ReactLoopOutput, ToolError> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut turn_index = 0;
-    let mut prompt_tokens = 0u32;
     let genai_tools = prepare_genai_tools(&tools);
 
     loop {
@@ -113,15 +107,11 @@ pub(crate) async fn run_react_loop(
 
         let response_text = res.texts().join("\n");
         let reasoning = res.reasoning_content.clone();
-        prompt_tokens = res.usage.prompt_tokens.unwrap_or(0) as u32;
-        let completion = res.usage.completion_tokens.unwrap_or(0) as u32;
+        let turn_prompt_tokens = res.usage.prompt_tokens.unwrap_or(0) as u32;
+        let turn_completion_tokens = res.usage.completion_tokens.unwrap_or(0) as u32;
         let tool_calls: Vec<ToolCall> = res.into_tool_calls();
-
         let has_done = tool_calls.iter().any(|c| c.fn_name == "done");
-        let active_calls: Vec<ToolCall> = tool_calls
-            .into_iter()
-            .filter(|c| c.fn_name != "done")
-            .collect();
+        let active_calls = tool_calls;
 
         // ── 构建 assistant message ──
         run.messages.push(build_assistant_message(
@@ -177,6 +167,8 @@ pub(crate) async fn run_react_loop(
             tool_calls: turn_tc,
             response: response_text,
             reasoning,
+            prompt_tokens: turn_prompt_tokens,
+            completion_tokens: turn_completion_tokens,
         });
         if !stop {
             let turn = turns.last().unwrap();
@@ -195,8 +187,6 @@ pub(crate) async fn run_react_loop(
             return Ok(ReactLoopOutput {
                 turns,
                 messages: run.messages,
-                prompt_tokens,
-                completion_tokens: completion,
             });
         }
 

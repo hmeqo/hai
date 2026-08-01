@@ -29,12 +29,12 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
     let registry = ProviderRegistry::new(config)?;
 
     let ec = &config.multimodal.embedding;
-    let provider = ec.provider(&config.agent.provider);
+    let provider = ec.provider_or(&config.agent.provider);
     let model = ec.model();
     let dimension = ec.dimension();
 
     let client = Arc::new(ApiClient::new());
-    let ep = Arc::new(registry.resolve(&provider, &model)?);
+    let ep = Arc::new(registry.get_endpoint(&provider, &model)?);
 
     pgvector::ensure_embedding_schema(&mut db, dimension).await?;
     reset_embeddings(&mut db).await?;

@@ -1,13 +1,19 @@
 pub mod content;
+pub mod conversation_snapshot;
 pub mod event;
 pub mod id;
 pub mod meta;
 pub mod resource;
+pub mod tool_call_result;
 pub mod topic;
+pub mod turn;
 
 pub use content::*;
+pub use conversation_snapshot::ConversationSnapshot;
 pub use event::*;
 pub use id::*;
 pub use meta::*;
 pub use resource::*;
+pub use tool_call_result::ToolCallResult;
 pub use topic::*;
+pub use turn::Turn;

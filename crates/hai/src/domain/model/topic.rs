@@ -15,7 +15,7 @@ pub struct Topic {
 
     #[index]
     pub chat_id: i64,
-    #[belongs_to(key = chat_id, references = id)]
+    #[belongs_to]
     pub chat: toasty::Deferred<Chat>,
 
     pub title: Option<String>,
@@ -26,7 +26,6 @@ pub struct Topic {
     #[belongs_to(key = parent_topic_id, references = id)]
     pub parent: toasty::Deferred<Option<Topic>>,
 
-    pub token_count: i32,
     pub message_count: i32,
     pub meta: Option<toasty::Json<serde_json::Value>>,
 

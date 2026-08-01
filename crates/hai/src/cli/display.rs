@@ -75,6 +75,9 @@ impl EventDisplay {
             AgentEventPayload::TurnCompleted(tc) => {
                 format!("TURN   {}.{}", tc.run, tc.turn)
             }
+            AgentEventPayload::CompactCompleted { run_count, .. } => {
+                format!("COMPACT  {} runs", run_count)
+            }
         };
 
         let detail_text = build_detail(event, payload);
@@ -96,6 +99,7 @@ fn tag_for_kind(payload: &AgentEventPayload) -> &'static str {
         AgentEventPayload::ModelRetry { .. } => "RETRY",
         AgentEventPayload::RunFailed { .. } => "FAIL",
         AgentEventPayload::Preempted { .. } => "PREEMPT",
+        AgentEventPayload::CompactCompleted { .. } => "COMPACT",
     }
 }
 
@@ -228,6 +232,9 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
                 format!("{prompt_tokens} (prompt) + {completion_tokens} (completion)"),
             );
         }
+        AgentEventPayload::CompactCompleted { run_count } => {
+            d.field("Runs Compacted", run_count);
+        }
     }
 
     format!("{header}{}", d.build())
@@ -273,6 +280,7 @@ pub(super) fn color_rgb(event: &Event) -> (u8, u8, u8) {
         AgentEventPayload::ToolCallResult { success, .. } if !success => (239, 68, 68),
         AgentEventPayload::ToolCallResult { .. } => (34, 197, 94),
         AgentEventPayload::RunCompleted { .. } => (255, 255, 255),
+        AgentEventPayload::CompactCompleted { .. } => (168, 85, 247),
     }
 }
 

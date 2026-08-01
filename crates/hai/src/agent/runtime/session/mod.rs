@@ -2,23 +2,26 @@ mod attention;
 mod conversation;
 mod dispatch;
 mod event_loop;
-mod prompt;
 mod proxy;
 mod scheduler;
 
 use std::sync::Arc;
 
 pub use proxy::SessionHandle;
-use tokio::{sync::Mutex, time::Duration};
+use tokio::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
-use self::{conversation::Conversation, event_loop::ActiveRun, scheduler::EventScheduler};
-use super::{AgentEngine, shell::ShellRuntime};
+use self::scheduler::EventScheduler;
+pub(crate) use self::{
+    conversation::{Conversation, RunInput},
+    proxy::HeartbeatTask,
+};
+use super::{AgentEngine, run::AgentRuntime, shell::ShellRuntime};
 use crate::{
     agent::link::PlatformHandler,
-    domain::{
-        model::ChatType,
-        vo::{AttachmentParser, ChatId},
-    },
+    domain::{model::ChatType, vo::ChatId},
     error::{ErrorKind, Result},
 };
 
@@ -26,7 +29,11 @@ use crate::{
 
 enum SessionState {
     Idle,
-    Active(ActiveRun),
+    Busy {
+        handle: tokio::task::JoinHandle<()>,
+        result_rx: tokio::sync::oneshot::Receiver<crate::agent::runtime::types::BusySignal>,
+        started_at: Instant,
+    },
 }
 
 impl SessionState {
@@ -38,39 +45,25 @@ impl SessionState {
 // ── AgentSession ──────────────────────────────────────────────────────────
 
 pub(super) struct AgentSession {
+    runtime: AgentRuntime,
     schedule: EventScheduler,
     conversation: Conversation,
     state: SessionState,
     engine: AgentEngine,
-    enabled_parsers: Vec<&'static str>,
-    tts_enabled: bool,
     chat_id: ChatId,
     chat_type: ChatType,
-    handler: Arc<dyn PlatformHandler>,
-    shell: Arc<Mutex<ShellRuntime>>,
+    run_count: usize,
 }
 
 impl AgentSession {
-    pub(super) async fn new(
+    pub async fn new(
         engine: AgentEngine,
         chat_id: ChatId,
         handler: Arc<dyn PlatformHandler>,
-        shell: Arc<Mutex<ShellRuntime>>,
-        base_heat: f64,
-        window_secs: f64,
+        conversation: Conversation,
     ) -> Result<Self> {
-        let mc = &engine.app.cfg.multimodal;
-        let mut enabled_parsers = Vec::new();
-        if mc.input.audio.enabled() {
-            enabled_parsers.push(AttachmentParser::Audio.name());
-        }
-        if mc.input.video.enabled() {
-            enabled_parsers.push(AttachmentParser::Video.name());
-        }
-        if mc.input.image.enabled() {
-            enabled_parsers.push(AttachmentParser::Image.name());
-        }
-        let tts_enabled = mc.tts.enabled();
+        let shell = Arc::new(Mutex::new(ShellRuntime::new(&engine.app.cfg.sandbox)));
+        let runtime = AgentRuntime::new(&engine, handler, shell);
 
         let chat = engine
             .app
@@ -84,24 +77,19 @@ impl AgentSession {
             .chat_type()
             .ok_or_else(|| ErrorKind::Internal.msg(format!("Chat {chat_id} has no type")))?;
 
-        let conversation =
-            Conversation::new(engine.app.cfg.agent.context.conversation_mode.clone());
-
         Ok(Self {
-            schedule: EventScheduler::new(base_heat, window_secs),
+            runtime,
+            schedule: EventScheduler::new(&engine.app.cfg.agent.attention),
             conversation,
             state: SessionState::Idle,
             engine,
             chat_id,
             chat_type,
-            handler,
-            shell,
-            enabled_parsers,
-            tts_enabled,
+            run_count: 0,
         })
     }
 
-    pub(super) fn idle_timeout(&self) -> Duration {
+    pub fn idle_timeout(&self) -> Duration {
         Duration::from_secs(self.engine.app.cfg.agent.context.session_idle_timeout_secs)
     }
 }

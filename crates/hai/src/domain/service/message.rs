@@ -1,7 +1,6 @@
 use uuid::Uuid;
 
 use crate::{
-    agentcore::token::count_json_tokens,
     domain::{
         model::{Message, MessageStatus},
         vo::{AgentMessageMeta, ChatId, MessageId, MessageMeta, TelegramContentPart},
@@ -24,7 +23,6 @@ pub struct NewAgentMessage {
     pub account_id: Option<i64>,
     pub content: serde_json::Value,
     pub model: String,
-    pub tokens: i32,
     pub reply_to_id: Option<i64>,
     pub external_id: Option<String>,
     pub sent_at: Option<jiff::Timestamp>,
@@ -39,7 +37,6 @@ pub(crate) struct UpsertMessageParams {
     pub interaction_status: String,
     pub reply_to_id: Option<i64>,
     pub meta: toasty::Json<serde_json::Value>,
-    pub token_count: Option<i32>,
     pub sent_at: Option<jiff::Timestamp>,
     pub topic_id: Option<Uuid>,
 }
@@ -52,10 +49,6 @@ pub struct MessageService {
 impl MessageService {
     pub fn new(db: toasty::Db) -> Self {
         Self { db }
-    }
-
-    fn estimate_tokens(content: &serde_json::Value) -> Result<i32> {
-        Ok(count_json_tokens(content) as i32)
     }
 
     async fn upsert_by_external_id(&self, params: UpsertMessageParams) -> Result<Message> {
@@ -90,7 +83,6 @@ impl MessageService {
             reply_to_id: params.reply_to_id,
             external_id: params.external_id,
             meta: params.meta,
-            token_count: params.token_count,
             sent_at: params.sent_at,
         })
         .exec(&mut db)
@@ -99,7 +91,6 @@ impl MessageService {
     }
 
     pub async fn save_user_message(&self, msg: NewUserMessage) -> Result<Message> {
-        let token_count = Self::estimate_tokens(&msg.content)?;
         self.upsert_by_external_id(UpsertMessageParams {
             chat_id: msg.chat_id.0,
             external_id: Some(msg.external_id),
@@ -109,7 +100,6 @@ impl MessageService {
             interaction_status: MessageStatus::Unread.as_str().into(),
             reply_to_id: msg.reply_to_id,
             meta: toasty::Json(serde_json::to_value(&msg.meta).unwrap_or(serde_json::Value::Null)),
-            token_count: Some(token_count),
             sent_at: msg.sent_at,
             topic_id: None,
         })
@@ -117,11 +107,6 @@ impl MessageService {
     }
 
     pub async fn save_agent_message(&self, msg: NewAgentMessage) -> Result<Message> {
-        let token_count = if msg.tokens > 0 {
-            msg.tokens
-        } else {
-            Self::estimate_tokens(&msg.content)?
-        };
         let meta = AgentMessageMeta { model: msg.model };
         self.upsert_by_external_id(UpsertMessageParams {
             chat_id: msg.chat_id.0,
@@ -132,7 +117,6 @@ impl MessageService {
             interaction_status: MessageStatus::Seen.as_str().into(),
             reply_to_id: msg.reply_to_id,
             meta: toasty::Json(serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null)),
-            token_count: Some(token_count),
             sent_at: msg.sent_at,
             topic_id: None,
         })
@@ -142,25 +126,24 @@ impl MessageService {
     pub async fn get_context_messages(
         &self,
         chat_id: ChatId,
-        limit: i64,
-        history_limit: i64,
+        min_count: i64,
     ) -> Result<(Vec<Message>, i64)> {
         let mut db = self.db.clone();
         let cid = chat_id.0;
 
-        let mut unread: Vec<Message> = Message::filter(
+        let unread: Vec<Message> = Message::filter(
             Message::fields()
                 .chat_id()
                 .eq(cid)
                 .and(Message::fields().interaction_status().eq("unread")),
         )
         .order_by(Message::fields().id().desc())
-        .limit(limit as usize)
         .exec(&mut db)
         .await?;
 
-        if (unread.len() as i64) < history_limit {
-            let need = history_limit as usize - unread.len();
+        let mut unread = unread;
+        if (unread.len() as i64) < min_count {
+            let need = min_count as usize - unread.len();
             let known: std::collections::HashSet<i64> = unread.iter().map(|m| m.id).collect();
             let history: Vec<Message> = Message::filter(
                 Message::fields()

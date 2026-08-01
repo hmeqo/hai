@@ -1,3 +1,4 @@
+pub mod conversation_record;
 pub mod identity;
 pub mod memory;
 pub mod message;
@@ -8,6 +9,7 @@ pub mod topic;
 
 use std::sync::Arc;
 
+pub use conversation_record::ConversationRecordService;
 use derive_more::Deref;
 pub use identity::IdentityService;
 pub use memory::MemoryService;
@@ -31,6 +33,7 @@ pub struct DbServicesInner {
     pub topic: TopicService,
     pub message: MessageService,
     pub memory: MemoryService,
+    pub conversation: ConversationRecordService,
     pub scratchpad: ScratchpadService,
     pub multimodal: MultimodalService,
     pub perception: PerceptionService,
@@ -41,6 +44,7 @@ impl DbServices {
         let platform = PlatformService::new(db.clone());
         let identity = IdentityService::new(db.clone());
         let message = MessageService::new(db.clone());
+        let conversation = ConversationRecordService::new(db.clone());
         let scratchpad = ScratchpadService::new(db.clone());
         let embedding: Arc<dyn EmbeddingService> = Arc::new(multimodal.clone());
         let topic = TopicService::new(db.clone(), Arc::clone(&embedding), pool.clone());
@@ -54,6 +58,7 @@ impl DbServices {
             topic,
             message,
             memory,
+            conversation,
             scratchpad,
             multimodal,
             perception,

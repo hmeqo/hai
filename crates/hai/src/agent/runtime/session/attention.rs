@@ -7,8 +7,8 @@ const MAX_HEAT: f64 = 1.0;
 const SPEND_HEAT: f64 = 0.25;
 
 pub(super) struct Heat {
-    pub(super) value: f64,
-    pub(super) base: f64,
+    pub value: f64,
+    pub base: f64,
     last_decay: Instant,
 }
 
