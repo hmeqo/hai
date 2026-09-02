@@ -107,7 +107,6 @@ pub enum Format {
 
 // ─── Node ──────────────────────────────────────────────────────────────────────
 
-/// 渲染节点。Elem 有标签、属性、子节点；Text 是纯文本。
 #[derive(Debug, Clone)]
 pub enum Node {
     Elem {

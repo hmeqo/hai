@@ -22,7 +22,7 @@ macro_rules! id_type {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
         }
         impl $name {
-            /// 批量将 `&[$name]` 转为 `Vec<$inner>`，用于 toasty `.in_list()` 等场景。
+            /// 批量将 `&[$name]` 转为 `Vec<$inner>`，用于 `WHERE id = ANY($1)` 等批量场景。
             pub fn raw_ids(ids: &[Self]) -> Vec<$inner> {
                 ids.iter().map(|id| id.0).collect()
             }
@@ -50,4 +50,16 @@ id_type!(
 );
 id_type!(
     pub struct IdentityId(pub uuid::Uuid);
+);
+id_type!(
+    pub struct KnowledgeDocumentId(pub uuid::Uuid);
+);
+id_type!(
+    pub struct KnowledgeChunkId(pub uuid::Uuid);
+);
+id_type!(
+    pub struct TurnNumber(pub usize);
+);
+id_type!(
+    pub struct StepNumber(pub usize);
 );

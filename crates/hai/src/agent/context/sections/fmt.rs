@@ -5,7 +5,6 @@ use timeago::Formatter;
 
 use crate::domain::{model::Account, vo::PlatformAccountMeta};
 
-/// 显示名称
 pub fn display_name(account: Option<&Account>, fallback_id: i64) -> String {
     let Some(account) = account else {
         return format!("User{}", fallback_id);
@@ -13,7 +12,7 @@ pub fn display_name(account: Option<&Account>, fallback_id: i64) -> String {
     let meta = account
         .meta
         .clone()
-        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v.0).ok());
+        .and_then(|v| serde_json::from_value::<PlatformAccountMeta>(v).ok());
 
     let Some(meta) = meta else {
         return format!("User{}", fallback_id);
@@ -41,14 +40,13 @@ pub fn format_time_dyn(ts: impl Into<Option<Timestamp>>) -> String {
     }
 }
 
-/// 相对时间格式化
 pub fn format_relative_time(ts: Timestamp) -> String {
     let then = SystemTime::UNIX_EPOCH + Duration::from_secs(ts.as_second() as u64);
     let duration = SystemTime::now().duration_since(then).unwrap_or_default();
     Formatter::new().convert(duration)
 }
 
-/// 仅返回 HH:MM 时间部分
+/// HH:MM 时间部分
 pub fn format_time_only(ts: impl Into<Option<Timestamp>>) -> String {
     let Some(ts) = ts.into() else {
         return String::new();

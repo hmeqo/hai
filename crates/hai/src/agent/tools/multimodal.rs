@@ -13,10 +13,9 @@ use crate::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeAttachmentArgs {
-    /// 附件 ID
     pub attachment_id: Uuid,
-    /// 聚焦分析方向，留空默认全面分析
-    pub prompt: Option<String>,
+    /// 传入时**替代**默认的完整感官转写，只针对该方向做针对性分析（不输出完整画面描述）；留空做完整分析
+    pub focus: Option<String>,
 }
 
 #[derive(Debug)]
@@ -53,7 +52,7 @@ impl AgentTool for AnalyzeAttachment {
         let typed: AnalyzeAttachmentArgs = serde_json::from_value(args)?;
         let result = self
             .handler
-            .analyze_attachment(typed.attachment_id, typed.prompt.as_deref())
+            .analyze_attachment(typed.attachment_id, typed.focus.as_deref())
             .await
             .into_tool_err()?;
         tool_data(serde_json::json!({ "content": result }))

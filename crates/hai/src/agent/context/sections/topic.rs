@@ -6,8 +6,7 @@ use crate::{
     domain::model::Topic,
 };
 
-/// 构建单个话题元素（完整上下文，含时间信息）
-/// `need_close` 为 true 时添加 `need-close` 属性
+/// `need_close` 为 true 时添加 `need-close` 属性。
 pub fn topic_element(topic: &Topic, need_close: bool) -> Node {
     let started_at = format_relative_time(topic.started_at);
     let last_active = format_relative_time(topic.last_active_at);
@@ -25,8 +24,7 @@ pub fn topic_element(topic: &Topic, need_close: bool) -> Node {
         .child(Node::text(topic.summary.as_deref().unwrap_or("No Summary")))
 }
 
-/// 构建单个话题元素（无 RenderContext，用于 tool 响应等场景）
-/// 使用独立的格式化函数，不依赖 ctx。
+/// 用于 tool 响应等无 RenderContext 的场景。
 pub fn topic_element_static(topic: &Topic) -> Node {
     let started_at = format_time_dyn(topic.started_at);
 

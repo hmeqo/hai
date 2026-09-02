@@ -2,7 +2,7 @@ use clap::Args;
 
 use crate::{
     config::{AppConfigManager, Paths, env::ENV_PREFIX},
-    domain::db,
+    domain::{db, repo::Repos},
 };
 
 #[derive(Args)]
@@ -15,7 +15,7 @@ pub struct LogArgs {
     #[arg(long)]
     pub chat: Option<i64>,
 
-    /// Filter by event type (turn_started, tool_call, etc.)
+    /// Filter by event type (kebab-case: turn-started, tool-call, turn-ended, etc.)
     #[arg(long)]
     pub event: Option<String>,
 }
@@ -24,23 +24,22 @@ pub async fn execute(args: LogArgs) -> crate::error::Result<()> {
     let config =
         AppConfigManager::from_file(Paths::inferred().config_file_str())?.with_env(ENV_PREFIX)?;
     let cfg = config.load();
-    let (db, _pool) = db::init_db(&cfg.database).await?;
+    let pool = db::init_db(&cfg.database).await?;
+    let repos = Repos::new(pool);
 
     if let Some(seq) = args.id {
-        show_detail(seq, &db).await?;
+        show_detail(seq, &repos).await?;
     } else {
-        super::tui::run_tui(db, args.chat, args.event)
-            .await
-            .map_err(|e| crate::error::ErrorKind::Internal.msg(e.to_string()))?;
+        super::tui::run_tui(repos, args.chat, args.event).await?;
     }
 
     Ok(())
 }
 
-async fn show_detail(seq: i64, db: &toasty::Db) -> crate::error::Result<()> {
+async fn show_detail(seq: i64, repos: &Repos) -> crate::error::Result<()> {
     use super::display::{self, EventDisplay};
 
-    let Some(event) = display::query_event_by_seq(db, seq).await? else {
+    let Some(event) = repos.event.by_seq(seq).await? else {
         eprintln!("Event #{seq} not found");
         return Ok(());
     };

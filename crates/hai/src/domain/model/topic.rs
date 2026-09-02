@@ -1,41 +1,34 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
-use super::Chat;
+use super::*;
 use crate::{
     domain::vo::TopicId,
     error::{ErrorKind, Result},
 };
 
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "topic"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Topic {
-    #[key]
     pub id: uuid::Uuid,
-
-    #[index]
     pub chat_id: i64,
-    #[belongs_to]
-    pub chat: toasty::Deferred<Chat>,
 
     pub title: Option<String>,
     pub summary: Option<String>,
     pub status: String,
 
     pub parent_topic_id: Option<uuid::Uuid>,
-    #[belongs_to(key = parent_topic_id, references = id)]
-    pub parent: toasty::Deferred<Option<Topic>>,
 
-    pub message_count: i32,
-    pub meta: Option<toasty::Json<serde_json::Value>>,
+    pub meta: Option<serde_json::Value>,
 
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub started_at: jiff::Timestamp,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub last_active_at: jiff::Timestamp,
+    #[sqlx(try_from = "SqlxNullableTimestamp")]
     pub closed_at: Option<jiff::Timestamp>,
-
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 

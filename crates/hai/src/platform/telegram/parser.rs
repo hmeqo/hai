@@ -9,7 +9,6 @@ use crate::{
     platform::telegram::render::render_content as telegram_render_content,
 };
 
-/// Telegram 平台的内容解析器
 pub struct TelegramContentParser;
 
 impl ContentParser for TelegramContentParser {

@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     agentcore::embedding::EmbeddingService,
     domain::{
         model::{Memory, MemoryKind},
+        repo::Repos,
         vo::{ChatId, MemoryId},
     },
     error::{ErrorKind, Result},
@@ -24,18 +24,13 @@ pub struct RelatedMemory {
 
 #[derive(Debug)]
 pub struct MemoryService {
-    db: toasty::Db,
+    repos: Repos,
     embedding: Arc<dyn EmbeddingService>,
-    pool: PgPool,
 }
 
 impl MemoryService {
-    pub fn new(db: toasty::Db, embedding: Arc<dyn EmbeddingService>, pool: PgPool) -> Self {
-        Self {
-            db,
-            embedding,
-            pool,
-        }
+    pub fn new(repos: Repos, embedding: Arc<dyn EmbeddingService>) -> Self {
+        Self { repos, embedding }
     }
 
     pub async fn create(
@@ -46,18 +41,13 @@ impl MemoryService {
         account_id: Option<i64>,
         meta: Option<serde_json::Value>,
     ) -> Result<Memory> {
-        let mut db = self.db.clone();
-
-        let mut expr = Memory::fields()
-            .kind()
-            .eq(kind.as_str())
-            .and(Memory::fields().chat_id().eq(Some(chat_id.0)))
-            .and(Memory::fields().content().eq(&content));
-        if let Some(aid) = account_id {
-            expr = expr.and(Memory::fields().account_id().eq(Some(aid)));
-        }
-
-        if Memory::filter(expr).first().exec(&mut db).await?.is_some() {
+        if self
+            .repos
+            .memory
+            .find_duplicate(kind.as_str(), chat_id.0, &content, account_id)
+            .await?
+            .is_some()
+        {
             return Err(ErrorKind::AlreadyExists.msg(format!(
                 "{} already exists with the same content",
                 kind.as_str(),
@@ -66,21 +56,23 @@ impl MemoryService {
 
         let embedding = self.embedding.generate_embedding(&content).await?;
 
-        let memory = toasty::create!(Memory {
-            id: Uuid::now_v7(),
-            kind: kind.as_str(),
-            chat_id: Some(chat_id.0),
-            account_id,
-            content,
-            importance: 1,
-            meta: meta.map(toasty::Json),
-            created_at: jiff::Timestamp::now(),
-            updated_at: jiff::Timestamp::now(),
-        })
-        .exec(&mut db)
-        .await?;
+        let memory = self
+            .repos
+            .memory
+            .create(
+                Uuid::now_v7(),
+                kind.as_str(),
+                chat_id.0,
+                account_id,
+                &content,
+                1,
+                meta,
+                jiff::Timestamp::now(),
+                jiff::Timestamp::now(),
+            )
+            .await?;
 
-        pgvector::upsert_embedding_vec(&self.pool, "memory", memory.id, &embedding).await?;
+        pgvector::upsert_embedding_vec(self.repos.pool(), "memory", memory.id, &embedding).await?;
 
         Ok(memory)
     }
@@ -91,24 +83,21 @@ impl MemoryService {
         content: Option<String>,
         importance: Option<i32>,
     ) -> Result<Memory> {
-        let mut db = self.db.clone();
+        let existing = self
+            .repos
+            .memory
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| ErrorKind::NotFound.msg(format!("Memory not found: {id}")))?;
 
-        let existing = Memory::get_by_id(&mut db, &id)
-            .await
-            .map_err(|_| ErrorKind::NotFound.msg(format!("Memory not found: {id}")))?;
+        self.repos
+            .memory
+            .update_fields(id, content.as_deref(), importance)
+            .await?;
 
-        let mut builder = Memory::filter_by_id(id).update();
-        if let Some(ref c) = content {
-            builder = builder.content(c);
-        }
-        if let Some(imp) = importance {
-            builder = builder.importance(imp);
-        }
-        builder.exec(&mut db).await?;
-
-        if let Some(ref c) = content {
+        if let Some(c) = &content {
             let emb = self.embedding.generate_embedding(c).await?;
-            pgvector::upsert_embedding_vec(&self.pool, "memory", id, &emb).await?;
+            pgvector::upsert_embedding_vec(self.repos.pool(), "memory", id, &emb).await?;
         }
 
         Ok(existing)
@@ -130,17 +119,21 @@ impl MemoryService {
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<RelatedMemory>> {
-        let rows =
-            pgvector::search_embedding_vec(&self.pool, "memory", query, chat_id.0, None, limit)
-                .await?;
+        let rows = pgvector::search_embedding_vec(
+            self.repos.pool(),
+            "memory",
+            query,
+            Some(chat_id.0),
+            None,
+            limit,
+        )
+        .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
         }
 
         let ids: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
-        let memories: Vec<Memory> = Memory::filter(Memory::fields().id().in_list(ids))
-            .exec(&mut self.db.clone())
-            .await?;
+        let memories: Vec<Memory> = self.repos.memory.by_ids(&ids).await?;
 
         let map: HashMap<Uuid, Memory> = memories.into_iter().map(|m| (m.id, m)).collect();
 
@@ -159,8 +152,8 @@ impl MemoryService {
     }
 
     pub async fn delete(&self, id: MemoryId) -> Result<()> {
-        Memory::delete_by_id(&mut self.db.clone(), id.0).await?;
-        if let Err(e) = pgvector::clear_embedding_vec(&self.pool, "memory", id.0).await {
+        self.repos.memory.delete_by_id(id.0).await?;
+        if let Err(e) = pgvector::clear_embedding_vec(self.repos.pool(), "memory", id.0).await {
             tracing::warn!(memory_id = %id, "Failed to clear memory embedding: {e}");
         }
         Ok(())

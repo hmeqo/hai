@@ -7,24 +7,35 @@ use genai::{
         ToolResponse,
     },
 };
+use tokio::time::{Duration, Instant};
 
-use super::{event::Inbox, types::Messages};
+use super::{
+    event::{Inbox, WakeEvents},
+    types::Messages,
+};
 use crate::{
     agent::{
-        context::build_situation_section,
-        event::EventGroupSlice,
+        event::WakeReason,
         node::main::build_react_config,
-        runtime::{context::RunContext, engine::AgentEngine},
+        runtime::{context::TurnContext, engine::AgentEngine},
     },
-    agentcore::{
-        render::{Format, render_pretty},
-        tool::{AgentTool, ToolError},
+    agentcore::tool::{AgentTool, ToolError},
+    domain::vo::{
+        AgentEventPayload, ChatId, ModelRetryReason, Step, StepNumber, StepOutput, ToolCallResult,
+        TurnNumber,
     },
-    domain::vo::{AgentEventPayload, ChatId, ModelRetryReason, ToolCallResult, Turn, TurnOutput},
 };
 
+/// 单个 react loop 的最大轮次（防模型无限调用工具/重试导致的死循环；超限强制结束，
+/// 收尾 模式下无摘要则由上层判失败）。
+const MAX_STEPS: usize = 20;
+
+/// steering 防抖窗口：新 turn 启动后窗口内 Observe 类事件不打断（合并），
+/// 与调度器 debounce（1500ms）同量级——turn 期间的新事件是注意力延续，窗口避免活锁。
+const STEERING_WINDOW: Duration = Duration::from_millis(1500);
+
 const DIRECT_OUTPUT_ERROR: &str =
-    "Error: direct output is not allowed. Use send_message / send_voice to reply, or done to end.";
+    "Error: direct output is not allowed. Use send_message / send_voice to reply, or skip to end.";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -50,31 +61,45 @@ impl ReactLoopConfig {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-pub(crate) struct ReactLoopOutput {
-    pub turns: Vec<Turn>,
-    pub messages: Messages,
+/// react loop 执行模式：主循环（发言契约：必须经 send_message 发出）vs
+/// 收尾（受限工具集、无 send_message，文本本身就是要收集的压缩摘要）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LoopMode {
+    Main,
+    WrapUp,
 }
 
-/// 单次 run 所需的全部数据。
-pub(crate) struct ReactRun {
+pub(crate) struct ReactLoopOutput {
+    pub steps: Vec<Step>,
+    pub messages: Messages,
+    /// `Some(events)` = steering 提前正常结束（turn 期间新事件打断，事件回传续跑）。
+    pub steered: Option<WakeEvents>,
+}
+
+/// 单次 turn 所需的全部数据。
+pub(crate) struct ReactTurn {
     pub client: Client,
     pub model: String,
     pub messages: Messages,
     pub config: ReactLoopConfig,
     pub inbox: Inbox,
-    pub preempt: bool,
+    /// steering 开关：turn 期间新事件是否打断续跑
+    pub steering: bool,
+    /// 防抖窗口截止：新 turn 启动 + STEERING_WINDOW，窗口内 Observe 不打断
+    pub steering_until: Instant,
+    pub mode: LoopMode,
     pub event_bus: super::AgentEventBus,
     pub chat_id: ChatId,
-    pub run_number: usize,
+    pub turn_number: TurnNumber,
 }
 
-impl ReactRun {
+impl ReactTurn {
     pub(crate) fn new(
         engine: &AgentEngine,
-        ctx: &RunContext,
+        ctx: &TurnContext,
         messages: Messages,
         inbox: Inbox,
-        run_number: usize,
+        turn_number: TurnNumber,
     ) -> Self {
         Self {
             client: engine.client.clone(),
@@ -82,10 +107,12 @@ impl ReactRun {
             messages,
             config: build_react_config(engine, ctx.chat_type),
             inbox,
-            preempt: engine.app.cfg.agent.context.preempt,
+            steering: engine.app.cfg.agent.context.steering,
+            steering_until: Instant::now() + STEERING_WINDOW,
+            mode: LoopMode::Main,
             event_bus: engine.app.event_bus.clone(),
             chat_id: ctx.chat_id,
-            run_number,
+            turn_number,
         }
     }
 }
@@ -94,49 +121,70 @@ impl ReactRun {
 
 #[allow(unused_assignments)]
 pub(crate) async fn run_react_loop(
-    mut run: ReactRun,
+    mut turn: ReactTurn,
     tools: Vec<Arc<dyn AgentTool>>,
 ) -> Result<ReactLoopOutput, ToolError> {
-    let mut turns: Vec<Turn> = Vec::new();
+    let mut steps: Vec<Step> = Vec::new();
     let mut turn_index = 0;
     let genai_tools = prepare_genai_tools(&tools);
 
     loop {
         // ── 1. LLM call ──
-        let res = llm_call_with_retry(&run, &genai_tools, &run.messages).await?;
+        let res = llm_call_with_retry(&turn, &genai_tools, &turn.messages).await?;
 
         let response_text = res.texts().join("\n");
         let reasoning = res.reasoning_content.clone();
         let turn_prompt_tokens = res.usage.prompt_tokens.unwrap_or(0) as u32;
         let turn_completion_tokens = res.usage.completion_tokens.unwrap_or(0) as u32;
         let tool_calls: Vec<ToolCall> = res.into_tool_calls();
-        let has_done = tool_calls.iter().any(|c| c.fn_name == "done");
+        let has_skip = tool_calls.iter().any(|c| c.fn_name == "skip");
+        let has_send_call = tool_calls
+            .iter()
+            .any(|c| matches!(c.fn_name.as_str(), "send_message" | "send_voice"));
+        let non_skip_calls = tool_calls.iter().filter(|c| c.fn_name != "skip").count();
         let active_calls = tool_calls;
 
         // ── 构建 assistant message ──
-        run.messages.push(build_assistant_message(
+        turn.messages.push(build_assistant_message(
             &response_text,
             &active_calls,
             reasoning.clone(),
         ));
 
+        // ── Step 输出完成：模型响应先于工具调用（TUI 顺序 STEP → TOOL）──
+        turn.event_bus.emit(
+            turn.chat_id,
+            AgentEventPayload::StepCompleted {
+                turn: turn.turn_number,
+                step: StepNumber::from(turn_index + 1),
+                output: StepOutput {
+                    turn: turn.turn_number,
+                    step: StepNumber::from(turn_index + 1),
+                    reasoning: reasoning.clone(),
+                    response: response_text.clone(),
+                },
+            },
+        );
+
         // ── 工具执行 ──
         let mut turn_tc: Vec<ToolCallResult> = Vec::new();
         for call in &active_calls {
-            run.event_bus.emit(
-                run.chat_id,
+            turn.event_bus.emit(
+                turn.chat_id,
                 AgentEventPayload::ToolCall {
-                    run: run.run_number,
+                    turn: turn.turn_number,
+                    step: StepNumber::from(turn_index + 1),
                     tool: call.fn_name.clone(),
                     args: call.fn_arguments.to_string(),
                 },
             );
-            execute_single_tool(call, &tools, &mut turn_tc, &mut run.messages).await;
+            execute_single_tool(call, &tools, &mut turn_tc, &mut turn.messages).await;
             let result = turn_tc.last().unwrap();
-            run.event_bus.emit(
-                run.chat_id,
+            turn.event_bus.emit(
+                turn.chat_id,
                 AgentEventPayload::ToolCallResult {
-                    run: run.run_number,
+                    turn: turn.turn_number,
+                    step: StepNumber::from(turn_index + 1),
                     tool: call.fn_name.clone(),
                     summary: result.result.to_string(),
                     success: result.success,
@@ -145,89 +193,80 @@ pub(crate) async fn run_react_loop(
         }
 
         // ──  Decide ──
-        let mut stop = has_done;
-        if !stop && active_calls.is_empty() {
-            if response_text.trim().is_empty() {
-                stop = true
-            } else {
-                run.event_bus.emit(
-                    run.chat_id,
-                    AgentEventPayload::ModelRetry {
-                        run: run.run_number,
-                        reason: ModelRetryReason::ResponseWithText,
-                    },
-                );
-                run.messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
+        // 主循环：发言必须经 send_message/send_voice；有文本但没发（含"文本 + skip"）→ 报错重试，不吞回复
+        // 收尾：多轮整理——有工具调用则继续（整理记忆/话题），**无工具调用即停**（纯文本 = 最终摘要；
+        //       空文本 + 无工具 = 无输出，由上层判失败）。不能"有文本即停"——模型首轮的
+        //       整理声明（"我来整理…"）会被截断当摘要，丢失完整整理与最终摘要。
+        let empty_text = response_text.trim().is_empty();
+
+        let (stop, needs_retry) = match turn.mode {
+            LoopMode::Main => {
+                let stop = empty_text && (has_skip || active_calls.is_empty());
+                let retry = !stop && !has_send_call && !empty_text && non_skip_calls == 0;
+                (stop || turn_index + 1 >= MAX_STEPS, retry)
             }
+            LoopMode::WrapUp => {
+                // 无工具调用即停：文本非空 → 该文本即最终摘要；空 → 无摘要（上层判失败）
+                let stop = active_calls.is_empty();
+                (stop || turn_index + 1 >= MAX_STEPS, false)
+            }
+        };
+        if needs_retry {
+            turn.messages.push(ChatMessage::user(DIRECT_OUTPUT_ERROR));
         }
 
         // ── Commit ──
         turn_index += 1;
-        turns.push(Turn {
+        steps.push(Step {
             tool_calls: turn_tc,
             response: response_text,
             reasoning,
             prompt_tokens: turn_prompt_tokens,
             completion_tokens: turn_completion_tokens,
         });
-        if !stop {
-            let turn = turns.last().unwrap();
-            run.event_bus.emit(
-                run.chat_id,
-                AgentEventPayload::TurnCompleted(TurnOutput {
-                    run: run.run_number,
-                    turn: turn_index,
-                    reasoning: turn.reasoning.clone(),
-                    response: turn.response.clone(),
-                }),
+
+        // retry 提示在工具日志之后：先看到本轮模型输出与工具结果，再看到重试原因
+        if needs_retry {
+            turn.event_bus.emit(
+                turn.chat_id,
+                AgentEventPayload::ModelRetry {
+                    turn: turn.turn_number,
+                    reason: ModelRetryReason::ResponseWithText,
+                },
             );
         }
 
         if stop {
             return Ok(ReactLoopOutput {
-                turns,
-                messages: run.messages,
+                steps,
+                messages: turn.messages,
+                steered: None,
             });
         }
 
-        // ── Preempt ──
-        if run.preempt
-            && let Some(result) = inject_preempt(&mut run.messages, &run.inbox).await
-        {
-            run.event_bus.emit(
-                run.chat_id,
-                AgentEventPayload::Preempted {
-                    run: run.run_number,
-                    count: result.count,
-                    reasons: result.reasons,
-                    content: result.content,
-                },
-            );
+        // ── Steering 检测（turn 期间新事件 = 注意力延续；收尾模式不响应）──
+        // 提前正常结束当前 turn（已处理内容生效，上层推进状态后立即增量续跑新 turn），
+        // turn 输入区间保持完整（不做中途 situation 注入）。
+        if turn.steering && turn.inbox.len() > 0 {
+            let events = turn.inbox.drain();
+            let in_window = Instant::now() < turn.steering_until;
+            let has_immediate = events
+                .iter()
+                .any(|e| !matches!(e.reason, WakeReason::Observe));
+            if in_window && !has_immediate {
+                // 防抖窗口内仅 Observe：不打断（事件放回，下轮再检）
+                for e in events.iter() {
+                    turn.inbox.push(e.clone());
+                }
+            } else {
+                return Ok(ReactLoopOutput {
+                    steps,
+                    messages: turn.messages,
+                    steered: Some(events),
+                });
+            }
         }
     }
-}
-
-// ── Preempt ───────────────────────────────────────────────────────────────────
-
-pub(super) struct PreemptResult {
-    pub count: usize,
-    pub reasons: String,
-    pub content: String,
-}
-
-async fn inject_preempt(messages: &mut Messages, inbox: &Inbox) -> Option<PreemptResult> {
-    let events = inbox.drain();
-    if events.is_empty() {
-        return None;
-    }
-    let groups = events.coalesce();
-    let content = render_pretty(build_situation_section(&groups), Format::Xml);
-    messages.push(ChatMessage::user(content.clone()));
-    Some(PreemptResult {
-        count: events.len(),
-        reasons: groups.reasons_summary(),
-        content,
-    })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -266,7 +305,7 @@ fn build_assistant_message(
 
 /// 带重试的 LLM 调用。只对网络类错误重试，api/认证错误直接透传。
 async fn llm_call_with_retry(
-    run: &ReactRun,
+    turn: &ReactTurn,
     genai_tools: &[Tool],
     messages: &Messages,
 ) -> Result<genai::chat::ChatResponse, ToolError> {
@@ -275,24 +314,24 @@ async fn llm_call_with_retry(
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            run.event_bus.emit(
-                run.chat_id,
+            turn.event_bus.emit(
+                turn.chat_id,
                 AgentEventPayload::ModelRetry {
-                    run: run.run_number,
+                    turn: turn.turn_number,
                     reason: ModelRetryReason::TimeoutRetry,
                 },
             );
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
-        match run
+        match turn
             .client
             .exec_chat(
-                &run.model,
+                &turn.model,
                 ChatRequest::new(messages.to_vec())
-                    .with_system(&run.config.system_prompt)
+                    .with_system(&turn.config.system_prompt)
                     .with_tools(genai_tools.to_vec()),
-                Some(&run.config.options),
+                Some(&turn.config.options),
             )
             .await
         {

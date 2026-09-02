@@ -1,19 +1,14 @@
-use super::Chat;
-
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "conversation"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ConversationRecord {
-    #[key]
     pub chat_id: i64,
-    #[belongs_to]
-    pub chat: toasty::Deferred<Chat>,
 
-    pub messages: toasty::Json<serde_json::Value>,
-    pub since_id: i64,
-    pub shown_memory_ids: toasty::Json<serde_json::Value>,
-    pub shown_topic_ids: toasty::Json<serde_json::Value>,
-    pub turns: toasty::Json<serde_json::Value>,
+    pub messages: serde_json::Value,
 
-    #[auto]
+    /// 对话级状态元信息（since_id——消息游标，跨章节；未来对话级字段进此列，零迁移）。
+    pub state: serde_json::Value,
+
+    /// 章节级状态元信息（shown ids + ContextMeta 标量；重开章节整体归零重写，未来章节级字段进此列）。
+    pub context_meta: serde_json::Value,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }

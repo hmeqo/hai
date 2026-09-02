@@ -17,8 +17,8 @@ use struct_patch::Patch;
 use crate::config::{
     manager::Configurable,
     schema::{
-        AgentConfig, BotConfigRaw, DatabaseConfig, LoggingConfig, McpConfig, MultimodalConfig,
-        ProviderConfig, SandboxConfig, SkillsConfig,
+        AgentConfig, AuxiliaryConfig, BotConfigRaw, DatabaseConfig, KnowledgeConfig, LoggingConfig,
+        McpConfig, ProviderConfig, SandboxConfig, SkillsConfig,
     },
 };
 
@@ -28,8 +28,9 @@ use crate::config::{
 #[serde(rename_all = "kebab-case")]
 pub struct AppConfig {
     pub agent: AgentConfig,
+    pub knowledge: KnowledgeConfig,
     pub providers: HashMap<String, ProviderConfig>,
-    pub multimodal: MultimodalConfig,
+    pub auxiliary: AuxiliaryConfig,
     pub bot: HashMap<String, BotConfigRaw>,
     pub mcp: HashMap<String, McpConfig>,
     pub sandbox: SandboxConfig,

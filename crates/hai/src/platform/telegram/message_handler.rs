@@ -25,7 +25,7 @@ impl MessageHandler {
         Self { ctx, registry }
     }
 
-    pub(super) async fn session(&self, chat_id: ChatId) -> SessionHandle {
+    pub(super) async fn session(&self, chat_id: ChatId) -> Result<SessionHandle> {
         self.registry.get_or_create(chat_id).await
     }
 
@@ -117,6 +117,9 @@ impl MessageHandler {
             WakeReason::Observe
         };
         tracing::debug!(%chat_id, reason = reason.label(), "Agent event dispatched");
-        self.session(chat_id).await.wake(WakeEvent::new(reason));
+        match self.session(chat_id).await {
+            Ok(session) => session.wake(WakeEvent::new(reason)),
+            Err(e) => tracing::error!(%chat_id, "Failed to create session: {e}"),
+        }
     }
 }

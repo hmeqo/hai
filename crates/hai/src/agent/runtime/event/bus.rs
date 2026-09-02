@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::domain::vo::ChatId;
 pub use crate::domain::vo::{AgentEvent, AgentEventPayload};
+use crate::domain::{repo::Repos, vo::ChatId};
 
 // ── AgentEventBus ──────────────────────────────────────────────────────────────
 
@@ -16,9 +16,9 @@ pub struct AgentEventBus {
 }
 
 impl AgentEventBus {
-    pub fn new(db: toasty::Db) -> Self {
+    pub fn new(repos: Repos) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(collector(rx, db));
+        tokio::spawn(collector(rx, repos));
         Self { tx }
     }
 
@@ -27,20 +27,20 @@ impl AgentEventBus {
     }
 }
 
-async fn collector(mut rx: mpsc::UnboundedReceiver<AgentEvent>, db: toasty::Db) {
+async fn collector(mut rx: mpsc::UnboundedReceiver<AgentEvent>, repos: Repos) {
     let mut batch = Vec::with_capacity(FLUSH_BATCH);
     loop {
         tokio::select! {
             Some(event) = rx.recv() => {
                 batch.push(event);
                 if batch.len() >= FLUSH_BATCH {
-                    flush(&batch, &db).await;
+                    flush(&batch, &repos).await;
                     batch.clear();
                 }
             }
             _ = tokio::time::sleep(FLUSH_INTERVAL) => {
                 if !batch.is_empty() {
-                    flush(&batch, &db).await;
+                    flush(&batch, &repos).await;
                     batch.clear();
                 }
             }
@@ -49,17 +49,9 @@ async fn collector(mut rx: mpsc::UnboundedReceiver<AgentEvent>, db: toasty::Db) 
     }
 }
 
-async fn flush(batch: &[AgentEvent], db: &toasty::Db) {
-    use crate::domain::model::Event;
-
+async fn flush(batch: &[AgentEvent], repos: &Repos) {
     for event in batch {
-        if let Err(e) = toasty::create!(Event {
-            domain: "agent".to_string(),
-            payload: toasty::Json(event.to_json_value()),
-        })
-        .exec(&mut db.clone())
-        .await
-        {
+        if let Err(e) = repos.event.insert("agent", event.to_json_value()).await {
             tracing::warn!(kind = event.payload.kind(), error = %e, "Failed to flush agent event");
         }
     }

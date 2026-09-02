@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use derive_more::Deref;
-use strum::{EnumString, IntoStaticStr};
+use strum::IntoStaticStr;
 use uuid::Uuid;
 
 /// 定时/后台任务的具体负载
@@ -25,13 +25,44 @@ impl TaskPayload {
     }
 }
 
+/// 用户显式指令（内置命令）
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AgentCommand {
+    OrganizeMemory,
+    Explain,
+    Digest(u32),
+}
+
+impl AgentCommand {
+    /// 给 agent 的执行指令文本（describe 注入上下文的表述）
+    pub fn instruction(&self) -> String {
+        match self {
+            Self::OrganizeMemory => {
+                "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建".into()
+            }
+            Self::Explain => "向用户解释，客观中立，不偏向任何一方。\
+                 若命令带了要解释的对象，解释该对象；\
+                 否则从上文最近提到的概念里判断值得解释的内容。\
+                 直接给出解释"
+                .into(),
+            Self::Digest(days) => {
+                format!(
+                    "客观总结最近 {days} 天内聊过的值得注意的内容给用户：\
+                     主动用 search_topics 检索最近 {days} 天这个时间范围内的话题\
+                     （必要时配合语义关键词），并浏览相关消息；客观提炼用户可能错过的、\
+                     值得关注的重要内容，注明每条的时间，条理清晰地回复"
+                )
+            }
+        }
+    }
+}
+
 /// 唤醒原因
 ///
 /// 只描述"为什么唤醒了 Agent"，**不包含行为指令**。
 /// Agent 根据自身人格自主决定如何响应。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, IntoStaticStr)]
 pub enum WakeReason {
-    #[default]
     /// 注意力系统监测到新消息
     Observe,
     /// 有人发来私信
@@ -41,7 +72,7 @@ pub enum WakeReason {
     /// 定时/后台任务
     Scheduled(TaskPayload),
     /// 用户显式指令
-    Command(String),
+    Command(AgentCommand),
 }
 
 impl fmt::Display for WakeReason {
@@ -51,7 +82,7 @@ impl fmt::Display for WakeReason {
             Self::Direct => write!(f, "direct"),
             Self::Mention => write!(f, "mention"),
             Self::Scheduled(p) => write!(f, "scheduled({})", p.description),
-            Self::Command(c) => write!(f, "command({c})"),
+            Self::Command(c) => write!(f, "command({c:?})"),
         }
     }
 }
@@ -74,7 +105,7 @@ impl WakeReason {
                     format!("定时任务：{}。", payload.description)
                 }
             }
-            Self::Command(description) => description.clone(),
+            Self::Command(cmd) => cmd.instruction(),
         }
     }
 }
@@ -83,7 +114,10 @@ impl WakeReason {
 
 impl WakeReason {
     pub fn is_addressed(&self) -> bool {
-        matches!(self, Self::Direct | Self::Mention | Self::Command(_))
+        matches!(
+            self,
+            Self::Direct | Self::Mention | Self::Scheduled(_) | Self::Command(_)
+        )
     }
 
     pub fn is_rapid(&self) -> bool {
@@ -182,14 +216,4 @@ pub struct EventGroup {
     pub label: &'static str,
     pub describe: String,
     pub count: usize,
-}
-
-pub trait EventGroupSlice {
-    fn reasons_summary(&self) -> String;
-}
-
-impl EventGroupSlice for [EventGroup] {
-    fn reasons_summary(&self) -> String {
-        self.iter().map(|g| g.label).collect::<Vec<_>>().join(", ")
-    }
 }

@@ -15,18 +15,25 @@ use crate::{
     error::Result,
 };
 
-/// 向量搜索相关内容（记忆+话题）
-pub async fn search_related_context(params: SearchRelatedParams<'_>) -> Result<SearchResult> {
-    let search_query: String = params
-        .topics
+/// 话题 title/summary + 消息文本 + 感知内容；记忆/话题/知识库检索共用同一 query。
+pub fn build_search_query(
+    topics: &[Topic],
+    parsed: &[ParsedContent],
+    perceptions: &[Perception],
+) -> String {
+    topics
         .iter()
         .flat_map(|t| [t.title.clone(), t.summary.clone()])
         .flatten()
-        .chain(params.parsed.iter().map(|p| p.text.clone()))
-        .chain(params.perceptions.iter().map(|p| p.content.clone()))
+        .chain(parsed.iter().map(|p| p.text.clone()))
+        .chain(perceptions.iter().map(|p| p.content.clone()))
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+pub async fn search_related_context(params: SearchRelatedParams<'_>) -> Result<SearchResult> {
+    let search_query = build_search_query(params.topics, params.parsed, params.perceptions);
 
     if search_query.is_empty() {
         return Ok(SearchResult {
@@ -73,7 +80,7 @@ pub(crate) struct SearchRelatedParams<'a> {
     pub shown_topic_ids: &'a HashSet<Uuid>,
 }
 
-/// 检索相关内容，排除已展示项。后续轮自动按 2/3 缩减（5→3, 3→2）。
+/// 后续轮自动按 2/3 缩减（5→3, 3→2）。
 pub async fn search_related_dedup(params: SearchRelatedParams<'_>) -> Result<SearchResult> {
     let SearchResult { memories, topics } = search_related_context(SearchRelatedParams {
         shown_memory_ids: params.shown_memory_ids,

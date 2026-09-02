@@ -43,13 +43,18 @@ fn render_part(
                 .attr("type", part.display_label());
 
             if let Some(perceptions) = perception_map.get(&attachment_id) {
-                for p in perceptions {
-                    let mut analysis = Node::tag("analysis")
+                // 双层感知合并注入：基础转写（focus=None）一次 + 针对性判断（focus=Some）子节点
+                for p in perceptions.iter().filter(|p| p.focus.is_none()) {
+                    let analysis = Node::tag("analysis")
                         .attr("parser", &p.parser)
                         .child(Node::text(&p.content));
-                    if let Some(prompt) = &p.prompt {
-                        analysis = analysis.attr("prompt", prompt.as_str());
-                    }
+                    element = element.child(analysis);
+                }
+                for p in perceptions.iter().filter(|p| p.focus.is_some()) {
+                    let analysis = Node::tag("analysis")
+                        .attr("parser", &p.parser)
+                        .attr("focus", p.focus.as_deref().unwrap_or_default())
+                        .child(Node::text(&p.content));
                     element = element.child(analysis);
                 }
             }

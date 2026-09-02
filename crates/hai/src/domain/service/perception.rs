@@ -1,121 +1,86 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
-
 use crate::{
     agentcore::embedding::EmbeddingService,
-    domain::{model::Perception, vo::Source},
+    domain::{model::Perception, repo::Repos, vo::Source},
     error::Result,
     util::pgvector,
 };
 
 #[derive(Debug)]
 pub struct PerceptionService {
-    db: toasty::Db,
+    repos: Repos,
     embedding: Arc<dyn EmbeddingService>,
-    pool: PgPool,
 }
 
 impl PerceptionService {
-    pub fn new(db: toasty::Db, embedding: Arc<dyn EmbeddingService>, pool: PgPool) -> Self {
-        Self {
-            db,
-            embedding,
-            pool,
-        }
+    pub fn new(repos: Repos, embedding: Arc<dyn EmbeddingService>) -> Self {
+        Self { repos, embedding }
     }
 
     pub async fn find(
         &self,
         source: &Source,
         parser: &str,
-        prompt: Option<&str>,
+        focus: Option<&str>,
     ) -> Result<Option<Perception>> {
-        let source_json = toasty::Json(serde_json::to_value(source)?);
-        let prompt_eq = prompt.map(|s| Some(s.to_string()));
-        Perception::filter(
-            Perception::fields()
-                .source()
-                .eq(source_json)
-                .and(Perception::fields().parser().eq(parser))
-                .and(if let Some(ref p) = prompt_eq {
-                    Perception::fields().prompt().eq(p.clone())
-                } else {
-                    Perception::fields().prompt().is_none()
-                }),
-        )
-        .first()
-        .exec(&mut self.db.clone())
-        .await
-        .map_err(Into::into)
+        self.repos.perception.find(source, parser, focus).await
     }
 
+    /// 批量按 file_id 查询（单次 round-trip；每文件全行——基础转写 + 针对性判断）。
     pub async fn find_by_platform_file_ids(
         &self,
         file_ids: &[String],
     ) -> Result<Vec<(String, Perception)>> {
-        let mut results = Vec::new();
-        for fid in file_ids {
-            let source = Source::platform("telegram", fid);
-            let source_json = toasty::Json(serde_json::to_value(&source)?);
-            if let Some(p) = Perception::filter(Perception::fields().source().eq(source_json))
-                .first()
-                .exec(&mut self.db.clone())
-                .await?
-            {
-                results.push((fid.clone(), p));
-            }
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(results)
+        let sources: Vec<serde_json::Value> = file_ids
+            .iter()
+            .map(|fid| serde_json::to_value(Source::platform("telegram", fid)))
+            .collect::<serde_json::Result<_>>()?;
+        let rows = self.repos.perception.find_by_sources(&sources).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|p| {
+                let Ok(Source::Platform { file_id, .. }) =
+                    serde_json::from_value::<Source>(p.source.clone())
+                else {
+                    return None;
+                };
+                Some((file_id, p))
+            })
+            .collect())
     }
 
+    /// 批量按 URL 查询（单次 round-trip；全行）。
     pub async fn find_by_urls(&self, urls: &[String]) -> Result<Vec<Perception>> {
-        let mut results = Vec::new();
-        for url in urls {
-            let source = Source::url(url);
-            let source_json = toasty::Json(serde_json::to_value(&source)?);
-            if let Some(p) = Perception::filter(Perception::fields().source().eq(source_json))
-                .first()
-                .exec(&mut self.db.clone())
-                .await?
-            {
-                results.push(p);
-            }
+        if urls.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(results)
+        let sources: Vec<serde_json::Value> = urls
+            .iter()
+            .map(|u| serde_json::to_value(Source::url(u)))
+            .collect::<serde_json::Result<_>>()?;
+        self.repos.perception.find_by_sources(&sources).await
     }
 
     pub async fn upsert(
         &self,
         source: &Source,
         parser: &str,
-        prompt: Option<&str>,
+        focus: Option<&str>,
         content: &str,
     ) -> Result<Perception> {
-        let source_json = toasty::Json(serde_json::to_value(source)?);
-        let mut db = self.db.clone();
-        let prompt_opt = prompt.map(|s| s.to_string());
-
-        if let Some(mut existing) = Perception::filter(
-            Perception::fields()
-                .source()
-                .eq(source_json.clone())
-                .and(Perception::fields().parser().eq(parser))
-                .and(if let Some(ref p) = prompt_opt {
-                    Perception::fields().prompt().eq(Some(p.clone()))
-                } else {
-                    Perception::fields().prompt().is_none()
-                }),
-        )
-        .first()
-        .exec(&mut db)
-        .await?
-        {
-            toasty::update!(existing { content }).exec(&mut db).await?;
+        if let Some(existing) = self.repos.perception.find(source, parser, focus).await? {
+            self.repos
+                .perception
+                .update_content(existing.id, content)
+                .await?;
             let id = existing.id;
             let content = content.to_string();
             let embedding = Arc::clone(&self.embedding);
-            let pool = self.pool.clone();
+            let pool = self.repos.pool().clone();
             tokio::spawn(async move {
                 if let Err(e) =
                     pgvector::store_embedding(&*embedding, &pool, "perception", id, &content).await
@@ -126,21 +91,15 @@ impl PerceptionService {
             return Ok(existing);
         }
 
-        let perception = toasty::create!(Perception {
-            id: uuid::Uuid::now_v7(),
-            source: source_json,
-            parser,
-            prompt: prompt_opt,
-            content,
-            created_at: jiff::Timestamp::now(),
-        })
-        .exec(&mut db)
-        .await?;
-
+        let perception = self
+            .repos
+            .perception
+            .create(source, parser, focus, content)
+            .await?;
         let id = perception.id;
         let content = content.to_string();
         let embedding = Arc::clone(&self.embedding);
-        let pool = self.pool.clone();
+        let pool = self.repos.pool().clone();
         tokio::spawn(async move {
             if let Err(e) =
                 pgvector::store_embedding(&*embedding, &pool, "perception", id, &content).await

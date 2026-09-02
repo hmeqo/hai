@@ -6,6 +6,7 @@ pub mod media;
 pub(super) mod message_handler;
 pub mod parser;
 pub mod render;
+pub(super) mod scheduled_watcher;
 pub mod service;
 pub mod util;
 

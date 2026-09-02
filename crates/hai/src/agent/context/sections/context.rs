@@ -1,10 +1,11 @@
 //! 上下文渲染
 //!
-//! 将 CommonContext（纯数据）渲染为 prompt 字符串。
+//! 将 RenderContext（纯数据）渲染为 prompt 字符串。
 
 use super::{
     account::account_element,
     chat::render_chat_info,
+    knowledge::related_knowledge_section,
     memory::related_memories_section,
     message::conversation_element,
     perception::perception_item,
@@ -16,20 +17,20 @@ use crate::{
     domain::{model::MessageStatus, vo::Source},
 };
 
-/// 将 CommonContext 渲染为最终的 XML prompt 字符串
 pub fn render_main_context(ctx: &RenderContext, instruction: Node) -> String {
-    render_context(ctx, instruction, "context")
+    render_context(ctx, instruction)
 }
 
-/// 共用渲染逻辑，可指定 root tag（首轮 = context，后续轮 = new）
-pub(crate) fn render_context(ctx: &RenderContext, instruction: Node, root_tag: &str) -> String {
+/// 首轮/后续轮统一 root = `context`。
+pub(crate) fn render_context(ctx: &RenderContext, instruction: Node) -> String {
     render_pretty(
-        Node::tag(root_tag).children(
+        Node::tag("context").children(
             ContextBuilder::new(ctx, instruction)
                 .env()
                 .chat()
                 .accounts()
                 .related_memories()
+                .knowledge()
                 .related_topics()
                 .topics()
                 .perceptions()
@@ -95,6 +96,7 @@ impl<'a> ContextBuilder<'a> {
         let shown_unread = self
             .ctx
             .messages
+            .window()
             .iter()
             .filter(|m| m.interaction_status == MessageStatus::Unread.as_str())
             .count() as i64;
@@ -127,6 +129,11 @@ impl<'a> ContextBuilder<'a> {
 
     fn related_memories(self) -> Self {
         let node = related_memories_section(&self.ctx.related_memories, "related_memories");
+        self.add(node)
+    }
+
+    fn knowledge(self) -> Self {
+        let node = related_knowledge_section(&self.ctx.related_knowledge);
         self.add(node)
     }
 
@@ -183,7 +190,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     fn conversation(self) -> Self {
-        let msg_refs: Vec<&_> = self.ctx.messages.iter().collect();
+        let msg_refs: Vec<&_> = self.ctx.messages.window().iter().collect();
         let node = conversation_element(&msg_refs, self.ctx);
         self.add(node)
     }

@@ -2,21 +2,17 @@ use std::sync::Arc;
 
 use teloxide::{
     Bot,
-    dispatching::{HandlerExt, UpdateFilterExt, dialogue::InMemStorage},
+    dispatching::{HandlerExt, UpdateFilterExt},
     dptree,
     prelude::*,
     types::{Me, Message, Update},
     utils::command::BotCommands,
 };
 
-use super::{
-    command::{Command, MAJOR_HELP_TEXT},
-    message_handler::MessageHandler,
-    util::msg_chat_type,
-};
+use super::{command::Command, message_handler::MessageHandler, util::msg_chat_type};
 use crate::{
     agent::{
-        event::{WakeEvent, WakeReason},
+        event::{AgentCommand, WakeEvent, WakeReason},
         runtime::registry::SessionManager,
     },
     app::AppContext,
@@ -48,56 +44,40 @@ impl TelegramDispatcher {
     pub async fn run(self) -> Result<()> {
         let this = Arc::new(self);
 
-        let dispatcher_handler =
-            Update::filter_message()
-                .branch(
-                    dptree::entry()
-                        .filter(|bot: Bot, msg: Message, dp: Arc<TelegramDispatcher>| {
-                            if !dp.is_allowed_chat(msg.chat.id) {
-                                tokio::spawn(async move {
-                                    if let Err(err) = dp.handle_unauthorized_message(bot, msg).await
-                                    {
-                                        tracing::error!(
-                                            "Failed to handle unauthorized message: {}",
-                                            err
-                                        );
-                                    }
-                                    Ok::<(), AppError>(())
-                                });
-                                return false;
+        let dispatcher_handler = Update::filter_message().branch(
+            dptree::entry()
+                .filter(|bot: Bot, msg: Message, dp: Arc<TelegramDispatcher>| {
+                    if !dp.is_allowed_chat(msg.chat.id) {
+                        tokio::spawn(async move {
+                            if let Err(err) = dp.handle_unauthorized_message(bot, msg).await {
+                                tracing::error!("Failed to handle unauthorized message: {}", err);
                             }
-                            true
-                        })
-                        .branch(
-                            dptree::entry().filter_command::<Command>().endpoint(
-                                |bot: Bot,
-                                 msg: Message,
-                                 cmd: Command,
-                                 dp: Arc<TelegramDispatcher>| async move {
-                                    if let Err(err) = dp.handle_command(bot, msg, cmd).await {
-                                        tracing::error!("Failed to handle command: {err}");
-                                    }
-                                    Ok::<(), AppError>(())
-                                },
-                            ),
-                        )
-                        .endpoint(
-                            |msg: Message, me: Me, dp: Arc<TelegramDispatcher>| async move {
-                                if let Err(err) = dp.handle_message(msg, me).await {
-                                    tracing::error!("Failed to handle message: {}", err);
-                                }
-                                Ok::<(), AppError>(())
-                            },
-                        ),
-                )
-                .branch(dptree::entry().enter_dialogue::<Message, InMemStorage<State>, State>())
-                .endpoint(|_: Bot, _: Message, _: Arc<TelegramDispatcher>| async { Ok(()) });
+                            Ok::<(), AppError>(())
+                        });
+                        return false;
+                    }
+                    true
+                })
+                .branch(dptree::entry().filter_command::<Command>().endpoint(
+                    |bot: Bot, msg: Message, cmd: Command, dp: Arc<TelegramDispatcher>| async move {
+                        if let Err(err) = dp.handle_command(bot, msg, cmd).await {
+                            tracing::error!("Failed to handle command: {err}");
+                        }
+                        Ok::<(), AppError>(())
+                    },
+                ))
+                .endpoint(
+                    |msg: Message, me: Me, dp: Arc<TelegramDispatcher>| async move {
+                        if let Err(err) = dp.handle_message(msg, me).await {
+                            tracing::error!("Failed to handle message: {}", err);
+                        }
+                        Ok::<(), AppError>(())
+                    },
+                ),
+        );
 
         Dispatcher::builder(this.bot.clone(), dispatcher_handler)
-            .dependencies(dptree::deps![
-                Arc::clone(&this),
-                InMemStorage::<State>::new()
-            ])
+            .dependencies(dptree::deps![Arc::clone(&this)])
             .enable_ctrlc_handler()
             .build()
             .dispatch()
@@ -150,42 +130,50 @@ impl TelegramDispatcher {
     }
 
     async fn handle_command(&self, _bot: Bot, msg: Message, cmd: Command) -> Result<()> {
+        // 命令输入与普通消息同路径落库（agent 上下文可见用户打了什么命令）
+        let chat_type = msg_chat_type(&msg);
+        let Some(from) = msg.from.as_ref() else {
+            tracing::warn!("Command without sender: {:?}", msg.id);
+            return Ok(());
+        };
+        let (chat, account) = self
+            .msg_handler
+            .resolve_chat_and_account(&msg, from, chat_type)
+            .await?;
+        self.msg_handler
+            .persist_user_message(&msg, ChatId::from(chat.id), account.id)
+            .await?;
+
         match cmd {
             Command::Start => {
                 self.bot.send_message(msg.chat.id, "Hello!").await?;
             }
-            Command::Help => {
-                self.bot
-                    .send_message(
-                        msg.chat.id,
-                        format!("{}\n{}", Command::descriptions(), MAJOR_HELP_TEXT),
-                    )
-                    .await?;
-            }
             Command::Status => {
-                let inner_chat_id = self.msg_handler.get_internal_chat_id(&msg).await?;
-                let status_msg = match self.msg_handler.session(inner_chat_id).await.status().await
+                let inner_chat_id = ChatId::from(chat.id);
+                let status_msg = match self
+                    .msg_handler
+                    .session(inner_chat_id)
+                    .await?
+                    .status()
+                    .await
                 {
                     Some(s) => {
                         let sched = &s.scheduler;
                         let mut lines = vec![format!("model   {}", s.model)];
 
-                        // runs line
-                        let runs_line = if let Some(secs) = s.run_elapsed_secs {
-                            format!("turns   {} · active {:.1}s", s.turns_count, secs)
+                        let runs_line = if let Some(secs) = s.turn_elapsed_secs {
+                            format!("steps   {} · active {:.1}s", s.step_count, secs)
                         } else {
-                            format!("turns   {}", s.turns_count)
+                            format!("steps   {}", s.step_count)
                         };
                         lines.push(runs_line);
 
-                        // tokens
                         if s.context_tokens > 0 {
                             lines.push(format!("tokens  {}", fmt_tokens(s.context_tokens)));
                         }
 
                         lines.push(format!("conv    {} msgs", s.conversation_msgs));
 
-                        // heat line
                         let heat =
                             format!("heat    {:.2} / {:.2}", sched.heat_value, sched.heat_base);
                         let heat_line = if sched.window_active {
@@ -203,13 +191,30 @@ impl TelegramDispatcher {
                 self.bot.send_message(msg.chat.id, status_msg).await?;
             }
             Command::OrganizeMemory => {
-                let inner_chat_id = self.msg_handler.get_internal_chat_id(&msg).await?;
+                let inner_chat_id = ChatId::from(chat.id);
                 self.msg_handler
                     .session(inner_chat_id)
-                    .await
+                    .await?
                     .wake(WakeEvent::new(WakeReason::Command(
-                        "执行记忆/主题整理, 包括不限于处理不符合规范的记忆或主题, 删除重建".into(),
+                        AgentCommand::OrganizeMemory,
                     )));
+            }
+            Command::Explain => {
+                let inner_chat_id = ChatId::from(chat.id);
+                self.msg_handler
+                    .session(inner_chat_id)
+                    .await?
+                    .wake(WakeEvent::new(WakeReason::Command(AgentCommand::Explain)));
+            }
+            Command::Digest(days) => {
+                let inner_chat_id = ChatId::from(chat.id);
+                let days = days.max(1);
+                self.msg_handler
+                    .session(inner_chat_id)
+                    .await?
+                    .wake(WakeEvent::new(WakeReason::Command(AgentCommand::Digest(
+                        days,
+                    ))));
             }
         }
         Ok(())
@@ -222,10 +227,4 @@ fn fmt_tokens(n: u32) -> String {
     } else {
         n.to_string()
     }
-}
-
-#[derive(Clone, Default)]
-pub(crate) enum State {
-    #[default]
-    Start,
 }

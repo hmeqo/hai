@@ -10,7 +10,6 @@ use crate::error::{ErrorKind, Result};
 
 // --- 核心 Trait 定义 ---
 
-/// 可配置对象的抽象接口
 pub trait Configurable: Patch<Self::Patch> + Default + Clone + Send + Sync + 'static {
     /// 对应的补丁类型（由 struct_patch 生成）
     type Patch: Default + Serialize + for<'de> Deserialize<'de> + Clone + Send + std::fmt::Debug;
@@ -76,7 +75,6 @@ impl<T: Configurable> Config<T> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("toml");
 
         let content = match ext {
-            // "toml" => toml::to_string_pretty(&*intent_guard)?,
             "json" => serde_json::to_string_pretty(&*intent_guard)?,
             _ => return Err(ErrorKind::Config.msg(format!("不支持的文件格式: {}", ext))),
         };

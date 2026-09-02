@@ -2,6 +2,7 @@ pub mod account;
 pub mod chat;
 pub mod context;
 pub mod fmt;
+pub mod knowledge;
 pub mod memory;
 pub mod message;
 pub mod perception;

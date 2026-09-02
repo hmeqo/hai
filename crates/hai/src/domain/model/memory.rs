@@ -2,31 +2,23 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-use super::{Account, Chat};
 use crate::domain::vo::MemoryId;
 
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "memory"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Memory {
-    #[key]
     pub id: uuid::Uuid,
 
     pub account_id: Option<i64>,
-    #[belongs_to]
-    pub account: toasty::Deferred<Option<Account>>,
 
     pub chat_id: Option<i64>,
-    #[belongs_to]
-    pub chat: toasty::Deferred<Option<Chat>>,
 
     pub kind: String,
     pub content: String,
     pub importance: i32,
-    pub meta: Option<toasty::Json<serde_json::Value>>,
-
-    #[auto]
+    pub meta: Option<serde_json::Value>,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 
@@ -39,9 +31,7 @@ impl Memory {
         Self {
             id: Uuid::now_v7(),
             account_id: None,
-            account: Default::default(),
             chat_id: None,
-            chat: Default::default(),
             kind: kind.to_string(),
             content,
             importance: 1,

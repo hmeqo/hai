@@ -1,14 +1,10 @@
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "event"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Event {
-    #[key]
-    #[auto(increment)]
     pub seq: i64,
 
     pub domain: String,
 
-    pub payload: toasty::Json<serde_json::Value>,
-
-    #[auto]
+    pub payload: serde_json::Value,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
 }

@@ -1,51 +1,70 @@
-use toasty::stmt::Value;
-
 use crate::domain::{
     model::Event,
-    vo::{AgentEvent, AgentEventPayload},
+    vo::{AgentEvent, AgentEventPayload, TurnEndReason},
 };
 
 // ── EventDisplay ───────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub(super) struct EventDisplay {
     pub tag: &'static str,
     pub one_liner: String,
     pub detail_text: String,
+    pub chat_id: i64,
+    pub color: (u8, u8, u8),
 }
 
 impl EventDisplay {
+    /// 解析失败时的事件占位（行可见，详情为空）。
+    pub fn unparsed() -> Self {
+        Self {
+            tag: "?",
+            one_liner: String::from("<unparsed>"),
+            detail_text: String::from("<unparsed event payload>"),
+            chat_id: 0,
+            color: (156, 163, 175),
+        }
+    }
+
     pub fn from_event(event: &Event) -> Option<Self> {
-        let ae: AgentEvent = serde_json::from_value(event.payload.0.clone()).ok()?;
+        let ae: AgentEvent = serde_json::from_value(event.payload.clone()).ok()?;
         let payload = &ae.payload;
         let tag = tag_for_kind(payload);
+        let color = color_rgb(payload);
 
         let one_liner = match payload {
-            AgentEventPayload::RunFailed { run, error, .. } => {
+            AgentEventPayload::TurnEnded {
+                turn,
+                reason: TurnEndReason::Failed { error },
+                ..
+            } => {
                 let preview: String = error.chars().take(60).collect();
-                format!("FAIL   {run}  {preview}")
+                format!("FAIL   {turn}  {preview}")
             }
-            AgentEventPayload::Preempted { run, .. } => {
-                format!("PREEMPT  {run}")
+            AgentEventPayload::ModelRetry { turn, reason, .. } => {
+                format!("RETRY  {turn}  {reason}")
             }
-            AgentEventPayload::ModelRetry { run, reason, .. } => {
-                format!("RETRY  {run}  {reason}")
-            }
-            AgentEventPayload::RunStarted {
-                run,
+            AgentEventPayload::TurnStarted {
+                turn,
                 reason,
                 msg_count,
                 ..
             } => {
-                format!("RUN    {run}  {reason}  msgs:{msg_count}")
+                format!("TURN   {turn}  {reason}  msgs:{msg_count}")
             }
             AgentEventPayload::ToolCall {
-                run, tool, args, ..
+                turn,
+                step,
+                tool,
+                args,
+                ..
             } => {
                 let preview: String = args.chars().take(40).collect();
-                format!("TOOL   {run}  {tool}({preview})")
+                format!("TOOL   {turn}.{step}  {tool}({preview})")
             }
             AgentEventPayload::ToolCallResult {
-                run,
+                turn,
+                step,
                 tool,
                 summary,
                 success,
@@ -53,30 +72,46 @@ impl EventDisplay {
             } => {
                 let preview: String = summary.chars().take(40).collect();
                 format!(
-                    "TOOL   {run}  {tool}  {}  {}",
+                    "TOOL   {turn}.{step}  {tool}  {}  {}",
                     preview,
                     if *success { "✓" } else { "✗" }
                 )
             }
-            AgentEventPayload::RunCompleted {
-                output,
-                tool_calls,
-                elapsed_ms,
-                prompt_tokens,
-                completion_tokens,
+            AgentEventPayload::TurnEnded {
+                reason:
+                    TurnEndReason::Success {
+                        output,
+                        tool_calls,
+                        elapsed_ms,
+                        context_tokens,
+                        ..
+                    },
                 ..
             } => {
                 format!(
-                    "DONE   {}  {tool_calls}tools  {:.1}s  {prompt_tokens}/{completion_tokens}tok",
-                    output.run,
-                    *elapsed_ms as f64 / 1000.0
+                    "DONE   {}  {tool_calls}tools  {:.1}s  ctx {}t",
+                    output.turn,
+                    *elapsed_ms as f64 / 1000.0,
+                    context_tokens
                 )
             }
-            AgentEventPayload::TurnCompleted(tc) => {
-                format!("TURN   {}.{}", tc.run, tc.turn)
+            AgentEventPayload::TurnEnded {
+                turn,
+                reason: TurnEndReason::Steered { .. },
+                ..
+            } => {
+                format!("STEER  {turn}")
             }
-            AgentEventPayload::CompactCompleted { run_count, .. } => {
-                format!("COMPACT  {} runs", run_count)
+            AgentEventPayload::StepCompleted { turn, step, .. } => {
+                format!("STEP   {turn}.{step}")
+            }
+            AgentEventPayload::WrapUpStarted => "WRAP  start".to_string(),
+            AgentEventPayload::WrapUpCompleted { step_count, .. } => {
+                format!("WRAP  {} steps", step_count)
+            }
+            AgentEventPayload::WrapUpFailed { error, .. } => {
+                let preview: String = error.chars().take(60).collect();
+                format!("FAIL   wrap-up  {preview}")
             }
         };
 
@@ -86,20 +121,44 @@ impl EventDisplay {
             tag,
             one_liner,
             detail_text,
+            chat_id: ae.chat_id.0,
+            color,
         })
     }
 }
 
+/// 事件类型菜单：显示名 + 存储 tag（serde kebab-case，与 `payload->>'event'` 匹配）。
+pub(super) const KIND_TAGS: &[(&str, &str)] = &[
+    ("TURN", "turn-started"),
+    ("TOOL", "tool-call"),
+    ("TOOL", "tool-call-result"),
+    ("STEP", "step-completed"),
+    ("DONE", "turn-ended"),
+    ("RETRY", "model-retry"),
+    ("FAIL", "turn-ended"),
+    ("STEER", "turn-ended"),
+    ("FAIL", "wrap-up-failed"),
+    ("WRAP", "wrap-up-started"),
+    ("WRAP", "wrap-up-completed"),
+];
+
 fn tag_for_kind(payload: &AgentEventPayload) -> &'static str {
     match payload {
-        AgentEventPayload::RunStarted { .. } => "RUN",
+        AgentEventPayload::TurnStarted { .. } => "TURN",
         AgentEventPayload::ToolCall { .. } | AgentEventPayload::ToolCallResult { .. } => "TOOL",
-        AgentEventPayload::TurnCompleted(..) => "TURN",
-        AgentEventPayload::RunCompleted { .. } => "DONE",
+        AgentEventPayload::StepCompleted { .. } => "STEP",
+        AgentEventPayload::TurnEnded {
+            reason: TurnEndReason::Failed { .. },
+            ..
+        } => "FAIL",
+        AgentEventPayload::TurnEnded {
+            reason: TurnEndReason::Steered { .. },
+            ..
+        } => "STEER",
+        AgentEventPayload::TurnEnded { .. } => "DONE",
         AgentEventPayload::ModelRetry { .. } => "RETRY",
-        AgentEventPayload::RunFailed { .. } => "FAIL",
-        AgentEventPayload::Preempted { .. } => "PREEMPT",
-        AgentEventPayload::CompactCompleted { .. } => "COMPACT",
+        AgentEventPayload::WrapUpFailed { .. } => "FAIL",
+        AgentEventPayload::WrapUpStarted | AgentEventPayload::WrapUpCompleted { .. } => "WRAP",
     }
 }
 
@@ -147,54 +206,39 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
     let mut d = Detail::new();
 
     match ae {
-        AgentEventPayload::RunStarted {
-            run,
+        AgentEventPayload::TurnStarted {
+            turn,
             reason,
             msg_count,
             full_prompt,
             ..
         } => {
-            d.field("Run", run);
+            d.field("Turn", turn);
             d.field("Reason", reason);
             d.field("Messages", msg_count);
             if !full_prompt.is_empty() {
                 d.dump("Prompt", &display_json_value(full_prompt));
             }
         }
-        AgentEventPayload::Preempted {
-            run,
-            count,
-            reasons,
-            content,
+        AgentEventPayload::TurnEnded {
+            turn,
+            reason: TurnEndReason::Failed { error },
             ..
         } => {
-            d.field("Run", run);
-            d.field("Events", count);
-            d.field("Reasons", reasons);
-            if !content.is_empty() {
-                d.block("Injected", content);
-            }
-        }
-        AgentEventPayload::RunFailed {
-            run,
-            elapsed_ms,
-            error,
-            ..
-        } => {
-            d.field("Run", run);
-            d.field("Duration", format!("{:.1}s", *elapsed_ms as f64 / 1000.0));
+            d.field("Turn", turn);
+            d.field("Outcome", "failed");
             d.field("Error", error);
         }
-        AgentEventPayload::ModelRetry { run, reason, .. } => {
-            d.field("Run", run);
+        AgentEventPayload::ModelRetry { turn, reason, .. } => {
+            d.field("Turn", turn);
             d.field("Reason", reason);
         }
-        AgentEventPayload::TurnCompleted(tc) => {
-            d.field("Turn", format!("{}.{}", tc.run, tc.turn));
-            if let Some(rs) = &tc.reasoning {
+        AgentEventPayload::StepCompleted { turn, step, output } => {
+            d.field("Step", format!("{}.{}", turn, step));
+            if let Some(rs) = &output.reasoning {
                 d.block("Thinking", rs);
             }
-            d.block("Response", &tc.response);
+            d.block("Response", &output.response);
         }
         AgentEventPayload::ToolCall { tool, args, .. } => {
             d.field("Tool", tool);
@@ -210,15 +254,27 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
             d.block("Result", &display_json_value(summary));
             d.field("Status", if *success { "✓" } else { "✗" });
         }
-        AgentEventPayload::RunCompleted {
-            output,
-            tool_calls,
-            elapsed_ms,
-            prompt_tokens,
-            completion_tokens,
+        AgentEventPayload::TurnEnded {
+            turn,
+            reason:
+                TurnEndReason::Success {
+                    output,
+                    tool_calls,
+                    elapsed_ms,
+                    context_tokens,
+                    ..
+                }
+                | TurnEndReason::Steered {
+                    output,
+                    tool_calls,
+                    elapsed_ms,
+                    context_tokens,
+                    ..
+                },
             ..
         } => {
-            d.field("Turn", format!("{}.{}", output.run, output.turn));
+            d.field("Turn", turn);
+            d.field("Step", format!("{}.{}", output.turn, output.step));
             if let Some(rs) = &output.reasoning {
                 d.block("Thinking", rs);
             }
@@ -227,13 +283,22 @@ fn build_detail(event: &Event, ae: &AgentEventPayload) -> String {
             }
             d.field("Tool Calls", tool_calls);
             d.field("Duration", format!("{:.1}s", *elapsed_ms as f64 / 1000.0));
-            d.field(
-                "Tokens",
-                format!("{prompt_tokens} (prompt) + {completion_tokens} (completion)"),
-            );
+            d.field("Context Tokens", format!("{}", context_tokens));
         }
-        AgentEventPayload::CompactCompleted { run_count } => {
-            d.field("Runs Compacted", run_count);
+        AgentEventPayload::WrapUpStarted => {
+            d.field("Action", "start");
+        }
+        AgentEventPayload::WrapUpCompleted {
+            step_count,
+            summary,
+        } => {
+            d.field("Steps", step_count);
+            if !summary.is_empty() {
+                d.block("Summary", summary);
+            }
+        }
+        AgentEventPayload::WrapUpFailed { error } => {
+            d.field("Error", error);
         }
     }
 
@@ -252,11 +317,15 @@ fn display_json_value(s: &str) -> String {
 
 pub(super) fn fmt_time(ts: jiff::Timestamp) -> String {
     let zoned = ts.to_zoned(jiff::tz::TimeZone::system());
-    zoned.strftime("%H:%M:%S").to_string()
+    if zoned.date() == jiff::Zoned::now().date() {
+        zoned.strftime("%H:%M:%S").to_string()
+    } else {
+        zoned.strftime("%m-%d %H:%M").to_string()
+    }
 }
 
 pub(super) fn chat_display(event: &Event) -> String {
-    let ae: AgentEvent = match serde_json::from_value(event.payload.0.clone()) {
+    let ae: AgentEvent = match serde_json::from_value(event.payload.clone()) {
         Ok(ae) => ae,
         Err(_) => return String::new(),
     };
@@ -265,143 +334,22 @@ pub(super) fn chat_display(event: &Event) -> String {
 
 // ── 颜色映射 ─────────────────────────────────────────────────────────────
 
-pub(super) fn color_rgb(event: &Event) -> (u8, u8, u8) {
-    let ae: AgentEvent = match serde_json::from_value(event.payload.0.clone()) {
-        Ok(ae) => ae,
-        Err(_) => return (156, 163, 175),
-    };
-    match &ae.payload {
-        AgentEventPayload::RunFailed { .. } => (239, 68, 68),
-        AgentEventPayload::Preempted { .. } => (250, 176, 5),
+fn color_rgb(payload: &AgentEventPayload) -> (u8, u8, u8) {
+    match payload {
+        AgentEventPayload::TurnEnded {
+            reason: TurnEndReason::Failed { .. },
+            ..
+        }
+        | AgentEventPayload::WrapUpFailed { .. } => (239, 68, 68),
         AgentEventPayload::ModelRetry { .. } => (250, 176, 5),
-        AgentEventPayload::TurnCompleted(..) => (56, 189, 248),
-        AgentEventPayload::RunStarted { .. } => (234, 179, 8),
+        AgentEventPayload::StepCompleted { .. } => (56, 189, 248),
+        AgentEventPayload::TurnStarted { .. } => (255, 255, 255),
         AgentEventPayload::ToolCall { .. } => (59, 130, 246),
         AgentEventPayload::ToolCallResult { success, .. } if !success => (239, 68, 68),
         AgentEventPayload::ToolCallResult { .. } => (34, 197, 94),
-        AgentEventPayload::RunCompleted { .. } => (255, 255, 255),
-        AgentEventPayload::CompactCompleted { .. } => (168, 85, 247),
+        AgentEventPayload::TurnEnded { .. } => (255, 255, 255),
+        AgentEventPayload::WrapUpStarted | AgentEventPayload::WrapUpCompleted { .. } => {
+            (168, 85, 247)
+        }
     }
-}
-
-// ── Queries ────────────────────────────────────────────────────────────────────
-
-/// Raw SQL query with optional JSONB-based filters.
-/// Result order: seq DESC (if `desc=true`) or seq ASC (if `desc=false`).
-pub(super) async fn raw_query(
-    db: &mut toasty::Db,
-    chat_id: Option<i64>,
-    kind: Option<&str>,
-    before_seq: Option<i64>,
-    after_seq: Option<i64>,
-    desc: bool,
-    limit: usize,
-) -> crate::error::Result<Vec<Event>> {
-    let mut params: Vec<String> = Vec::new();
-    let mut binds: Vec<Box<dyn FnOnce(toasty::sql::Query) -> toasty::sql::Query>> = Vec::new();
-    let mut idx = 0usize;
-
-    fn push_p<T: Into<toasty::stmt::Value> + 'static>(
-        params: &mut Vec<String>,
-        binds: &mut Vec<Box<dyn FnOnce(toasty::sql::Query) -> toasty::sql::Query>>,
-        idx: &mut usize,
-        val: T,
-        expr: &str,
-    ) {
-        *idx += 1;
-        params.push(expr.replace("?", &format!("${}", *idx)));
-        binds.push(Box::new(move |q| q.bind(val)));
-    }
-
-    let mut sql = "SELECT seq, domain, payload, created_at FROM event WHERE seq > 0".to_string();
-
-    if let Some(cid) = chat_id {
-        push_p(
-            &mut params,
-            &mut binds,
-            &mut idx,
-            cid,
-            "AND (payload->>'chat_id')::bigint = ?",
-        );
-    }
-    if let Some(k) = kind {
-        push_p(
-            &mut params,
-            &mut binds,
-            &mut idx,
-            k.to_string(),
-            "AND payload->>'event' = ?",
-        );
-    }
-    if let Some(b) = before_seq {
-        push_p(&mut params, &mut binds, &mut idx, b, "AND seq < ?");
-    }
-    if let Some(a) = after_seq {
-        push_p(&mut params, &mut binds, &mut idx, a, "AND seq > ?");
-    }
-
-    sql.push_str(&params.join(" "));
-    sql.push_str(&format!(
-        " ORDER BY seq {} LIMIT {}",
-        if desc { "DESC" } else { "ASC" },
-        limit
-    ));
-
-    let mut q = toasty::sql::query(&sql);
-    for bind in binds {
-        q = bind(q);
-    }
-
-    let rows = q.exec(db).await?;
-    let events: Vec<Event> = rows.into_iter().filter_map(row_to_event).collect();
-    Ok(events)
-}
-
-fn row_to_event(row: Value) -> Option<Event> {
-    let fields = row.as_record()?.fields.as_slice();
-    if fields.len() < 4 {
-        return None;
-    }
-
-    let seq = match &fields[0] {
-        Value::I64(v) => *v,
-        _ => return None,
-    };
-    let domain = match &fields[1] {
-        Value::String(s) => s.clone(),
-        _ => return None,
-    };
-    let payload = parse_jsonb(&fields[2])?;
-    let created_at = match &fields[3] {
-        Value::Timestamp(ts) => *ts,
-        _ => return None,
-    };
-
-    Some(Event {
-        seq,
-        domain,
-        payload,
-        created_at,
-    })
-}
-
-fn parse_jsonb(v: &Value) -> Option<toasty::Json<serde_json::Value>> {
-    let bytes = match v {
-        Value::Bytes(b) => b.as_slice(),
-        Value::String(s) => s.as_bytes(),
-        _ => return None,
-    };
-    let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    Some(toasty::Json(val))
-}
-
-pub(super) async fn query_event_by_seq(
-    db: &toasty::Db,
-    seq: i64,
-) -> crate::error::Result<Option<Event>> {
-    let mut events = Event::filter(Event::fields().seq().eq(seq))
-        .limit(1)
-        .exec(&mut db.clone())
-        .await?;
-    Ok(events.pop())
 }

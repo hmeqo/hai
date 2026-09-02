@@ -3,11 +3,14 @@ use std::{collections::HashMap, sync::Arc};
 use derive_more::Deref;
 
 use crate::{
-    agent::{context::fmt::display_name, link::BotProfile},
+    agent::{
+        context::{ContextMessages, fmt::display_name},
+        link::BotProfile,
+    },
     agentcore::render::elements::Node,
     domain::{
         model::{Account, Chat, Message, Perception, Topic},
-        service::memory::RelatedMemory,
+        service::{knowledge::RelatedChunk, memory::RelatedMemory},
         vo::TopicSearchResult,
     },
 };
@@ -28,7 +31,6 @@ pub struct RenderContext {
 
     // ── 内置索引（构建时一次性建立，O(1) 查询）──────────────────────────
     accounts_by_id: HashMap<i64, usize>,
-    messages_by_id: HashMap<i64, usize>,
 }
 
 /// 构建 `RenderContext` 所需的输入数据（平台无关）
@@ -41,7 +43,8 @@ pub struct RenderContextData {
     pub total_unread: i64,
 
     // ── 消息 ─────────────────────────────────────────────────────────────────
-    pub messages: Vec<Message>,
+    /// 上下文消息：对话流（窗口）+ 窗口外引用上下文（`ContextMessages::get` 带来源）
+    pub messages: ContextMessages,
 
     // ── 参与者 ────────────────────────────────────────────────────────────────
     pub accounts: Vec<Account>,
@@ -52,6 +55,9 @@ pub struct RenderContextData {
 
     // ── 记忆 ──────────────────────────────────────────────────────────────────
     pub related_memories: Vec<RelatedMemory>,
+
+    // ── 知识库 ────────────────────────────────────────────────────────────────
+    pub related_knowledge: Vec<RelatedChunk>,
 
     // ── 感知 ──────────────────────────────────────────────────────────────────
     pub perceptions: Vec<Perception>,
@@ -65,7 +71,6 @@ impl RenderContext {
     pub fn new(data: RenderContextData, content_renderer: ContentRenderer) -> Self {
         let mut ctx = Self {
             accounts_by_id: HashMap::new(),
-            messages_by_id: HashMap::new(),
             data,
             content_renderer,
         };
@@ -77,16 +82,6 @@ impl RenderContext {
         for (i, account) in self.data.accounts.iter().enumerate() {
             self.accounts_by_id.insert(account.id, i);
         }
-        for (i, msg) in self.data.messages.iter().enumerate() {
-            self.messages_by_id.insert(msg.id, i);
-        }
-    }
-
-    pub fn get_message(&self, id: i64) -> Option<&Message> {
-        self.messages_by_id
-            .get(&id)
-            .copied()
-            .and_then(|i| self.data.messages.get(i))
     }
 
     pub fn get_account(&self, id: i64) -> Option<&Account> {

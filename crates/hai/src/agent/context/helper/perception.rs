@@ -4,11 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     agent::context::types::{Attachment, AttachmentPerceptionMap, ParsedContent, PerceptionResult},
-    domain::{
-        model::{Message, Perception},
-        service::DbServices,
-        vo::resource_id_from_file_id,
-    },
+    domain::{model::Perception, service::DbServices, vo::resource_id_from_file_id},
     error::Result,
 };
 
@@ -84,13 +80,6 @@ impl<'a> PerceptionLoader<'a> {
         Ok(())
     }
 
-    fn build_attachment_map(self) -> AttachmentPerceptionMap {
-        AttachmentPerceptionMap {
-            by_attachment_id: self.by_attachment_id,
-            same_resource_as: self.same_resource_as,
-        }
-    }
-
     fn build_perception_result(self) -> PerceptionResult {
         PerceptionResult {
             items: self.perceptions,
@@ -102,7 +91,6 @@ impl<'a> PerceptionLoader<'a> {
     }
 }
 
-/// 查询附件感知数据（按文件 ID 和 URL）
 pub async fn load_perceptions(
     services: &DbServices,
     parsed: &[ParsedContent],
@@ -117,28 +105,4 @@ pub async fn load_perceptions(
     loader.load_urls(parsed).await?;
 
     Ok(loader.build_perception_result())
-}
-
-/// 仅构建附件映射（不返回感知列表）
-pub async fn build_attachment_maps(
-    services: &DbServices,
-    parser: &dyn crate::agent::context::types::ContentParser,
-    messages: &[Message],
-) -> Result<AttachmentPerceptionMap> {
-    if messages.is_empty() {
-        return Ok(AttachmentPerceptionMap {
-            by_attachment_id: HashMap::new(),
-            same_resource_as: HashMap::new(),
-        });
-    }
-    let parsed: Vec<ParsedContent> = messages.iter().map(|m| parser.parse(&m.content)).collect();
-    let mut loader = PerceptionLoader::new(services);
-
-    let attachment_parts: Vec<&Attachment> =
-        parsed.iter().flat_map(|p| p.attachments.iter()).collect();
-    if !attachment_parts.is_empty() {
-        loader.load_file_attachments(&attachment_parts).await?;
-    }
-
-    Ok(loader.build_attachment_map())
 }

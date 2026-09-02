@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
 use crate::{
@@ -13,6 +14,9 @@ pub struct Endpoint {
     pub api_key: String,
     pub model: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct ImageUrl(pub String);
 
 /// 统一 HTTP 客户端。无状态，连接参数由 `Endpoint` 传入。
 #[derive(Debug, Clone)]
@@ -31,7 +35,6 @@ impl ApiClient {
         }
     }
 
-    /// POST JSON 并返回 JSON 响应。非 2xx 自动转 Err。
     async fn request_json(&self, ep: &Endpoint, path: &str, body: Value) -> Result<Value> {
         let resp = self
             .http
@@ -51,7 +54,6 @@ impl ApiClient {
         Ok(resp.json().await?)
     }
 
-    /// POST JSON 并返回原始字节 + content-type。
     async fn request_bytes(
         &self,
         ep: &Endpoint,
@@ -83,7 +85,6 @@ impl ApiClient {
         Ok((bytes, content_type))
     }
 
-    /// 聊天补全。POST {base_url}/chat/completions
     pub async fn complete(&self, ep: &Endpoint, content: Value) -> Result<Value> {
         let body = serde_json::json!({
             "model": &ep.model,
@@ -92,7 +93,6 @@ impl ApiClient {
         self.request_json(ep, "chat/completions", body).await
     }
 
-    /// 文本嵌入。POST {base_url}/embeddings
     pub async fn embed(&self, ep: &Endpoint, input: &str) -> Result<Vec<f32>> {
         let body = serde_json::json!({ "model": &ep.model, "input": input });
         let resp: Value = self.request_json(ep, "embeddings", body).await?;
@@ -102,7 +102,43 @@ impl ApiClient {
         Ok(arr.iter().map(|v| v.as_f64().unwrap() as f32).collect())
     }
 
-    /// 语音合成。POST {base_url}/audio/speech，PCM 自动转 WAV。
+    pub async fn generate_image(
+        &self,
+        ep: &Endpoint,
+        prompt: &str,
+        images: &[ImageUrl],
+    ) -> Result<Vec<u8>> {
+        let mut content = Vec::with_capacity(images.len() + 1);
+        for ImageUrl(url) in images {
+            content.push(serde_json::json!({"type": "image_url", "image_url": {"url": url}}));
+        }
+        content.push(serde_json::json!({"type": "text", "text": prompt}));
+        let body = serde_json::json!({
+            "model": &ep.model,
+            "modalities": ["image", "text"],
+            "messages": [{"role": "user", "content": content}],
+        });
+        let resp: Value = self.request_json(ep, "chat/completions", body).await?;
+        let image = extract_generated_image(&resp)?;
+        self.fetch_image(&image).await
+    }
+
+    async fn fetch_image(&self, image: &ImageUrl) -> Result<Vec<u8>> {
+        let ImageUrl(url) = image;
+        if let Some(rest) = url.strip_prefix("data:") {
+            decode_data_url(rest)
+        } else {
+            let resp = self.http.get(url).send().await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(ErrorKind::Internal
+                    .msg(format!("Image download failed (HTTP {status}): {text}")));
+            }
+            Ok(resp.bytes().await?.to_vec())
+        }
+    }
+
     pub async fn speech(
         &self,
         ep: &Endpoint,
@@ -154,4 +190,26 @@ fn pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
     }
     writer.finalize().unwrap();
     buf.into_inner()
+}
+
+fn extract_generated_image(resp: &Value) -> Result<ImageUrl> {
+    let url = resp
+        .pointer("/choices/0/message/images/0/image_url/url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ErrorKind::DataParse.msg(format!(
+                "Image generation response missing message.images: {resp:?}"
+            ))
+        })?;
+    Ok(ImageUrl(url.to_owned()))
+}
+
+fn decode_data_url(rest: &str) -> Result<Vec<u8>> {
+    let payload = rest
+        .split_once(',')
+        .map(|(_, p)| p)
+        .ok_or_else(|| ErrorKind::DataParse.msg("invalid image data URL".to_string()))?;
+    STANDARD
+        .decode(payload)
+        .map_err(|e| ErrorKind::DataParse.msg(format!("b64 decode failed: {e}")))
 }

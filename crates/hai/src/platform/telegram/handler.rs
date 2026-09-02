@@ -2,7 +2,7 @@ use std::fmt;
 
 use teloxide::{
     Bot,
-    payloads::{SendMessageSetters, SendVoiceSetters},
+    payloads::{SendMessageSetters, SendPhotoSetters, SendVoiceSetters},
     prelude::Requester,
     types::{ChatAction, InputFile, MessageId, ParseMode, ReplyParameters},
 };
@@ -14,8 +14,8 @@ use super::{
 };
 use crate::{
     agent::link::{
-        BotId, BotProfile, ContentParser, MessageCapability, PlatformHandler, SendMessageReq,
-        SendVoiceReq, SentMessageMeta,
+        BotId, BotProfile, ContentParser, MessageCapability, PlatformHandler, SendImageReq,
+        SendMessageReq, SendVoiceReq, SentMessageMeta,
     },
     app::AppContext,
     config::schema::BotConfig,
@@ -74,6 +74,12 @@ impl TelegramPlatformHandler {
             .and_then(|chat| chat.external_id.parse::<i64>().map_err(Into::into))
     }
 
+    /// Telegram 图片 caption 上限 1024 字符——超出截断
+    fn truncate_caption(&self, caption: &str) -> String {
+        const CAPTION_MAX: usize = 1024;
+        caption.chars().take(CAPTION_MAX).collect()
+    }
+
     async fn build_reply_parameters(
         &self,
         platform_reply_to_id: Option<i64>,
@@ -84,6 +90,7 @@ impl TelegramPlatformHandler {
     async fn persist_message(
         &self,
         chat_id: ChatId,
+        topic_id: Option<Uuid>,
         reply_to_id: Option<i64>,
         content: serde_json::Value,
         external_id: &str,
@@ -100,6 +107,7 @@ impl TelegramPlatformHandler {
                 account_id: Some(self.account_id),
                 content,
                 model: model.to_string(),
+                topic_id,
                 reply_to_id,
                 external_id: Some(external_id.to_string()),
                 sent_at: Some(jiff::Timestamp::from_second(sent_at_ts)?),
@@ -181,6 +189,7 @@ impl PlatformHandler for TelegramPlatformHandler {
         let content = serde_json::to_value(vec![TelegramContentPart::Text { text: req.content }])?;
         self.persist_message(
             req.chat_id,
+            req.topic_id,
             req.platform_reply_to_id,
             content,
             &sent_msg.id.to_string(),
@@ -219,6 +228,59 @@ impl PlatformHandler for TelegramPlatformHandler {
         }])?;
         self.persist_message(
             req.chat_id,
+            req.topic_id,
+            req.platform_reply_to_id,
+            content,
+            &sent_msg.id.to_string(),
+            sent_msg.date.timestamp(),
+        )
+        .await?;
+
+        Ok(SentMessageMeta {
+            external_id: sent_msg.id.to_string(),
+        })
+    }
+
+    async fn send_image(&self, req: SendImageReq) -> Result<SentMessageMeta> {
+        let platform_chat_id = self.resolve_platform_chat_id(req.chat_id).await?;
+        let reply_params = self
+            .build_reply_parameters(req.platform_reply_to_id)
+            .await?;
+
+        let mut tg_req = self.bot.send_photo(
+            teloxide::types::ChatId(platform_chat_id),
+            InputFile::memory(req.image_bytes),
+        );
+        if let Some(ref caption) = req.caption {
+            tg_req = tg_req.caption(self.truncate_caption(caption));
+        }
+        if let Some(params) = reply_params {
+            tg_req = tg_req.reply_parameters(params);
+        }
+        let sent_msg = tg_req.await?;
+
+        let file_id = sent_msg
+            .photo()
+            .and_then(|p| p.first())
+            .map(|sz| FileId(sz.file.id.0.to_string()))
+            .unwrap_or_else(|| FileId(format!("gen_{}", Uuid::now_v7())));
+        let mut parts = vec![TelegramContentPart::Photo {
+            attachment_id: Uuid::now_v7(),
+            file_id,
+            width: 0,
+            height: 0,
+            caption: req.caption.clone(),
+        }];
+        // 提示词不发送给用户（隐私）——仅进 DB 上下文供 agent 回顾
+        if !req.prompt.is_empty() {
+            parts.push(TelegramContentPart::Text {
+                text: req.prompt.clone(),
+            });
+        }
+        let content = serde_json::to_value(parts)?;
+        self.persist_message(
+            req.chat_id,
+            req.topic_id,
             req.platform_reply_to_id,
             content,
             &sent_msg.id.to_string(),
@@ -256,15 +318,15 @@ impl PlatformHandler for TelegramPlatformHandler {
     async fn analyze_attachment(
         &self,
         attachment_uuid: Uuid,
-        prompt: Option<&str>,
+        focus: Option<&str>,
     ) -> Result<String> {
         let (part, file_id, parser) = self.media.download_attachment(attachment_uuid).await?;
         let content = self
             .media
-            .analyze_part(&part, &file_id, parser, prompt)
+            .analyze_part(&part, &file_id, parser, focus)
             .await?;
         self.media
-            .persist_analysis(&file_id, parser, prompt, &content)
+            .persist_analysis(&file_id, parser, focus, &content)
             .await?;
         Ok(content)
     }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
+use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -10,7 +11,7 @@ use crate::{
     config::{AppConfig, ProviderRegistry},
     domain::{
         db,
-        model::{Memory, Perception, Topic},
+        model::{KnowledgeChunk, Memory, Perception, Topic},
     },
     error::{AppResultExt, ErrorKind, Result},
     util::pgvector,
@@ -25,32 +26,43 @@ struct Job {
 }
 
 pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
-    let (mut db, _pool) = db::init_db(&config.database).await?;
+    let pool = db::init_db(&config.database).await?;
     let registry = ProviderRegistry::new(config)?;
 
-    let ec = &config.multimodal.embedding;
-    let provider = ec.provider_or(&config.agent.provider);
-    let model = ec.model();
-    let dimension = ec.dimension();
+    let dimension = config
+        .auxiliary
+        .embedding
+        .as_ref()
+        .map(|b| b.dimension())
+        .unwrap_or(1024);
+    let role = config.auxiliary.embedding.as_ref();
+    let provider: &str = role
+        .map(|b| {
+            b.provider
+                .as_deref()
+                .unwrap_or(config.agent.provider.as_str())
+        })
+        .unwrap_or(config.agent.provider.as_str());
+    let model: &str = role.map(|b| b.model.as_deref().unwrap_or("")).unwrap_or("");
 
     let client = Arc::new(ApiClient::new());
-    let ep = Arc::new(registry.get_endpoint(&provider, &model)?);
+    let ep = Arc::new(registry.get_endpoint(provider, model)?);
 
-    pgvector::ensure_embedding_schema(&mut db, dimension).await?;
-    reset_embeddings(&mut db).await?;
+    pgvector::ensure_embedding_schema(&pool, dimension).await?;
+    reset_embeddings(&pool).await?;
 
-    let jobs = collect_jobs(&db).await?;
+    let jobs = collect_jobs(&pool).await?;
     let total = jobs.len();
     let pb = progress_bar("embeddings", total);
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
 
-    let failed = run_batch(client, ep, jobs, db.clone(), sem, &pb).await;
+    let failed = run_batch(client, ep, jobs, pool.clone(), sem, &pb).await;
 
     pb.finish_and_clear();
     let ok = total.saturating_sub(failed);
     println!("Written {ok}/{total} embeddings.");
 
-    rebuild_indexes(&mut db, total).await?;
+    rebuild_indexes(&pool, total).await?;
     println!("Done. Rebuilt embeddings ({dimension}d) using {provider}/{model}.");
 
     if failed > 0 {
@@ -60,33 +72,44 @@ pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
     }
 }
 
-async fn reset_embeddings(db: &mut toasty::Db) -> Result<()> {
-    for table in &["memory", "topic", "perception"] {
-        toasty::sql::statement(format!("DROP INDEX IF EXISTS idx_{table}_embedding"))
-            .exec(db)
-            .await?;
-        toasty::sql::statement(format!("UPDATE {table} SET embedding = NULL"))
-            .exec(db)
-            .await?;
+async fn reset_embeddings(pool: &PgPool) -> Result<()> {
+    for table in &["memory", "topic", "perception", "knowledge_chunk"] {
+        sqlx::query(sqlx::AssertSqlSafe(
+            format!("DROP INDEX IF EXISTS idx_{table}_embedding").as_str(),
+        ))
+        .execute(pool)
+        .await?;
+        sqlx::query(sqlx::AssertSqlSafe(
+            format!("UPDATE {table} SET embedding = NULL").as_str(),
+        ))
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }
 
-async fn collect_jobs(db: &toasty::Db) -> Result<Vec<Job>> {
-    let memories: Vec<Memory> = Memory::all()
-        .exec(&mut db.clone())
+async fn collect_jobs(pool: &PgPool) -> Result<Vec<Job>> {
+    let memories: Vec<Memory> = sqlx::query_as::<_, Memory>("SELECT * FROM memory")
+        .fetch_all(pool)
         .await
         .err_kind_msg(ErrorKind::Internal, "Failed to query memory")?;
-    let topics: Vec<Topic> = Topic::filter(Topic::fields().summary().is_some())
-        .exec(&mut db.clone())
-        .await
-        .err_kind_msg(ErrorKind::Internal, "Failed to query topic")?;
-    let perceptions: Vec<Perception> = Perception::all()
-        .exec(&mut db.clone())
+    let topics: Vec<Topic> =
+        sqlx::query_as::<_, Topic>("SELECT * FROM topic WHERE summary IS NOT NULL")
+            .fetch_all(pool)
+            .await
+            .err_kind_msg(ErrorKind::Internal, "Failed to query topic")?;
+    let perceptions: Vec<Perception> = sqlx::query_as::<_, Perception>("SELECT * FROM perception")
+        .fetch_all(pool)
         .await
         .err_kind_msg(ErrorKind::Internal, "Failed to query perception")?;
+    let chunks: Vec<KnowledgeChunk> =
+        sqlx::query_as::<_, KnowledgeChunk>("SELECT * FROM knowledge_chunk")
+            .fetch_all(pool)
+            .await
+            .err_kind_msg(ErrorKind::Internal, "Failed to query knowledge_chunk")?;
 
-    let mut jobs = Vec::with_capacity(memories.len() + topics.len() + perceptions.len());
+    let mut jobs =
+        Vec::with_capacity(memories.len() + topics.len() + perceptions.len() + chunks.len());
     for m in &memories {
         jobs.push(Job {
             table: "memory",
@@ -95,7 +118,7 @@ async fn collect_jobs(db: &toasty::Db) -> Result<Vec<Job>> {
         });
     }
     for t in &topics {
-        if let Some(ref s) = t.summary
+        if let Some(s) = &t.summary
             && !s.is_empty()
         {
             jobs.push(Job {
@@ -112,6 +135,13 @@ async fn collect_jobs(db: &toasty::Db) -> Result<Vec<Job>> {
             content: p.content.clone(),
         });
     }
+    for c in &chunks {
+        jobs.push(Job {
+            table: "knowledge_chunk",
+            id: c.id,
+            content: c.content.clone(),
+        });
+    }
     Ok(jobs)
 }
 
@@ -119,7 +149,7 @@ async fn run_batch(
     client: Arc<ApiClient>,
     ep: Arc<Endpoint>,
     jobs: Vec<Job>,
-    db: toasty::Db,
+    pool: PgPool,
     sem: Arc<Semaphore>,
     pb: &ProgressBar,
 ) -> usize {
@@ -129,7 +159,7 @@ async fn run_batch(
             let client = Arc::clone(&client);
             let ep = Arc::clone(&ep);
             let sem = Arc::clone(&sem);
-            let mut db = db.clone();
+            let pool = pool.clone();
             async move {
                 let _permit = sem
                     .acquire()
@@ -138,13 +168,17 @@ async fn run_batch(
                 let emb = client.embed(&ep, &job.content).await.map_err(|e| {
                     ErrorKind::Internal.msg(format!("{}/{}: {e}", job.table, job.id))
                 })?;
-                let sql = format!(
-                    "UPDATE {t} SET embedding = '{v}'::vector WHERE id = '{id}'",
-                    t = job.table,
-                    v = pgvector::vec_to_pgstring(&emb),
-                    id = job.id,
-                );
-                toasty::sql::statement(sql).exec(&mut db).await?;
+                sqlx::query(sqlx::AssertSqlSafe(
+                    format!(
+                        "UPDATE {t} SET embedding = $1::vector WHERE id = $2",
+                        t = job.table,
+                    )
+                    .as_str(),
+                ))
+                .bind(pgvector::vec_to_pgstring(&emb))
+                .bind(job.id)
+                .execute(&pool)
+                .await?;
                 Ok::<_, crate::error::AppError>(())
             }
         })
@@ -161,15 +195,19 @@ async fn run_batch(
     failed
 }
 
-async fn rebuild_indexes(db: &mut toasty::Db, total: usize) -> Result<()> {
+async fn rebuild_indexes(pool: &PgPool, total: usize) -> Result<()> {
     let lists = (10usize).max((total as f64).sqrt() as usize);
-    for table in &["memory", "topic", "perception"] {
-        toasty::sql::statement(format!(
-            "CREATE INDEX IF NOT EXISTS idx_{table}_embedding ON {table} \
-             USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
-        ))
-        .exec(db)
-        .await?;
+    for table in &["memory", "topic", "perception", "knowledge_chunk"] {
+        // 先 DROP 再建：旧索引若为 cosine_ops（与 `<->` L2 查询不匹配）需重建；
+        // ivfflat 要求表有数据——调用方保证向量已写入（run_batch 之后）。
+        let idx_sql = format!(
+            "DROP INDEX IF EXISTS idx_{table}_embedding; \
+             CREATE INDEX idx_{table}_embedding ON {table} \
+             USING ivfflat (embedding vector_l2_ops) WITH (lists = {lists})"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(idx_sql.as_str()))
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }

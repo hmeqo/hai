@@ -20,44 +20,27 @@ use crate::{
 
 // ── Agent ──
 
-/// 人格等级。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PersonalityTier {
-    Low,
-    Mid,
-    High,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct PersonalityConfig {
     pub name: String,
-    pub sociability: PersonalityTier,
-    pub verbosity: PersonalityTier,
-    pub honesty: PersonalityTier,
-    pub humor: PersonalityTier,
-    pub rationality: PersonalityTier,
-    pub mood: PersonalityTier,
-    pub interests: Vec<String>,
-    /// 主色调
-    pub tone: String,
+    /// 人格自述（一体式自由文本：人设底色 + 行为礼仪 + 情感分寸，风格层）。
+    pub description: String,
 }
 
 impl Default for PersonalityConfig {
     fn default() -> Self {
         Self {
             name: AGENT_NAME.into(),
-            sociability: PersonalityTier::Low,
-            verbosity: PersonalityTier::Mid,
-            honesty: PersonalityTier::Mid,
-            humor: PersonalityTier::High,
-            rationality: PersonalityTier::Mid,
-            mood: PersonalityTier::Low,
-            interests: vec![],
-            tone: "你说话不太啰嗦，一句能说清楚的事不会拆成三句。你习惯像跟朋友聊天那样自然、随意。你不爱总结别人说过的话，也不爱分析别人——你知道什么时候该接话、什么时候看看就好。你不太会刻意迎合谁，你有自己的主见。".into(),
+            description: "你很聪明，也懂得察言观色——能读懂话里的情绪和潜台词。\
+            你有自己的主见，观点清晰，说得清理由，也听得进反对。\
+            你说话像朋友，自然随和；不啰嗦，不解释对方显然已经知道的东西。\
+            你熟悉网络梗和二次元，偶尔也会玩梗。\
+            你待人真实，不客套。\
+            你知道什么时候接话，什么时候看看就好。"
+                .into(),
         }
     }
 }
@@ -67,7 +50,6 @@ impl Default for PersonalityConfig {
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct AgentConfig {
-    /// 当前使用的 provider 名称（对应 AppConfig.providers 中的 key）
     pub provider: String,
     pub model: String,
     pub max_tokens: Option<u32>,
@@ -96,38 +78,39 @@ impl AgentConfig {
 #[serde(default, rename_all = "kebab-case")]
 pub struct ContextConfig {
     pub system_prompt: String,
-    /// 群聊专用 prompt（追加在 system_prompt 之后）
     pub group_prompt: String,
-    /// 私聊专用 prompt（追加在 system_prompt 之后）
     pub private_prompt: String,
-    pub message_history_limit: i64,
-    /// 单次 round 最多加载的消息数
-    pub history_cap: i64,
+    /// 首轮种子由未读 + 历史凑成。
+    pub context_seed_cap: i64,
     pub related_memory_limit: i64,
     pub related_topic_limit: i64,
-    /// 话题闲置时间（小时），超过此时间的话题标记为 need-close
+    /// 闲置超过此时长的话题标记为 need-close。
     pub topic_idle_hours: i64,
-    /// 会话空闲超时（秒），窗口关闭后超过此时无活动则重建 session
     pub session_idle_timeout_secs: u64,
-    /// 新消息是否可以插队到当前 processing 的下一轮 Turn（默认开启）
-    pub preempt: bool,
+    pub steering: bool,
+    /// 触发重开的 context_tokens 阈值（= 最近一次 turn 的 prompt_tokens）；0 = 禁用。
+    pub compact_token_threshold: u32,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
-            group_prompt:
-                "这是群聊。不要每句话都接，大部分时候你只需要看着。\n别人聊的话题你插不上嘴就别硬接，跟你没关系的事保持安静就好。\n消息是有发送对象的，看清楚是发给谁的。没点你名就别自作多情。\n除非对方明确问到你、或者你真的有别人不太可能想到的话要说，否则不开口。\n不要替别人回答问题，别人问的不是你。\n别人换话题了你也别追着旧话题跑，过去了就过去了。\n没什么好说的就别说。"
-                    .into(),
+            group_prompt: "这是群聊。不要每句话都接，大部分时候你只需要看着。\n\
+                别人聊的话题你插不上嘴就别硬接，跟你没关系的事保持安静就好。\n\
+                消息是有发送对象的，看清楚是发给谁的。没点你名就别自作多情。\n\
+                除非对方明确问到你、或者你真的有别人不太可能想到的话要说，否则没什么好说的就别说。\n\
+                不要替别人回答问题，别人问的不是你，除非对方回答有严重错误必须补充纠正防止话题导向错误结论。\n\
+                别人换话题了你也别追着旧话题跑，过去了就过去了。"
+                .into(),
             private_prompt: String::new(),
-            message_history_limit: 10,
-            history_cap: 100,
+            context_seed_cap: 10,
             related_memory_limit: 5,
             related_topic_limit: 3,
             topic_idle_hours: 3,
             session_idle_timeout_secs: 300,
-            preempt: true,
+            steering: true,
+            compact_token_threshold: 150_000,
         }
     }
 }
@@ -152,80 +135,64 @@ impl Default for AttentionConfig {
     }
 }
 
-// ── Multimodal ──
+// ── Auxiliary ──
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch, Default)]
+#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
+#[patch(attribute(skip_serializing_none))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct AuxiliaryConfig {
+    pub embedding: Option<EmbeddingConfig>,
+    /// video 复用此角色（无独立块）
+    pub vision: Option<VisionConfig>,
+    pub audio: Option<AudioConfig>,
+    pub tts: Option<TtsConfig>,
+    pub image_gen: Option<ImageGenConfig>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
-pub struct MultimodalSubConfig {
-    /// provider 名称（对应 AppConfig.providers 中的 key），为空时使用 agent.provider
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+pub struct VisionConfig {
     pub provider: Option<String>,
-    /// 模型名称
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    enabled: bool,
-    /// 该类别的默认分析提示词（空值时由应用使用内置默认值）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_prompt: Option<String>,
+    pub enabled: bool,
+    pub image_prompt: Option<String>,
+    pub video_prompt: Option<String>,
 }
 
-impl Default for MultimodalSubConfig {
+impl Default for VisionConfig {
     fn default() -> Self {
         Self {
             provider: None,
             model: None,
             enabled: true,
-            default_prompt: None,
+            image_prompt: None,
+            video_prompt: None,
         }
     }
 }
 
-impl MultimodalSubConfig {
-    pub fn enabled(&self) -> bool {
-        self.model.is_some() && self.enabled
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Patch)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
-pub struct MultimodalInputConfig {
-    /// 图片理解
-    pub image: MultimodalSubConfig,
-    /// 音频理解
-    pub audio: MultimodalSubConfig,
-    /// 视频理解
-    pub video: MultimodalSubConfig,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Patch)]
-#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
-#[patch(attribute(skip_serializing_none))]
-#[serde(default, rename_all = "kebab-case")]
-pub struct EmbeddingConfig {
-    /// provider，为空时使用 agent.provider
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+pub struct AudioConfig {
     pub provider: Option<String>,
-    /// 模型名称，为空时由 provider 决定
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 向量维度，用于 pgvector 列定义（例如 1024、1536）。为空时 rebuild 使用默认值。
-    #[serde(default)]
-    pub dimension: Option<i32>,
+    pub enabled: bool,
+    pub prompt: Option<String>,
 }
 
-impl EmbeddingConfig {
-    pub fn provider_or(&self, fallback: &str) -> String {
-        self.provider.as_deref().unwrap_or(fallback).to_owned()
-    }
-    pub fn model(&self) -> String {
-        self.model.as_deref().unwrap_or("").to_owned()
-    }
-    pub fn dimension(&self) -> i32 {
-        self.dimension.unwrap_or(1024)
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            enabled: true,
+            prompt: None,
+        }
     }
 }
 
@@ -234,17 +201,11 @@ impl EmbeddingConfig {
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct TtsConfig {
-    /// provider 名称（对应 AppConfig.providers 中的 key），为空时使用 agent.provider
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// 模型名称
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 发音人
     pub voice: String,
     /// 语速，0.25 ~ 4.0
     pub speed: f32,
-    enabled: bool,
 }
 
 impl Default for TtsConfig {
@@ -252,16 +213,9 @@ impl Default for TtsConfig {
         Self {
             provider: None,
             model: None,
-            enabled: true,
             voice: "alloy".into(),
             speed: 1.0,
         }
-    }
-}
-
-impl TtsConfig {
-    pub fn enabled(&self) -> bool {
-        self.model.is_some() && self.enabled
     }
 }
 
@@ -269,13 +223,25 @@ impl TtsConfig {
 #[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
-pub struct MultimodalConfig {
-    /// 向量嵌入
-    pub embedding: EmbeddingConfig,
-    /// 输入（理解）配置
-    pub input: MultimodalInputConfig,
-    /// 语音合成输出
-    pub tts: TtsConfig,
+pub struct EmbeddingConfig {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub dimension: Option<i32>,
+}
+
+impl EmbeddingConfig {
+    pub fn dimension(&self) -> i32 {
+        self.dimension.unwrap_or(1024)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Patch)]
+#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
+#[patch(attribute(skip_serializing_none))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ImageGenConfig {
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
@@ -283,7 +249,7 @@ pub struct MultimodalConfig {
 #[patch(attribute(skip_serializing_none))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct McpConfig {
-    pub r#type: String,
+    pub r#type: McpTransport,
     pub command: String,
     pub args: Vec<String>,
     pub env: Option<HashMap<String, String>>,
@@ -292,12 +258,34 @@ pub struct McpConfig {
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
-            r#type: "stdio".into(),
+            r#type: McpTransport::Stdio,
             command: String::new(),
             args: Vec::new(),
             env: None,
         }
     }
+}
+
+/// MCP 传输协议（stdio 已实现；streamable-http 未实现）
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    StreamableHttp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
@@ -307,7 +295,6 @@ impl Default for McpConfig {
 pub struct DatabaseConfig {
     /// PostgreSQL 连接字符串，例如：postgres://user:password@localhost/dbname
     pub url: String,
-    /// 连接池最大连接数
     pub max_connections: u32,
 }
 
@@ -334,9 +321,7 @@ pub struct BotConfigRaw {
     pub bot_type: Option<String>,
     pub bot_token: Option<String>,
     pub allowed_chat_ids: Option<Vec<i64>>,
-    /// 启用 sendRichMessage
-    // #[serde(default = "default_true")]
-    pub rich_message: Option<bool>,
+    pub rich_message: bool,
 }
 
 impl ProviderConfig {
@@ -355,11 +340,9 @@ impl ProviderConfig {
 #[serde(default, rename_all = "kebab-case")]
 pub struct ProviderConfig {
     /// provider 类型，如 openai, anthropic, requesty 等
-    /// 如果不提供，则默认使用配置中的 key 名称
     pub r#type: Option<ProviderKind>,
     /// API key（Ollama 等本地服务可省略）
     pub api_key: Option<String>,
-    /// 可选的 base_url 覆盖值
     pub base_url: Option<String>,
 }
 
@@ -399,6 +382,68 @@ impl ContainerRuntime {
 impl Default for ContainerRuntime {
     fn default() -> Self {
         Self::detect()
+    }
+}
+
+/// 被动注入配置（RAG 自动检索注入 `<knowledge>` 节）。
+/// 聚合到 `[knowledge.inject]`：开关 + 条数 + 白名单，与分块参数（数据面）职责分离。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
+#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
+#[patch(attribute(skip_serializing_none))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct KnowledgeInjectConfig {
+    /// 被动注入开关：true = 每 turn 首轮自动检索注入 `<knowledge>` 节；
+    /// false = 不注入（`search_knowledge_base` 主动工具不受影响）。
+    pub enable: bool,
+    pub limit: i64,
+    /// collection 白名单；空 = 全部库
+    pub collections: Vec<String>,
+}
+
+impl Default for KnowledgeInjectConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            limit: 5,
+            collections: Vec::new(),
+        }
+    }
+}
+
+/// KnowledgeBase 配置：分块参数与 RAG 检索注入。
+/// ```toml
+/// [knowledge]
+/// chunk-size = 512
+/// chunk-overlap = 51
+/// chunk-max = 1536
+///
+/// [knowledge.inject]
+/// enable = false      # 被动注入开关；主动工具 search_knowledge_base 不受影响
+/// limit = 5           # 注入块数上限
+/// collections = []    # collection 白名单；空 = 全部
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Patch)]
+#[patch(attribute(derive(Debug, Default, Clone, Serialize, Deserialize)))]
+#[patch(attribute(skip_serializing_none))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct KnowledgeConfig {
+    /// 目标块长（Unicode 字符）
+    pub chunk_size: usize,
+    /// 相邻块重叠（字符）
+    pub chunk_overlap: usize,
+    /// 单块硬上限（字符）
+    pub chunk_max: usize,
+    pub inject: KnowledgeInjectConfig,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: 512,
+            chunk_overlap: 51,
+            chunk_max: 1536,
+            inject: KnowledgeInjectConfig::default(),
+        }
     }
 }
 
@@ -466,8 +511,11 @@ impl Default for LoggingConfig {
 }
 
 impl LoggingConfig {
-    pub fn level(&self) -> tracing::Level {
-        tracing::Level::from_str(&self.level).unwrap()
+    pub fn level(&self) -> Result<tracing::Level> {
+        tracing::Level::from_str(&self.level).err_kind_msg(
+            ErrorKind::Config,
+            format!("Invalid logging level '{}'", self.level),
+        )
     }
 }
 
@@ -506,7 +554,7 @@ impl BotConfig {
             platform,
             bot_token: raw.bot_token.clone().unwrap_or_default(),
             allowed_chat_ids: raw.allowed_chat_ids.clone().unwrap_or_default(),
-            rich_message: raw.rich_message.unwrap_or(true),
+            rich_message: raw.rich_message,
         })
     }
 

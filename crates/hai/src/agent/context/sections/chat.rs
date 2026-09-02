@@ -2,7 +2,6 @@
 
 use crate::{agentcore::render::elements::Node, domain::model::Chat};
 
-/// 渲染聊天信息
 pub fn render_chat_info(chat: &Chat) -> Node {
     let mut b = Node::tag("chat")
         .attr("id", chat.id)

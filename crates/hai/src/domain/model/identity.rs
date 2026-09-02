@@ -1,17 +1,14 @@
 use crate::domain::vo::IdentityId;
 
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "identity"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Identity {
-    #[key]
     pub id: uuid::Uuid,
 
     pub name: Option<String>,
-    pub meta: Option<toasty::Json<serde_json::Value>>,
-
-    #[auto]
+    pub meta: Option<serde_json::Value>,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 

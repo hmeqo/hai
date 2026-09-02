@@ -6,7 +6,7 @@ use derive_more::Deref;
 use crate::{
     agent::{multimodal::MultimodalService, runtime::AgentEventBus},
     config::{AppConfig, AppConfigManager, ProviderRegistry},
-    domain::{db, service::DbServices},
+    domain::{db, repo::Repos, service::DbServices},
     error::Result,
 };
 
@@ -31,10 +31,11 @@ impl AppContext {
         let providers = ProviderRegistry::new(&cfg)?;
         let multimodal = MultimodalService::from_config(&cfg, &providers)?;
 
-        let (db_handle, pool) = db::init_db(&cfg.database).await?;
-        let db_srv = DbServices::new(db_handle.clone(), pool, multimodal.clone());
+        let pool = db::init_db(&cfg.database).await?;
+        let repos = Repos::new(pool.clone());
+        let db_srv = DbServices::new(repos.clone(), multimodal.clone());
 
-        let event_bus = AgentEventBus::new(db_handle.clone());
+        let event_bus = AgentEventBus::new(repos);
 
         let provider = ProviderContext {
             provider: providers,
@@ -43,10 +44,7 @@ impl AppContext {
         let agent = AgentContext {
             current_model: ArcSwap::from_pointee(cfg.agent.model.clone()),
         };
-        let db = DbContext {
-            pool: db_handle,
-            srv: db_srv,
-        };
+        let db = DbContext { srv: db_srv };
         Ok(Self {
             inner: Arc::new(AppContextInner {
                 cfg_mgr,
@@ -61,7 +59,6 @@ impl AppContext {
 }
 
 pub struct DbContext {
-    pub pool: toasty::Db,
     pub srv: DbServices,
 }
 

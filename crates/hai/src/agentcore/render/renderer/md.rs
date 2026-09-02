@@ -31,7 +31,12 @@ fn render_elem(
 ) -> std::fmt::Result {
     let attr_str: String = attrs
         .iter()
-        .map(|(k, v)| format!(" {}={}", k, v))
+        .filter_map(|(k, v)| match v {
+            // bool / null 是标记属性：存在即真，无值输出
+            AttrValue::Bool(false) => None,
+            AttrValue::Bool(true) | AttrValue::Null => Some(format!(" {}", k)),
+            _ => Some(format!(" {}={}", k, v)),
+        })
         .collect::<Vec<_>>()
         .join("");
 

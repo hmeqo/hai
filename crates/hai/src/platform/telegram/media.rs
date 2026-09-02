@@ -66,7 +66,7 @@ impl TelegramMediaAnalyzer {
         part: &TelegramContentPart,
         file_id: &str,
         parser: AttachmentParser,
-        prompt: Option<&str>,
+        focus: Option<&str>,
     ) -> Result<String> {
         match parser {
             AttachmentParser::Image if matches!(part, TelegramContentPart::Sticker { .. }) => {
@@ -74,7 +74,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_image(MediaSource::Bytes(data), prompt)
+                    .analyze_image(MediaSource::Bytes(data), focus)
                     .await
             }
             AttachmentParser::Image => {
@@ -82,7 +82,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_image(MediaSource::Url(url), prompt)
+                    .analyze_image(MediaSource::Url(url), focus)
                     .await
             }
             AttachmentParser::Ocr => {
@@ -98,7 +98,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_video(MediaSource::Url(url), part.media_format(), prompt)
+                    .analyze_video(MediaSource::Url(url), part.media_format(), focus)
                     .await
             }
             AttachmentParser::Audio => {
@@ -106,7 +106,7 @@ impl TelegramMediaAnalyzer {
                 self.ctx
                     .provider
                     .multimodal
-                    .analyze_audio(MediaSource::Bytes(data), part.media_format(), prompt)
+                    .analyze_audio(MediaSource::Bytes(data), part.media_format(), focus)
                     .await
             }
         }
@@ -116,7 +116,7 @@ impl TelegramMediaAnalyzer {
         &self,
         file_id: &str,
         parser: AttachmentParser,
-        prompt: Option<&str>,
+        focus: Option<&str>,
         content: &str,
     ) -> Result<()> {
         let source = Source::platform("telegram", file_id);
@@ -124,7 +124,7 @@ impl TelegramMediaAnalyzer {
             .db
             .srv
             .perception
-            .upsert(&source, parser.name(), prompt, content)
+            .upsert(&source, parser.name(), focus, content)
             .await?;
         Ok(())
     }

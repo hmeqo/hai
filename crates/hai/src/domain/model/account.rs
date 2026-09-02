@@ -1,28 +1,22 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
-use super::Identity;
 use crate::domain::vo::AccountId;
 
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "account"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Account {
-    #[key]
-    #[auto(increment)]
     pub id: i64,
-
-    #[index]
     pub identity_id: Option<uuid::Uuid>,
-    #[belongs_to]
-    pub identity: toasty::Deferred<Option<Identity>>,
 
     pub platform: String,
     pub external_id: String,
-    pub meta: Option<toasty::Json<serde_json::Value>>,
+    pub meta: Option<serde_json::Value>,
 
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub last_active_at: jiff::Timestamp,
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 

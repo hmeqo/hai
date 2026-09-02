@@ -13,11 +13,11 @@ use crate::{
 
 pub struct SessionStatus {
     pub scheduler: SchedulerStatus,
-    pub turns_count: usize,
+    pub step_count: usize,
     pub context_tokens: u32,
     pub conversation_msgs: usize,
-    pub run_in_progress: bool,
-    pub run_elapsed_secs: Option<f64>,
+    pub turn_in_progress: bool,
+    pub turn_elapsed_secs: Option<f64>,
     pub model: String,
 }
 

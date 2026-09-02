@@ -31,8 +31,7 @@ mime = { workspace = true }
 arc-swap = { workspace = true }
 derive_more = { workspace = true }
 jiff = { workspace = true }
-toasty = { workspace = true }
-toasty-cli = { workspace = true }
+jiff-sqlx = { workspace = true }
 anyhow = { workspace = true }
 
 uuid = { workspace = true }
@@ -49,10 +48,11 @@ hound = { workspace = true }
 linkify = { workspace = true }
 timeago = { workspace = true }
 sanitize-filename = { workspace = true }
-quick-xml = { workspace = true }
 indicatif = { workspace = true }
 sqlx = { workspace = true }
+sha2 = { workspace = true }
 
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+unicode-width = { workspace = true }
 which = { workspace = true }

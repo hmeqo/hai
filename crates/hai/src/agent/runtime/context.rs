@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// 一轮 task 的完整执行上下文（prompt 构建 + 工具执行共用）
-pub struct RunContext {
+pub struct TurnContext {
     pub app: AppContext,
     pub chat_id: ChatId,
     pub chat_type: ChatType,
@@ -23,7 +23,7 @@ pub struct RunContext {
     pub multimodal: MultimodalService,
 }
 
-impl RunContext {
+impl TurnContext {
     /// `ToolContext` 工厂：从完整上下文中提取工具层字段。
     pub fn tool_ctx(&self) -> ToolContext {
         ToolContext {

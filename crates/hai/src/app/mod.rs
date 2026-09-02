@@ -19,8 +19,8 @@ impl App {
 
     pub async fn serve(config_mgr: AppConfigManager) -> Result<()> {
         let cfg = config_mgr.load();
-
-        let filter = EnvFilter::new(format!("{},rmcp=warn", cfg.logging.level()));
+        let level = cfg.logging.level()?;
+        let filter = EnvFilter::new(format!("{},rmcp=warn", level));
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(filter)
             .init();

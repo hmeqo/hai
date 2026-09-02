@@ -24,13 +24,11 @@ impl FileCache {
         Self { cache_dir }
     }
 
-    /// 查找磁盘缓存。
     pub fn find(&self, key: &str) -> Option<Vec<u8>> {
         let path = self.key_to_path(key);
         std::fs::read(path).ok()
     }
 
-    /// 写入磁盘缓存。
     pub fn add(&self, key: &str, data: &[u8]) -> Result<()> {
         let path = self.key_to_path(key);
         if let Some(parent) = path.parent() {

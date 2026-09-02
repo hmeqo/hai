@@ -38,7 +38,6 @@ pub fn msg_chat_type(msg: &Message) -> ChatType {
 pub fn is_mentioning_user(msg: &Message, username: &str) -> bool {
     let username = format!("@{}", username);
 
-    // 检查纯文本中的 entities（文字消息）
     if let Some(entities) = msg.entities()
         && let Some(text) = msg.text()
         && check_entities(entities, text, &username)
@@ -46,7 +45,6 @@ pub fn is_mentioning_user(msg: &Message, username: &str) -> bool {
         return true;
     }
 
-    // 检查 caption 中的 entities（媒体消息：图片、视频、音频等）
     if let Some(entities) = msg.caption_entities()
         && let Some(caption) = msg.caption()
         && check_entities(entities, caption, &username)
@@ -84,14 +82,13 @@ impl ExtractedTelegramMessage {
         let mut parts = Vec::new();
         let caption = msg.caption().map(|c| c.to_string());
 
-        // 1. 处理文本
         if let Some(text) = msg.text() {
             parts.push(TelegramContentPart::Text {
                 text: text.to_string(),
             });
         }
 
-        // 2. 处理媒体（每个附件生成唯一 attachment_id）
+        // 每个附件生成唯一 attachment_id
         if let Some(photos) = msg.photo() {
             if let Some(photo) = photos.last() {
                 parts.push(TelegramContentPart::Photo {
@@ -145,7 +142,6 @@ impl ExtractedTelegramMessage {
             });
         }
 
-        // 3. 提取元数据 (如 thread_id)
         let tg_meta = TelegramMessageMeta {
             message_thread_id: msg.thread_id.map(|id| id.0.0),
         };

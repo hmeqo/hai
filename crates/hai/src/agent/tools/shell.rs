@@ -11,29 +11,20 @@ use crate::{
         runtime::{context::ToolContext, shell::ShellRuntime},
         tools::util::deserialize_option_lenient_u64,
     },
-    agentcore::{
-        skills::SkillManager,
-        tool::{AgentTool, ToolError, tool_data, tool_err},
-    },
+    agentcore::tool::{AgentTool, ToolError, tool_data, tool_err},
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ShellArgs {
-    /// 要执行的 shell 命令
     pub command: String,
-    /// 工作目录
     pub workdir: Option<String>,
-    /// 关联的 skill 名称
-    pub skill: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_lenient_u64")]
-    /// 超时秒数，默认 30
     pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct RunShell {
     pub description: String,
-    pub skill_manager: SkillManager,
     pub shell: Arc<Mutex<ShellRuntime>>,
 }
 
@@ -54,22 +45,11 @@ impl AgentTool for RunShell {
     async fn execute(&self, args: Value) -> Result<Value, ToolError> {
         let typed: ShellArgs = serde_json::from_value(args)?;
 
-        let skill_dir = typed
-            .skill
-            .as_deref()
-            .and_then(|name| self.skill_manager.find(name))
-            .map(|s| s.base_dir.clone());
-
         let output = self
             .shell
             .lock()
             .await
-            .execute(
-                &typed.command,
-                typed.workdir,
-                skill_dir.as_deref(),
-                typed.timeout_secs,
-            )
+            .execute(&typed.command, typed.workdir, typed.timeout_secs)
             .await
             .map_err(|e| tool_err(e.to_string()))?;
 
@@ -83,14 +63,11 @@ impl AgentTool for RunShell {
 
 pub fn tools(ctx: &ToolContext, sandbox_image: Option<&str>) -> Vec<Arc<dyn AgentTool>> {
     let description = match sandbox_image {
-        Some(img) => format!(
-            "执行 shell 命令。运行在容器中（镜像: {img}）。可通过 skill 参数自动挂载 skill 目录。",
-        ),
-        None => "执行 shell 命令。可通过 skill 参数自动挂载 skill 目录。".into(),
+        Some(img) => format!("执行 shell 命令。运行在容器中（镜像: {img}）；workdir 默认 /tmp。",),
+        None => "执行 shell 命令。".into(),
     };
     vec![Arc::new(RunShell {
         description,
-        skill_manager: ctx.skill_manager.clone(),
         shell: ctx.shell.clone(),
     })]
 }

@@ -75,6 +75,17 @@ pub struct SendVoiceReq {
     pub platform_reply_to_id: Option<i64>,
 }
 
+/// 发送图片消息（图像生成产物）。
+#[derive(Debug)]
+pub struct SendImageReq {
+    pub chat_id: ChatId,
+    pub image_bytes: Vec<u8>,
+    pub prompt: String,
+    pub caption: Option<String>,
+    pub topic_id: Option<Uuid>,
+    pub platform_reply_to_id: Option<i64>,
+}
+
 /// 发送后的平台元数据
 #[derive(Debug, Clone)]
 pub struct SentMessageMeta {
@@ -89,34 +100,29 @@ pub struct SentMessageMeta {
 pub enum MessageCapability {
     Rich,
     MarkdownV2,
-    Plain,
 }
 
-/// 平台无关的 bot 能力抽象，由各平台实现。
 #[async_trait::async_trait]
 pub trait PlatformHandler: Debug + Send + Sync + 'static {
-    /// 平台标识
     fn bot_id(&self) -> BotId;
-    /// Bot 身份信息（name + username + account_id）
     fn profile(&self) -> BotProfile;
-    /// 发送消息
     async fn send_message(&self, req: SendMessageReq) -> Result<SentMessageMeta>;
-    /// 发送语音消息
     async fn send_voice(&self, req: SendVoiceReq) -> Result<SentMessageMeta>;
-    /// 发送"正在输入"指示（fire-and-forget）
+    /// 发送图片（图像生成产物）。
+    async fn send_image(&self, req: SendImageReq) -> Result<SentMessageMeta>;
+    /// "正在输入"指示（fire-and-forget）。
     async fn send_typing(&self, chat_id: ChatId);
-    /// 下载文件内容（用于附件分析）
+    /// 下载文件内容（附件分析用）。
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>>;
-    /// 获取文件的可公开访问 URL（用于多模态分析，避免下载大文件）
+    /// 文件公开 URL（多模态分析用）。
     async fn get_file_url(&self, file_id: &str) -> Result<String>;
-    /// 分析消息附件（由各平台根据自身格式实现）
+    /// focus = 针对性分析指令（替代默认完整分析）。
     async fn analyze_attachment(
         &self,
         attachment_uuid: Uuid,
-        prompt: Option<&str>,
+        focus: Option<&str>,
     ) -> Result<String>;
-    /// 平台消息解析器
     fn content_parser(&self) -> &'static dyn ContentParser;
-    /// 平台消息格式能力（用于 tool description 差异化描述）
+    /// 平台消息格式能力（tool description 差异化描述用）。
     fn message_capability(&self) -> MessageCapability;
 }

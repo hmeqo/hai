@@ -47,7 +47,6 @@ impl ProviderRegistry {
         )
     }
 
-    /// 解析 provider 的连接参数 + 模型名，返回 `Endpoint`。
     pub fn get_endpoint(&self, provider: &str, model: &str) -> Result<Endpoint> {
         let entry = self.get_checked(provider)?;
         let base_url = entry

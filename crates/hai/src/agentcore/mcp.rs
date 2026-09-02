@@ -64,6 +64,12 @@ impl McpManager {
 
 impl McpServerHandle {
     async fn connect(name: &str, cfg: &crate::config::schema::McpConfig) -> Result<Self> {
+        if cfg.r#type != crate::config::schema::McpTransport::Stdio {
+            return Err(ErrorKind::Config.msg(format!(
+                "MCP transport `{type}` not implemented (only stdio)",
+                type = cfg.r#type
+            )));
+        }
         let mut cmd = Command::new(&cfg.command);
         cmd.args(&cfg.args);
         if let Some(env_map) = &cfg.env {

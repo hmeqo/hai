@@ -3,6 +3,14 @@ use std::{
     sync::Arc,
 };
 
+/// 相对路径基于进程 cwd 绝对化（容器挂载要求绝对路径）。
+fn absolutize(p: &Path) -> PathBuf {
+    match std::env::current_dir() {
+        Ok(cwd) if !p.is_absolute() => cwd.join(p),
+        _ => p.to_path_buf(),
+    }
+}
+
 use tracing::{debug, warn};
 
 use crate::error::Result;
@@ -33,20 +41,26 @@ impl Skill {
 #[derive(Debug, Default, Clone)]
 pub struct SkillManager {
     skills: Arc<Vec<Skill>>,
+    /// skill 根目录（load 时收集，去重保留）。
+    roots: Vec<PathBuf>,
 }
 
 impl SkillManager {
     pub async fn load(dirs: &[PathBuf], disabled: &[String]) -> Result<Self> {
         let mut buf = Vec::new();
+        let mut roots = Vec::new();
         for dir in dirs {
+            let dir = absolutize(dir);
             if dir.exists() {
-                Self::load_dir(&mut buf, dir, disabled).await;
+                Self::load_dir(&mut buf, &dir, disabled).await;
+                roots.push(dir.clone());
             } else {
                 debug!("Skills directory not found, skipping: {}", dir.display());
             }
         }
         Ok(Self {
             skills: Arc::new(buf),
+            roots,
         })
     }
 
@@ -130,6 +144,10 @@ impl SkillManager {
 
     pub fn find(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|s| s.name == name)
+    }
+
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
     }
 
     pub fn is_empty(&self) -> bool {

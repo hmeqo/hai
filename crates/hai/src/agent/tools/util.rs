@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
-// Lenient deserialization for Vec<i64> — accepts array, single number, or "x,y" string
+// Lenient Vec<i64> 反序列化（accepts array, single number, or "x,y" string）
 // ---------------------------------------------------------------------------
 
 struct LenientI64Visitor;

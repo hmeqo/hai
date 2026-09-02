@@ -1,4 +1,5 @@
 mod attention;
+mod chapter;
 mod conversation;
 mod dispatch;
 mod event_loop;
@@ -15,7 +16,7 @@ use tokio::{
 
 use self::scheduler::EventScheduler;
 pub(crate) use self::{
-    conversation::{Conversation, RunInput},
+    conversation::{Conversation, TurnInput},
     proxy::HeartbeatTask,
 };
 use super::{AgentEngine, run::AgentRuntime, shell::ShellRuntime};
@@ -52,7 +53,6 @@ pub(super) struct AgentSession {
     engine: AgentEngine,
     chat_id: ChatId,
     chat_type: ChatType,
-    run_count: usize,
 }
 
 impl AgentSession {
@@ -62,7 +62,10 @@ impl AgentSession {
         handler: Arc<dyn PlatformHandler>,
         conversation: Conversation,
     ) -> Result<Self> {
-        let shell = Arc::new(Mutex::new(ShellRuntime::new(&engine.app.cfg.sandbox)));
+        let shell = Arc::new(Mutex::new(ShellRuntime::new(
+            &engine.app.cfg.sandbox,
+            engine.skill_manager.roots(),
+        )));
         let runtime = AgentRuntime::new(&engine, handler, shell);
 
         let chat = engine
@@ -85,7 +88,6 @@ impl AgentSession {
             engine,
             chat_id,
             chat_type,
-            run_count: 0,
         })
     }
 

@@ -1,6 +1,7 @@
 use crate::{
     domain::{
-        model::{Account, Identity},
+        model::Identity,
+        repo::Repos,
         vo::{AccountId, IdentityId},
     },
     error::Result,
@@ -8,33 +9,26 @@ use crate::{
 
 #[derive(Debug)]
 pub struct IdentityService {
-    db: toasty::Db,
+    repos: Repos,
 }
 
 impl IdentityService {
-    pub fn new(db: toasty::Db) -> Self {
-        Self { db }
+    pub fn new(repos: Repos) -> Self {
+        Self { repos }
     }
 
     pub async fn create_identity(&self, name: Option<&str>) -> Result<Identity> {
         let now = jiff::Timestamp::now();
-        toasty::create!(Identity {
-            id: uuid::Uuid::now_v7(),
-            name: name.map(String::from),
-            created_at: now,
-            updated_at: now,
-        })
-        .exec(&mut self.db.clone())
-        .await
-        .map_err(Into::into)
+        self.repos
+            .identity
+            .create(uuid::Uuid::now_v7(), name, None, now, now)
+            .await
     }
 
     pub async fn bind_account(&self, identity_id: IdentityId, account_id: AccountId) -> Result<()> {
-        Account::filter_by_id(account_id.0)
-            .update()
-            .identity_id(Some(identity_id.0))
-            .exec(&mut self.db.clone())
-            .await?;
-        Ok(())
+        self.repos
+            .account
+            .bind_identity(account_id.0, identity_id.0)
+            .await
     }
 }

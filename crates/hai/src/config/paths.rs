@@ -65,22 +65,6 @@ impl Paths {
         }
     }
 
-    pub fn with_dirs(config_dir: PathBuf, data_dir: PathBuf) -> Self {
-        let config_file = config_dir.join("config.toml");
-        let config_file_str = config_file.to_str().expect("valid UTF-8").to_owned();
-        let file_cache_dir = data_dir.join("files");
-        let mut skill_dirs = vec![config_dir.join("skills")];
-        skill_dirs.retain(|d| d.exists());
-        Self {
-            config_dir,
-            data_dir,
-            config_file,
-            config_file_str,
-            file_cache_dir,
-            skill_dirs,
-        }
-    }
-
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }

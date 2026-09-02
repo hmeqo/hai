@@ -9,7 +9,6 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct FileId(pub String);
 
-/// 附件解析器类型
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
 )]
@@ -105,7 +104,6 @@ impl TelegramContentPart {
         }
     }
 
-    /// 返回附件的稳定 ID
     pub fn attachment_id(&self) -> Option<Uuid> {
         match self {
             TelegramContentPart::Text { .. } => None,
@@ -120,7 +118,6 @@ impl TelegramContentPart {
         }
     }
 
-    /// 返回附件的 file_id
     pub fn file_id(&self) -> Option<&str> {
         match self {
             TelegramContentPart::Text { .. } => None,
@@ -181,7 +178,6 @@ impl TelegramContentPart {
         }
     }
 
-    /// 返回附件的额外提示信息（如 sticker 的 emoji）
     pub fn extra_hint(&self) -> Option<&str> {
         match self {
             TelegramContentPart::Sticker { emoji, .. } => emoji.as_deref(),
@@ -225,7 +221,6 @@ pub struct VoiceMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "lowercase")]
 pub enum MediaCodec {
-    // 音频
     Mp3,
     Ogg,
     Wav,
@@ -233,7 +228,6 @@ pub enum MediaCodec {
     Aac,
     Flac,
     Wma,
-    // 视频
     Mp4,
     Mov,
     Avi,

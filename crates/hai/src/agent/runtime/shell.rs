@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use tokio::process::Command;
 
@@ -14,12 +14,19 @@ pub(crate) struct ContainerGuard {
 }
 
 impl ContainerGuard {
-    pub async fn create(runtime: &str, image: &str) -> Result<Self, ToolError> {
-        let output = Command::new(runtime)
-            .args(["create", "--rm", image, "sleep", "infinity"])
+    /// 同路径只读挂载进容器。
+    pub async fn create(runtime: &str, image: &str, mounts: &[PathBuf]) -> Result<Self, ToolError> {
+        let mut cmd = Command::new(runtime);
+        cmd.arg("create").arg("--rm");
+        for m in mounts {
+            let m = m.display().to_string();
+            cmd.arg("-v").arg(format!("{m}:{m}:ro"));
+        }
+        cmd.arg(image).args(["sh", "-c", "sleep infinity"]);
+        let output = cmd
             .output()
             .await
-            .map_err(|e| ToolError::Msg(format!("Failed to run {runtime}: {e}")))?;
+            .map_err(|e| ToolError::Msg(format!("Failed to turn {runtime}: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -61,14 +68,16 @@ impl Drop for ContainerGuard {
 struct SandboxRuntime {
     runtime: ContainerRuntime,
     image: String,
+    mounts: Vec<PathBuf>,
     container: Option<ContainerGuard>,
 }
 
 impl SandboxRuntime {
     async fn ensure_container(&mut self) -> Result<&ContainerGuard, ToolError> {
         if self.container.is_none() {
-            self.container =
-                Some(ContainerGuard::create(self.runtime.as_str(), &self.image).await?);
+            self.container = Some(
+                ContainerGuard::create(self.runtime.as_str(), &self.image, &self.mounts).await?,
+            );
         }
         Ok(self.container.as_ref().expect("container just set"))
     }
@@ -81,12 +90,13 @@ pub struct ShellRuntime {
 }
 
 impl ShellRuntime {
-    pub fn new(cfg: &SandboxConfig) -> Self {
+    pub fn new(cfg: &SandboxConfig, mounts: &[PathBuf]) -> Self {
         Self {
             default_timeout: cfg.timeout_secs,
             sandbox: cfg.enabled.then(|| SandboxRuntime {
                 runtime: cfg.runtime,
                 image: cfg.image.clone(),
+                mounts: mounts.to_vec(),
                 container: None,
             }),
         }
@@ -96,52 +106,29 @@ impl ShellRuntime {
         &mut self,
         command: &str,
         workdir: Option<String>,
-        skill_dir: Option<&Path>,
         timeout_secs: Option<u64>,
     ) -> Result<ShellOutput, ToolError> {
         let timeout = timeout_secs.unwrap_or(self.default_timeout);
 
         let Some(sb) = &mut self.sandbox else {
-            let dir = skill_dir.map(|p| p.display().to_string()).or(workdir);
-            return run_on_host(command, dir, timeout).await;
+            return run_on_host(command, workdir, timeout).await;
         };
 
         let handle = sb.ensure_container().await?;
-        if let Some(dir) = skill_dir {
-            copy_to_container(handle, dir, "/workspace").await?;
-        }
-        exec_in_container(handle, command, timeout).await
+        let dir = workdir.unwrap_or_else(|| "/tmp".to_string());
+        exec_in_container(handle, command, &dir, timeout).await
     }
 }
 
 async fn exec_in_container(
     guard: &ContainerGuard,
     command: &str,
+    workdir: &str,
     timeout_secs: u64,
 ) -> Result<ShellOutput, ToolError> {
     let mut cmd = Command::new(&guard.runtime);
-    cmd.args(["exec", "-w", "/workspace", &guard.id, "bash", "-c", command]);
+    cmd.args(["exec", "-w", workdir, &guard.id, "bash", "-c", command]);
     run_cmd(cmd, timeout_secs).await
-}
-
-async fn copy_to_container(
-    guard: &ContainerGuard,
-    src: &Path,
-    dest: &str,
-) -> Result<(), ToolError> {
-    let src_str = src.display().to_string();
-    let dest_str = format!("{}:{}", guard.id, dest);
-    let output = Command::new(&guard.runtime)
-        .args(["cp", &src_str, &dest_str])
-        .output()
-        .await
-        .map_err(|e| ToolError::Msg(format!("docker cp failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ToolError::Msg(format!("docker cp failed: {stderr}")));
-    }
-    Ok(())
 }
 
 pub struct ShellOutput {

@@ -9,7 +9,6 @@ use crate::{
     error::{ErrorKind, OptionAppExt, Result},
 };
 
-/// 按 ID 获取聊天记录
 pub async fn load_chat(
     services: &DbServices,
     chat_id: ChatId,
@@ -21,32 +20,38 @@ pub async fn load_chat(
         .ok_or_err_msg(ErrorKind::NotFound, format!("Chat not found: {chat_id}"))
 }
 
-/// 加载消息中引用但尚未在集合中的回复上下文
-pub async fn load_reply_context(
+pub async fn load_reply_map(
     services: &DbServices,
     messages: &[Message],
-) -> Result<Vec<Message>> {
-    let main_ids: HashSet<i64> = messages.iter().map(|m| m.id).collect();
+) -> Result<HashMap<i64, Message>> {
+    let window: HashSet<i64> = messages.iter().map(|m| m.id).collect();
     let missing: Vec<i64> = messages
         .iter()
         .filter_map(|m| m.reply_to_id)
-        .filter(|rid| !main_ids.contains(rid))
+        .filter(|rid| !window.contains(rid))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 
     if missing.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
-    services
-        .message
-        .get_messages_by_ids(&missing.iter().map(|id| MessageId(*id)).collect::<Vec<_>>())
-        .await
+    let ids: Vec<MessageId> = missing.into_iter().map(MessageId).collect();
+    let found = services.message.get_messages_by_ids(&ids).await?;
+    Ok(found.into_iter().map(|m| (m.id, m)).collect())
 }
 
-/// 收集消息中所有 account（含 identity 关联的 sibling account）
-pub async fn collect_accounts(services: &DbServices, messages: &[Message]) -> Result<Vec<Account>> {
-    let raw_ids: HashSet<i64> = messages.iter().filter_map(|m| m.account_id).collect();
+/// 含 identity 关联的 sibling account（reference 发送者名渲染依赖；缺失降级为 User{id}）。
+pub async fn collect_accounts(
+    services: &DbServices,
+    messages: &[Message],
+    reply_map: &HashMap<i64, Message>,
+) -> Result<Vec<Account>> {
+    let raw_ids: HashSet<i64> = messages
+        .iter()
+        .chain(reply_map.values())
+        .filter_map(|m| m.account_id)
+        .collect();
     let mut account_map: HashMap<i64, Account> = HashMap::new();
 
     for id in raw_ids {

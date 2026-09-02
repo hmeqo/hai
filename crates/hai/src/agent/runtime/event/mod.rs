@@ -4,4 +4,4 @@ pub mod wake;
 
 pub use bus::AgentEventBus;
 pub use inbox::Inbox;
-pub use wake::{EventGroup, EventGroupSlice, WakeEvent, WakeEvents, WakeReason};
+pub use wake::{AgentCommand, EventGroup, TaskPayload, WakeEvent, WakeEvents, WakeReason};

@@ -23,7 +23,6 @@ pub(super) fn related_memories_elements(memories: &[RelatedMemory]) -> Vec<Node>
     memories.iter().map(related_memory_element).collect()
 }
 
-/// 构建相关记忆 Section
 pub fn related_memories_section(memories: &[RelatedMemory], tag: &str) -> Node {
     Node::tag(tag).children(related_memories_elements(memories))
 }

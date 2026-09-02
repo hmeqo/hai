@@ -1,17 +1,10 @@
-use super::Chat;
-
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "scratchpad"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Scratchpad {
-    #[key]
     pub chat_id: i64,
-    #[belongs_to]
-    pub chat: toasty::Deferred<Chat>,
 
     pub content: String,
     pub token_count: i32,
-
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 

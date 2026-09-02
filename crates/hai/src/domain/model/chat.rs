@@ -3,23 +3,18 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::domain::vo::ChatId;
 
-#[derive(Debug, Clone, toasty::Model)]
-#[table = "chat"]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Chat {
-    #[key]
-    #[auto(increment)]
     pub id: i64,
 
     pub platform: String,
     pub external_id: String,
     pub chat_type: String,
     pub name: Option<String>,
-    pub config: Option<toasty::Json<serde_json::Value>>,
-    pub meta: Option<toasty::Json<serde_json::Value>>,
-
-    #[auto]
+    pub meta: Option<serde_json::Value>,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: jiff::Timestamp,
-    #[auto]
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: jiff::Timestamp,
 }
 

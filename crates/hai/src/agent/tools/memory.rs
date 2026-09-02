@@ -28,17 +28,15 @@ pub enum RecordMemoryCategory {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RecordMemoryArgs {
-    /// 分类
     pub category: RecordMemoryCategory,
-    /// 内容
     pub content: String,
-    /// 关联用户 ID（user_fact 必填）
+    /// user_fact 类别必填
     pub account_id: Option<i64>,
     /// 引用: {"topics":["uuid"],"messages":[123]}
     pub references: Option<serde_json::Value>,
 }
 
-/// 记住一条信息：群友的情况、有用的知识、重要的结论。
+/// 记住一条信息：用户的事实、偏好、有用的结论、技巧。听到值得记的内容就记下来。
 #[hai_macros::tool]
 pub struct RecordMemory {
     pub chat_id: ChatId,
@@ -75,15 +73,12 @@ impl RecordMemory {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CorrectMemoryArgs {
-    /// 记忆 ID
     pub id: Uuid,
-    /// 内容
     pub content: Option<String>,
-    /// 重要性
     pub importance: Option<i32>,
 }
 
-/// 修改已记住的信息。
+/// 情况变了或记错了时，修正已有记忆。
 #[hai_macros::tool]
 pub struct CorrectMemory {
     pub services: DbServices,
@@ -102,13 +97,11 @@ impl CorrectMemory {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchMemoryArgs {
-    /// 搜索词
     pub query: String,
-    /// 数量限制（默认 10）
     pub limit: Option<i64>,
 }
 
-/// 翻一下之前记过的东西。
+/// 按意思搜之前记过的东西（语义向量检索，不要求关键词精确命中）。
 #[hai_macros::tool]
 pub struct SearchMemory {
     pub chat_id: ChatId,
@@ -117,10 +110,7 @@ pub struct SearchMemory {
 
 impl SearchMemory {
     async fn exec(&self, args: SearchMemoryArgs) -> Result<Value, ToolError> {
-        let limit = args.limit.unwrap_or(10);
-        if limit < 0 {
-            return Err(ToolError::Msg("limit 不能为负数".into()));
-        }
+        let limit = args.limit.unwrap_or(10).max(1);
 
         let memories = self
             .services
@@ -136,7 +126,6 @@ impl SearchMemory {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteMemoryArgs {
-    /// 记忆/笔记 UUID
     pub id: Uuid,
 }
 

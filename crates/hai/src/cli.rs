@@ -1,9 +1,13 @@
 pub mod display;
+pub mod kb;
 pub mod log;
 pub mod tui;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum, builder::Styles};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
     App,
@@ -24,7 +28,7 @@ pub struct Cli {
 pub enum Commands {
     /// Print the loaded configuration
     Config {
-        #[clap(long, help = "Output format: json or yaml", default_value = "json")]
+        #[clap(long, help = "Output format: json or toml", default_value = "json")]
         r#format: ConfigFormat,
     },
     /// Database operations
@@ -37,11 +41,54 @@ pub enum Commands {
         #[command(flatten)]
         args: log::LogArgs,
     },
+    /// Knowledge base management
+    Kb {
+        #[command(subcommand)]
+        action: KbAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KbAction {
+    /// Import documents into the knowledge base (idempotent by content hash)
+    Import {
+        /// File or directory to import
+        paths: Vec<PathBuf>,
+        /// Collection label (empty = uncategorized)
+        #[arg(long)]
+        collection: Option<String>,
+        /// Override document title (default: frontmatter title or file name)
+        #[arg(long)]
+        title: Option<String>,
+        /// Recurse into directories
+        #[arg(long)]
+        recursive: bool,
+    },
+    /// List documents (optionally filtered by collection)
+    List {
+        #[arg(long)]
+        collection: Option<String>,
+    },
+    /// Semantic search over the knowledge base
+    Search {
+        query: String,
+        #[arg(long)]
+        collection: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        limit: i64,
+    },
+    /// Delete a document (cascades chunks)
+    Delete { id: Uuid },
+    /// Re-chunk and re-embed documents whose chunker version is stale
+    Reindex {
+        #[arg(long)]
+        collection: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum DbAction {
-    /// Create the database if it doesn't exist
+    /// Create the database
     Create,
     /// Apply pending migrations
     Migrate,
@@ -86,10 +133,15 @@ impl Cli {
                             db::create_database(&cfg.database.url).await?;
                         }
                         DbAction::Migrate => {
-                            let (mut db, _pool) = db::init_db(&cfg.database).await?;
-                            db::run_migrations(&db).await?;
-                            let dim = cfg.multimodal.embedding.dimension.unwrap_or(1024);
-                            pgvector::ensure_embedding_schema(&mut db, dim).await?;
+                            let pool = db::init_db(&cfg.database).await?;
+                            db::run_migrations(&pool).await?;
+                            let dim = cfg
+                                .auxiliary
+                                .embedding
+                                .as_ref()
+                                .map(|b| b.dimension())
+                                .unwrap_or(1024);
+                            pgvector::ensure_embedding_schema(&pool, dim).await?;
                         }
                         DbAction::Rebuild { target } => match target {
                             RebuildTarget::Embeddings => {
@@ -100,6 +152,10 @@ impl Cli {
                 }
                 Commands::Log { args } => {
                     log::execute(args).await?;
+                }
+                Commands::Kb { action } => {
+                    let cfg = config.load();
+                    kb::execute(action, &cfg).await?;
                 }
             }
         } else {
