@@ -1,37 +1,38 @@
 # hai
 
-Telegram chatbot with personality system, long-term memory, MCP tool integration, and skill-based prompting.
+A Telegram chatbot that remembers your conversations, understands your media, and organizes the topics you discuss over time.
 
 ## Features
 
-- **Personality system** — configurable sociability, verbosity, humor, and mood traits shape response style
-- **Long-term memory** — vector search across user facts, notes, and knowledge via pgvector
-- **Topic tracking** — automatic conversation topic detection, assignment, and summarization
-- **ReAct loop** — thinking-acting-observing cycle with full tool use, preemption, and turn management
-- **MCP support** — integrate any [Model Context Protocol](https://modelcontextprotocol.io/) server for additional tools
-- **Multi-platform** — Telegram (extensible via `PlatformHandler` trait)
-- **Sandbox execution** — optional Docker sandbox for shell tool execution
-- **Skills system** — loadable markdown skills with frontmatter for structured agent instructions
+- **Remembers what matters** — keeps personal facts, notes, and preferences across conversations
+- **Understands your media** — reads the images, videos, and voice messages you send
+- **Organizes conversations** — tracks topics and summarizes them as they evolve
+- **Talks back in text or voice** — replies in a personality shaped to you
+- **Has up-to-date knowledge** — pulls in external information when you need it
+- **Does things for you** — runs commands and generates images on request
+- **Extends itself** — connects to external tools and follows specialized skills on demand
 
-## Prerequisites
+## Installation
 
-- [Rust](https://rustup.rs/) nightly (edition 2024)
-- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension
+### Prerequisites
+
+- PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - An LLM API key (OpenAI, Anthropic, OpenRouter, or local Ollama)
 
-## Quick Start
+### Build from source
 
-### 1. Configure PostgreSQL
-
-Create a database with pgvector:
+Building requires a [Rust](https://rustup.rs/) toolchain (nightly, edition 2024).
 
 ```bash
-createdb hai
-psql hai -c "CREATE EXTENSION vector;"
+git clone https://github.com/hmeqo/hai.git
+cd hai
+cargo build --release
 ```
 
-### 2. Configuration
+The binary is at `target/release/hai` — or run it directly with `cargo run -p hai --`.
+
+### Configure
 
 Create `.hai/config.toml`:
 
@@ -39,13 +40,12 @@ Create `.hai/config.toml`:
 [database]
 url = "postgres://user:password@localhost:5432/hai"
 
-[bot.main]
-type = "telegram"
+[bot.telegram]
 bot-token = "your-bot-token"
 allowed-chat-ids = [123456789]
 
 [providers.openrouter]
-api_key = "sk-or-v1-..."
+api-key = "sk-or-v1-..."
 
 [agent]
 provider = "openrouter"
@@ -53,113 +53,100 @@ model = "anthropic/claude-3.5-sonnet"
 
 [agent.personality]
 name = "hai"
-sociability = 0.05
-verbosity = 0.35
-honesty = 0.60
-humor = 0.70
-rationality = 0.35
-mood = 0.1
+description = "A warm, witty assistant that answers briefly and clearly."
 
-[multimodal.embedding]
+[auxiliary.embedding]           # required (memory/retrieval depend on it)
 provider = "openrouter"
 model = "openai/text-embedding-3-small"
 dimension = 1536
 ```
 
-### 3. Setup database
+### Set up the database
 
 ```bash
-cargo run -- db migrate           # apply ORM + embedding schema migrations
+hai db create      # create the database if missing
+hai db migrate     # create tables, extension, indexes (idempotent)
 ```
 
-### 4. Start
+## Usage
+
+### Commands
 
 ```bash
-cargo run --bin hai
+hai config                   # print the loaded configuration (json/toml)
+hai db create                # create the database
+hai db migrate               # apply sqlx schema migrations (idempotent)
+hai db rebuild embeddings    # rebuild vector embeddings
+hai log                      # event log TUI (three panels); --id N prints one event
+hai kb import <path>         # import documents into the knowledge base (idempotent)
+hai kb list                  # list documents (optionally by collection)
+hai kb search <query>        # semantic search over the knowledge base
+hai kb delete <id>           # delete a document (cascades chunks)
+hai kb reindex               # re-chunk/re-embed documents with stale chunker versions
 ```
 
-## Commands
+### Configuration reference
 
-```bash
-cargo run --bin hai               # start the bot
-cargo run --bin hai -- config     # print current config
-cargo run -- db create            # create database
-cargo run -- db migrate           # apply migrations + vector column
-cargo run -- db rebuild embeddings   # re-embed all memories
-cargo run --bin toasty-cli -- migration generate    # generate ORM migration
-cargo run --bin toasty-cli -- migration apply       # apply ORM migration
-```
+`.hai/config.toml` (or `~/.config/hai/config.toml`). Set `HAI_LOCAL_MODE=1` to force `.hai/` only. Keys use kebab-case; all sections are optional with sensible defaults (except `[auxiliary.embedding]`, which is required).
 
-## Configuration
+#### LLM providers
 
-`.hai/config.toml` (or `~/.config/hai/config.toml`). Set `HAI_LOCAL_MODE=1` to force `.hai/` only.
-
-### LLM Providers
-
-Supported providers: `openai`, `anthropic`, `openrouter`, `ollama`, `gemini`, `deepseek`, `groq`.
+Supported providers: `openrouter`, `openai`, `anthropic`, `google`, `deepseek`, `groq`, `ollama`, `xai`, `azureopenai`, `minimax`, `phind`, `requesty`.
 
 ```toml
 [providers.openai]
-api_key = "sk-..."
+api-key = "sk-..."
 
 [providers.ollama]
-# api_key is optional for local providers
+# api-key is optional for local providers
+base_url = "http://localhost:11434/v1"   # optional override
 ```
 
-### Multimodal
+#### Auxiliary capabilities
 
 ```toml
-[multimodal.embedding]
+[auxiliary.embedding]           # required; errors when missing (memory/retrieval depend on it)
 provider = "openrouter"
 model = "openai/text-embedding-3-small"
-dimension = 1536
+# dimension = 1024              # optional; pgvector column dimension (default 1024)
 
-[multimodal.input]
-audio = { model = "whisper-1" }
-image = { model = "gpt-4o" }
-video = { model = "gpt-4o" }
+[auxiliary.vision]              # image/video understanding (defaults to the main model)
+model = "gpt-4o"
+# image-prompt = "…"            # optional; override the built-in image analysis prompt
+# video-prompt = "…"            # optional; override the built-in video analysis prompt
 
-[multimodal.tts]
-model = "tts-1"
-voice = "alloy"
-speed = 1.0
+[auxiliary.audio]               # speech understanding (defaults to the main model)
+# model = "whisper-1"
+# prompt = "…"                  # optional; override the built-in audio analysis prompt
+
+[auxiliary.tts]                 # speech synthesis (enabled when model is set)
+provider = "openrouter"
+model = "openai/gpt-4o-mini-tts"
+# voice = "alloy"               # optional (default alloy)
+# speed = 1.0                   # optional (0.25 ~ 4.0, default 1.0)
+
+[auxiliary.image-gen]           # image generation (mounts generate_image when model is set)
+provider = "openrouter"
+model = "google/gemini-2.5-flash-image"
 ```
 
-### Attention / Scheduling
+#### Attention / scheduling
 
 ```toml
 [agent.attention]
-base_heat = 0.02          # base dispatch probability for Observe events
-window_secs = 120          # attention window after addressed event
+base-attention = 0.05       # base dispatch probability for Observe events
+window-secs = 30            # attention window after an addressed event
+```
 
+#### Context
+
+```toml
 [agent.context]
-history_cap = 25           # max messages loaded per turn
-session_idle_timeout_secs = 7200
-preempt = true              # inject mid-processing events as turn interruptions
-conversation_mode = "persistent"   # or "ephemeral"
+context-seed-cap = 10       # messages seeded into the first render of a chapter
+related-memory-limit = 5    # related memories injected per turn
+related-topic-limit = 3     # related topics injected per turn
+topic-idle-hours = 3        # topic considered stale after this idle time
+session-idle-timeout-secs = 300    # idle timeout triggering chapter wrap-up
+steering = true             # turn-interrupting new events resume the turn
+compact-token-threshold = 150000   # chapter wrap-up when context tokens exceed this (0 = disabled)
 ```
-
-## Development
-
-```bash
-cargo check
-cargo clippy --all-targets
-cargo test
-```
-
-## Project Structure
-
-```
-hai/src/
-├── agent/          agent logic (nodes, runtime, context, tools)
-├── agentcore/      infrastructure (tool trait, MCP, embedding, rendering)
-├── domain/         domain model + services (toasty ORM + sqlx)
-├── platform/       platform integrations (Telegram)
-├── config/         configuration system
-├── util/           shared utilities (pgvector)
-└── app/            application context + startup
-```
-
-## License
-
-MIT

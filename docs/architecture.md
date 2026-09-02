@@ -1,284 +1,89 @@
-# hai 架构
+# architecture
+
+> Cross-package dependencies, layering constraints, event system, assembly root, and underlying infrastructure. Must read when changes touch cross-module wiring, dependency direction, or event persistence.
+
+## Architecture declaration
+
+Top-down layering chain `app → platform → agent → agentcore + config + domain` (also includes the `util / error / infra` underlying layers), with dependencies pointed downward only (DDD dependency direction); agentcore is a core library with zero agent/domain dependencies, config is a pure data layer, and domain is a data layer; platform details are kept out of the agent layer by two traits. Altogether this conforms to the philosophy (single-direction layering + type-driven). Two known dependency violations are listed below; no new violations of the same kind are allowed.
+
+### Layering & dependency direction (measured)
+
+```txt
+app → platform → agent → agentcore + domain + config
+                     ↘  domain → agentcore(embedding trait) + util + sqlx
+agentcore → config (mcp.rs reads McpConfig — known one-way violation, not a cycle, see below)
+util → agentcore (pgvector.rs → embedding::EmbeddingService)
+error.rs has no internal deps (only thiserror/strum)
+```
+
+- **`agentcore/` has zero `crate::agent` / `crate::domain` references** (verified by grep) — hard rule satisfied
+- **Known violation 1 (domain reverse direction)**: `domain/service/mod.rs` depends on `agent::multimodal::MultimodalService` (injected into `DbServices` as `Arc<dyn EmbeddingService>`). See "Evolution direction" for the refactor direction. **No new violations of the same kind allowed**
+- **Known violation 2 (agentcore → config, one-way)**: only `agentcore/mcp.rs:connect` reads `config::schema::McpConfig` — the original agentcore↔config cycle has been broken (config→agentcore references cleared), but the remaining one-way dependency still violates the "agentcore zero dependency" principle; `ProviderKind` is now in agentcore/provider.rs, `ProviderEntry` is in config/provider_manager.rs (they do not reference each other). Must be handled before splitting the crate.
+- Platform details are entirely kept out of the agent layer by two traits: `agent/link.rs:PlatformHandler` (platform operations) + `agent/context/types.rs:ContentParser` (content parsing, implemented by the platform and injected via `handler.content_parser()`) — the tools layer has zero concrete platform imports
+
+## Key data flows
+
+### Event system chain (Platform → wake → Inbox → EventScheduler → dispatch → spawn_turn)
 
 ```mermaid
-graph TB
-  TG["Telegram API"]
-
-  subgraph Platform["Platform Layer"]
-    PB["TelegramPlatform<br/>spawn() 自举 + tokio::spawn"]
-    DP["TelegramDispatcher<br/>事件入口 + 聊天/用户解析"]
-    TH["TelegramPlatformHandler<br/>PlatformHandler trait impl<br/>自举身份 + 消息发送"]
-  end
-
-  subgraph Session["Session Layer"]
-    SM["SessionManager<br/>get_or_create(ChatId)"]
-    SH["SessionHandle<br/>wake(WakeEvent)"]
-    SL["AgentSession<br/>EventScheduler + 状态机 Idle/Active"]
-    EB["Inbox<br/>Arc<Mutex<Vec<WakeEvent>>> + Notify"]
-    SP["spawn_processing()<br/>tokio::spawn + oneshot"]
-    EN["AgentEngine<br/>LLM call + MCP manager"]
-    CX["ContextBuilder<br/>prompt 渲染"]
-    RL["ReactLoop<br/>run_react_loop(ReactRun)"]
-  end
-
-  subgraph Core["AgentCore"]
-    TL["tool.rs<br/>AgentTool trait + ToolError"]
-    MC["mcp.rs<br/>McpManager + McpServerHandle"]
-    EM["embedding.rs<br/>EmbeddingService trait"]
-  end
-
-  subgraph App["AppContext"]
-    CFG["Config"]
-    SRV["DbServices"]
-    SK["Skills"]
-  end
-
-  subgraph Domain["Domain Layer"]
-    MS["MemoryService<br/>create / update / search / delete"]
-    TS["TopicService"]
-  end
-
-  PG[("PostgreSQL + pgvector")]
-
-  TG --> DP
-  DP --> SM --> SH
-  SH -- Inbox.push(event) --> EB
-  EB --> SL
-  SL --> SP --> EN
-  EN --> CX --> RL
-  EN --> MC
-  RL -.-> TH
-
-  SL -- idle_tick(scheduler) --> SL
-  SP --> MS
-  MS --> PG
-  TH --> SRV
-  CX --> SRV
-  SRV --> PG
-
-  classDef platform fill:#e3f2fd
-  classDef session fill:#e8f5e9
-  classDef core fill:#f3e5f5
-  classDef app fill:#fff3e0
-  classDef domain fill:#fce4ec
-
-  class DP,TH platform
-  class SM,SH,SL,EB,SP,EN,CX,RL session
-  class TL,MC,EM core
-  class CFG,SRV,SK app
-  class MS,TS domain
+flowchart LR
+    TELE[platform/telegram/message_handler.rs<br/>dispatch_agent_event] -->|persist_user_message then persist| DB[(Postgres table)]
+    TELE -->|wake WakeEvent::new reason| INBOX[event/inbox.rs:Inbox]
+    INBOX -->|drain| LOOP[session/event_loop.rs loop<br/>scheduler.rs:EventScheduler timing decision]
+    LOOP -->|Decision::Ready| DISPATCH[session/dispatch.rs:dispatch]
+    DISPATCH -->|gather_messages since_id| DB
+    DISPATCH -->|build_prompt + emit TurnStarted| TURN[runtime/run.rs:spawn_turn]
+    RUN -->|react loop: Turn + tool calls| BUS[event/bus.rs:AgentEventBus]
+    BUS -->|50 items / 200ms batch| DB
 ```
 
-## 核心抽象
+1. Platform messages are **persisted before being woken**: `dispatch_agent_event` first calls `persist_user_message` (topics/platform.md "persist before wake"), then calls `session.wake(WakeEvent::new(reason))` — WakeEvent only carries a reason and is a pure notification; messages are always pulled from the DB by dispatch's `gather_messages(since_id)`
+2. `event/inbox.rs:Inbox` is a cross-thread input queue (`Arc<Mutex<Vec<WakeEvent>>>` + `tokio::sync::Notify`), `push` wakes the session loop
+3. `session/scheduler.rs:EventScheduler` only performs **timing decisions**: debounce 1.5s + Heat/Window probabilistic attention (`attention.rs`: base 0.05, spend 0.25, reset 1.0; no decay within the 30s active window after being @'d/replied) + `last_activity` independent idle timer (**only addressed events/speech refresh it, Observe does not refresh** — a pure Observe session counts idle from its creation time and can expire normally, see topics/session.md) → `Decision::{Ready, Defer, Done}`
+4. `dispatch.rs:dispatch`: build_turn_context → gather_messages → build_prompt → **stage_shown (staged retrieval injection)** → emit `TurnStarted` → `runtime.spawn_turn` (state switches to Busy, holds JoinHandle + oneshot result_rx)
+5. Turn is a react loop (`react.rs:run_react_loop`, multiple Steps + tool calls), each turn's events are persisted via `AgentEventBus`; loop termination semantics: Main mode ends on empty text + skip/no activity call, wrap-up mode stops when there are no tool calls; **Turn has three states** (Success / Steered / Failed, see topics/session.md): Success/Steered ends normally → `on_complete` advances (cursor/shown staging commit, ContextMeta update); Failed has zero state side effects (staging discarded, stays Idle waiting for the next message)
+6. `on_complete` (BusySignal::Turn/WrapUp) → conversation.update (**ContextMeta update: tokens/turn_count only advance on success; turn_count is chapter-level — reset on reopen**) → back to Idle → continue the loop; Turn/wrap-up failure stays Idle (does not exit); after idle expires the `should_wrap_up` determination decides between reopen or Exit (chapter reopen mechanism, see topics/session.md)
 
-| 类型 | 职责 | 通信方式 |
-|------|------|---------|
-| `Inbox` | 事件缓冲区 + 异步通知 | `Arc<Mutex<Vec>>` + `Notify` |
-| `SessionManager` | `get_or_create(ChatId)` → `SessionHandle` | `Arc<RwLock<HashMap>>` + lazy retain |
-| `SessionHandle` | wake/status 操作的 proxy | `Inbox` + `mpsc` |
-| `AgentSession` | 单 chat 事件调度 + 状态机 | `idle_tick` / `await_completion` + `select!` |
-| `ActiveProcessing` | 一轮 in-flight 的 `JoinHandle` + `oneshot::Receiver` | `await_completion()` → `ProcessingOutcome` |
-| `EventScheduler` | debounce + heat + window 时机决策 | `enqueue()` + `decide()` |
-| `AgentEngine` | LLM 调用 + MCP 管理 | `Arc` 共享 |
-| `McpManager` | 启动/管理 MCP server 连接 | `rmcp` 库 |
-| `Arc<dyn PlatformHandler>` | 平台操作句柄（SessionManager/AgentSession/RunContext 共享同一 handler） | Arc clone |
-| `RunContext` | 一轮 processing 的完整执行上下文 | 纯数据 |
-| `ReactRun` | `run_react_loop` 的捆绑参数 | `Client + Messages + Config + Inbox + AgentEventBus` |
+### Event definition & persistence
 
-## 信号流
+- The enum is **defined in `domain/vo/event.rs`**: `AgentEventPayload` (`#[serde(tag = "event", rename_all = "kebab-case")]`, 9 variants), `AgentEvent{chat_id, payload}` + `to_json_value()` (serialization failure → Null + warn) — see that file for the variant list; here we only record the semantics that cannot be read from the code
+- `agent/runtime/event/bus.rs:AgentEventBus`: re-exports the enum; `emit` → unbounded channel → collector persists to DB in batches (`FLUSH_BATCH=50` items or `FLUSH_INTERVAL=200ms`) into the `event` table (`domain="agent"` constant value)
+- Event table structure: `seq` (I64 auto PK) / `domain` (Text) / `payload` (JSONB) / `created_at` — **no standalone chat_id/kind column**, chat_id lives inside the payload JSON; JSONB filtering directly uses `payload->>'chat_id'` / `payload->'payload'->>'event'` (TEXT→JSONB migration already done, see topics/cli.md)
 
-```
-Platform → TelegramDispatcher
-  → SessionManager.get_or_create(chat_id)
-  → SessionHandle.wake(WakeEvent)
-  → Inbox.push()
-    → idle_tick (drain → scheduler.enqueue → scheduler.decide)
-      → dispatch(events)
-        → assemble_run (build_run_context + gather_messages + next_prompt)
-        → spawn_processing → run_react_loop(ReactRun, tools)
-      → on_complete → Idle
+Variant semantics key points (behavior that cannot be read from code; check before changing the event structure):
 
-agent 工具调用:
-  send_message tool → PlatformHandler.send_message()
-  → TelegramPlatformHandler → resolve_platform_chat_id()
-  → teloxide bot.send_message()
+- `StepCompleted` is emitted each Step; `TurnEnded.output` is the StepOutput of the last step
+- `ModelRetry{ResponseWithText}` is **not a retry**: it injects `DIRECT_OUTPUT_ERROR` and continues the loop (react.rs); the only real retry is `TimeoutRetry` (Reqwest timeout/connect, at most 2 times, backoff 500ms×attempt)
+- `WrapUpStarted` = the retention that starts before a chapter reopen; `WrapUpCompleted.turns_count` = the number of turns before wrap-up (after reopen `start_new_chapter` zeroes ContextMeta + clears shown ids, naturally preventing repeated wrap-ups); `WrapUpFailed{error}` = retention failure, a clean chapter is reopened after the event (topics/session.md)
+- CLI/TUI event tag mapping: TURN/TOOL/STEP/DONE/RETRY/FAIL/STEER/WRAP (`cli/display.rs:tag_for_kind` + `KIND_TAGS`; WRAP covers wrap-up-started and wrap-up-completed — the storage layer only has the single turn-ended tag, FAIL/STEER are currently filtered and equivalent to DONE, see topics/cli.md pitfalls)
 
-内部命令（/help /status /start）:
-  dispatcher → self.bot.send_message()
-  不经 agent 系统
-```
+### Dual-client strategy
 
-## 事件列表
+| Purpose | Client | Reason |
+|---|---|---|
+| Main conversation | genai `create_genai_client` (adapter system; AzureOpenAI/Phind/Requesty → OpenAI compatible) | Covers multi-provider adaptation |
+| embedding / TTS / multimodal | self-developed `agentcore::ApiClient` (OpenAI-compatible REST: chat/completions, embeddings, audio/speech) | Covers tooling endpoints, controllable |
 
-所有事件通过 `AgentEventPayload`（serde tagged enum）序列化到 `event.payload` JSONB 列。
+### Error handling system
 
-| 事件 | tag | 说明 |
-|------|-----|------|
-| `SessionCreated` | `session_created` | 会话创建 |
-| `WakeStarted` | `wake_started`（别名 `turn_started`） | processing 启动 |
-| `ContextBuilt` | `context_built` | prompt 构建完成 |
-| `ToolCall` | `tool_call` | 工具调用 |
-| `ToolCallResult` | `tool_call_result` | 工具返回结果 |
-| `RunCompleted` | `run_completed` | run 成功完成 |
-| `RunFailed` | `run_failed` | run 失败 |
-| `ModelRetry` | `model_retry` | 模型 retry（`reason`: `text_without_tool` / `timeout_retry`） |
-| `Preempted` | `preempted` | run 期间 inbox 新事件注入 |
-| `SessionDone` | `session_done` | 会话结束 |
+Error shapes and conventions (`AppError{kind, message, source}` single type + `register_errors!` centralized From, `?` preferred / `let _` only for best-effort / `if let Err(e)` warn) see docs/topics/config.md "Error handling system"; the domain service "swallow-error pattern" see docs/topics/domain.md pitfalls (`ConversationRecordService::get` already fixed per contract).
 
-- `chat_id` 嵌入每个变体，无独立 DB 列
-- `ModelRetryReason` 用 `IntoStaticStr` + `EnumString`，零分配
-- `TurnCompleted` 已迁移为 `RunCompleted`
+## Module navigation
 
-## Session 生命周期
+| Module | Key files | Responsibility |
+|---|---|---|
+| app/ | mod.rs, context.rs | Assembly root: log initialization → AppContext → AgentEngine → spawn_bots → ctrl_c |
+| platform/ | manager.rs, telegram/ (11 files) | Platform integration: teloxide Dispatcher + PlatformHandler/ContentParser implementations |
+| agent/ | runtime/, context/, tools/, multimodal/, node/, personality/ | Session/scheduling/run loop/context rendering/tool set/multimodal |
+| agentcore/ | tool.rs, mcp.rs, provider.rs, apiclient.rs, embedding.rs, skills/, render/ | Core library: tool abstraction, MCP integration, provider client, skills, XML rendering (zero agent/domain dependencies) |
+| domain/ | model/, repo/, service/, vo/, db.rs | Data layer: 13-table model + repo (sqlx) + service + event VO |
+| config/ | schema.rs, manager.rs, provider_manager.rs, paths.rs, env.rs | Pure data config (Patch style) + file→env merge + provider resolution |
+| cli/ | cli.rs, display.rs, tui/, kb.rs, log.rs | Command surface: config/db/log/kb subcommands + event log TUI |
+| Underlying | error.rs, util/, infra/ | Single error type, pgvector/url/path utilities, FileCache |
 
-- `SessionManager` 在 `agent/runtime/registry.rs`，管理所有 `AgentSession` 的创建与清理
-- `get_or_create(ChatId)` → 读锁快速查找，写锁 double-check 后插入
-- session task 退出时 `JoinHandle.is_finished()` → lazy retain 自动移除
-- Session 退出后如果同 chat 又来消息，在 `get_or_create` 创建新 session
-- 所有 session 共用 `AgentEngine`（LLM client + MCP + skills），通过 `Arc` 共享
+## Evolution direction
 
-## 事件流设计
-
-两个关键事件消费路径：
-
-**Idle 路径**：`Inbox.drain()` → `scheduler.enqueue()` → `scheduler.decide()` → `dispatch(events)`
-  - 事件存入 `scheduler.queue`，debounce/window 时机成熟才 dispatch
-  - Defer → 继续等待；Done → session 退出
-
-**Active 路径**：Processing 结束后 `on_complete` / Failed / Cancelled
-  - `inbox.drain()` → `scheduler.enqueue()` → `state = Idle`
-  - 下一轮循环进 `idle_tick`，走正常 `scheduler.decide()` 调度
-
-## 层叠结构
-
-```
-error/ util/         基元层（无内部依赖）
-  util/pgvector.rs     pgvector 搜索/写入封装
-agentcore/           基础设施层（只依赖 error/config）
-  tool.rs              AgentTool trait + ToolError + 辅助函数
-  mcp.rs               McpManager（基于 rmcp SDK）
-  embedding.rs         EmbeddingService trait
-  provider.rs          genai Client 工厂
-  render/              XML/JSON/MD 渲染
-  skills/              SkillManager
-domain/              领域层（数据模型 + 业务逻辑）
-  model/               toasty 模型
-  service/             业务逻辑，直接调 toasty + sqlx（pgvector 查询）
-  vo/                  值对象
-config/              配置系统
-agent/               业务逻辑层
-  node/               agent 节点定义
-  runtime/            AgentEngine + AgentSession + ReactLoop
-  context/            提示词渲染
-  tools/              工具实现（每个模块一个工厂函数）
-platform/            平台集成
-  telegram/             TelegramPlatform::spawn() + dispatcher + handler
-app/                 应用上下文 + 启动
-```
-
-## Memory 系统
-
-所有记忆统一存入 `Memory` 表，`kind` 列区分类型：
-
-```rust
-enum MemoryKind { UserFact, Note, Knowledge }
-
-struct Memory {
-    id: Uuid,
-    chat_id: Option<i64>,
-    account_id: Option<i64>,   // UserFact 专用
-    content: String,
-    importance: i32,
-    kind: String,               // "user_fact" | "note" | "knowledge"
-    meta: Option<Json>,        // 通用元数据（references 等）
-    created_at: Timestamp,
-    updated_at: Timestamp,
-}
-```
-
-- 所有类型都嵌入（无条件），不做 type 排除
-- `MemoryService::create(kind, ...)` 统一入口，取代旧的 `MemoryInput` 枚举
-- `MemoryService::update(id, content?, importance?)` 统一更新
-- `MemoryService::search_related()` 搜索所有类型，无过滤
-
-## Tools 层
-
-所有工具实现 `agentcore::tool::AgentTool` trait：
-
-```rust
-#[async_trait]
-pub trait AgentTool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn schema(&self) -> Value;
-    async fn execute(&self, args: Value) -> Result<Value, ToolError>;
-}
-```
-
-两种实现方式：
-1. **`#[hai_macros::tool]` 宏** — 零样板。`name` 从 struct 名推导，`description` 从 doc comment 取，`schema` 从 `schemars::schema_for!` 自动生成，`execute` 反序列化后调用 `self.exec(typed)`。
-2. **手动 `impl AgentTool`**（RunShell / AnalyzeAttachment）— 因 `description()` 需要运行时拼接。
-
-MCP 工具通过 `McpServerHandle` 包装 `rmcp::model::Tool` 为 `AgentTool`。
-
-## Embedding
-
-`domain/service/` 通过 `Arc<dyn EmbeddingService>` 注入。`MultimodalService` 实现该 trait。
-
-向量存储在 `embedding vector(N)` 列中，由 `pgvector` 管理。toasty model 不感知此列，完全由 `sqlx` 读写。
-
-- `util::pgvector::search_embedding_vec()` — `SELECT ... ORDER BY embedding <-> $1::vector LIMIT $k`
-- `util::pgvector::upsert_embedding_vec() / clear_embedding_vec()` — 业务写路径
-- `rebuild` CLI 自动 `ALTER COLUMN TYPE vector(N)` + 填充 + 建 IVFFlat 索引
-- 维度 `N` 从 `[multimodal.embedding.dimension]` 读取，换模型时重跑 rebuild
-
-```
-搜索流程:
-  pgvector search_embedding_vec → Vec<(Uuid, f64)>  // (id, distance)
-  toasty in_list → Vec<Memory>                       // 完整 ORM 对象
-  Rust map → Vec<RelatedMemory>                      // 领域 VO
-```
-
-## Context 渲染顺序
-
-首轮（`build_first_run_prompt`）：
-```
-<situation> → <chat> → <accounts> → <related_memories>
-→ <related_topics> → <current_topics> → <scratchpad>
-→ <perceptions> → <conversation>
-```
-
-后续轮次（`build_next_run_prompt`）：
-```
-<update>
-  <last-round> → <toolcalls> → <notes>
-  <current_time> → <situation> → <messages>
-```
-
-## 调度策略
-
-`scheduler.rs`（pure timing engine）：
-
-| 方法 | 触发条件 | 效果 |
-|------|----------|------|
-| `is_addressed` | Direct / Mention | 刷新窗口 + 热量 |
-| `is_rapid` | Scheduled / Command | 绕过 debounce |
-| `is_mergeable` | Observe / Mention / Direct | 同类事件可合并 |
-| debounce 0.5s | 最后一次事件后等 500ms | 到达 deadline 才 dispatch |
-| Heat spend | `random < heat.value` | 概率性 dispatch（Observe） |
-
-## Bot 配置
-
-```toml
-[bot.telegram]
-bot-token = "xxx"
-allowed-chat-ids = [123456]
-```
-
-Config 覆盖链：`.hai/config.toml` → `HAI_` 环境变量 → 运行时热加载。
-`HAI_LOCAL_MODE=1` 强制使用 `.hai/`，否则回退 `$XDG_CONFIG_HOME/hai/`。
-
-## Provider
-
-- `api_key: Option<String>` — Ollama 等本地服务可省略
-- 已知 backend 需显式注册 `[providers.*]`
+- **Eliminate the agentcore → config one-way dependency**: `agentcore/mcp.rs` reads McpConfig — move the MCP config section down into agentcore or inject it via a trait, removing the last reference to config (the original agentcore↔config cycle was already broken when ProviderKind moved down into agentcore)
+- **Fix known violation 1**: the `domain/service/mod.rs` → `agent::multimodal::MultimodalService` dependency — move MultimodalService down into agentcore or isolate it through the embedding trait
+- **Startup scan interface**: chapter reopen does not do a startup-phase scan for "chats with no new messages after restart" (the spec leaves the interface open) — add a background scan component when needed (throttled to prevent startup storms)
+- **Multi-platform extension**: PlatformHandler/ContentParser traits are already isolated, adding a new platform only requires implementing the two traits
