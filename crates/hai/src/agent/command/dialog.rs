@@ -252,7 +252,10 @@ mod tests {
 
     fn digest_page(action: DigestAction) -> DialogPage {
         DialogPage::Digest {
-            state: DigestDialog::Stretch { language: None },
+            state: DigestDialog::Stretch {
+                language: None,
+                delivery: None,
+            },
             action,
         }
     }

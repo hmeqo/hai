@@ -16,14 +16,19 @@ use crate::{
     agent::{
         channel::{CallbackAnswer, ChannelAccess, ChoiceOption},
         command::{
-            CommandContext, DigestArg, MAX_DIGEST_DAYS, MIN_DIGEST_DAYS,
+            Command, CommandContext, DigestArg, MAX_DIGEST_DAYS, MIN_DIGEST_DAYS, Reply, Started,
+            SystemCommand,
             dialog::{Audience, DialogPage, PageSite, Pages, Press, rewrite_or_ask, settle},
+            execute,
         },
         host_copy::HostCopy,
         inbound::Arrival,
     },
     agentcore::Language,
-    domain::vo::{ChatId, Stretch},
+    domain::{
+        model::ChatType,
+        vo::{ChatId, Stretch},
+    },
     error::Result,
 };
 
@@ -41,9 +46,11 @@ pub(crate) async fn open(
         Some(stretch) => DigestDialog::Confirm {
             stretch,
             language: arg.language,
+            delivery: arg.delivery,
         },
         None => DigestDialog::Stretch {
             language: arg.language,
+            delivery: arg.delivery,
         },
     };
     let site = PageSite {
@@ -87,15 +94,20 @@ pub(crate) async fn apply(
         DigestAction::Back => {
             let state = DigestDialog::Stretch {
                 language: report_language,
+                delivery: state.delivery(),
             };
             let text = copy::stage_text(language, &state);
             let actions = dialog::options(language, press.site.chat_type, &state);
             (state, text, actions)
         }
         DigestAction::Take(stretch) => {
+            if let Some(delivery) = state.delivery() {
+                return submit(pages, access, ctx, &state, stretch, delivery, press).await;
+            }
             let state = DigestDialog::Confirm {
                 stretch,
                 language: report_language,
+                delivery: None,
             };
             let text = copy::stage_text(language, &state);
             let actions = dialog::options(language, press.site.chat_type, &state);
@@ -105,16 +117,7 @@ pub(crate) async fn apply(
             let DigestDialog::Confirm { stretch, .. } = &state else {
                 return stale(&*access, press).await;
             };
-            let Some(chat) = destination(delivery, press) else {
-                return refuse(&pages, &*access, press, &state).await;
-            };
-            let request = Request {
-                stretch: *stretch,
-                report_language,
-                delivery,
-                chat,
-            };
-            return start(pages, access, ctx, request, press).await;
+            return submit(pages, access, ctx, &state, *stretch, delivery, press).await;
         }
         DigestAction::Retry => {
             let DigestDialog::Failed {
@@ -124,16 +127,7 @@ pub(crate) async fn apply(
                 return stale(&*access, press).await;
             };
             let (stretch, delivery) = (*stretch, *delivery);
-            let Some(chat) = destination(delivery, press) else {
-                return refuse(&pages, &*access, press, &state).await;
-            };
-            let request = Request {
-                stretch,
-                report_language,
-                delivery,
-                chat,
-            };
-            return start(pages, access, ctx, request, press).await;
+            return submit(pages, access, ctx, &state, stretch, delivery, press).await;
         }
         // `redeliver` refuses a state that is not the undelivered one.
         DigestAction::Deliver(delivery) => {
@@ -162,34 +156,117 @@ fn destination<'a>(delivery: Delivery, press: &Press<'a>) -> Option<&'a str> {
     }
 }
 
-/// One pass as a page asked for it: the window it reads, the language of its report, and where the
-/// report lands.
-struct Request<'a> {
-    stretch: Stretch,
-    report_language: Option<Language>,
-    delivery: Delivery,
-    chat: &'a str,
+/// One pass as either UI named it: the window it reads, the language of its report, and where the
+/// report lands. A complete command line and a confirmation page both build this value.
+pub(crate) struct Request {
+    pub(crate) stretch: Stretch,
+    pub(crate) report_language: Option<Language>,
+    pub(crate) delivery: Delivery,
+    pub(crate) target: String,
+    /// The chat the request came from, and so where a notice about it goes.
+    pub(crate) origin: String,
+    /// The language of everything this request says outside the report itself.
+    pub(crate) ui_language: Language,
 }
 
-/// Starts the pass and turns the page to "running". The completion delivers the report to the
-/// destination the press named. The rewrite is best effort: the pass is already accepted, so a page
-/// the platform refuses to repaint is only logged.
-async fn start(
+/// The page a press drew, when a press is what submitted the request. The completion outlives the
+/// press, so the handles are owned.
+pub(crate) struct PageRequest {
+    pub(crate) pages: Arc<Pages>,
+    pub(crate) chat_id: ChatId,
+    pub(crate) chat_external_id: String,
+    pub(crate) chat_type: ChatType,
+    pub(crate) message_external_id: String,
+    pub(crate) query_id: String,
+}
+
+/// Submits one complete digest from a page: the same `Command` the command line builds, through the
+/// same executor and the same start. The page handles are the only difference.
+async fn submit(
     pages: Arc<Pages>,
     access: Arc<dyn ChannelAccess>,
     ctx: &CommandContext,
-    request: Request<'_>,
+    state: &DigestDialog,
+    stretch: Stretch,
+    delivery: Delivery,
     press: &Press<'_>,
+) -> Result<()> {
+    let Some(chat) = destination(delivery, press) else {
+        return refuse(&pages, &*access, press, state).await;
+    };
+    let command = Command::System(SystemCommand::Digest(DigestArg {
+        stretch: Some(stretch),
+        language: state.language(),
+        delivery: Some(delivery),
+    }));
+    let Reply::Started(Started::Digest(submitted)) = execute(ctx, command).await? else {
+        return stale(&*access, press).await;
+    };
+    let request = Request {
+        stretch: submitted.stretch,
+        report_language: submitted.language,
+        delivery: submitted.delivery,
+        target: chat.to_owned(),
+        origin: press.site.chat_external_id.to_owned(),
+        ui_language: press.site.language,
+    };
+    let page = PageRequest {
+        pages,
+        chat_id: press.site.chat_id,
+        chat_external_id: press.site.chat_external_id.to_owned(),
+        chat_type: press.site.chat_type,
+        message_external_id: press.message_external_id.to_owned(),
+        query_id: press.query_id.to_owned(),
+    };
+    start(ctx, access, request, Some(page)).await
+}
+
+/// Starts the pass and tells the person it is running. The completion delivers the report to the
+/// destination the request named, and turns the page (when there is one) into its outcome. The
+/// rewrite is best effort: the pass is already accepted, so a page the platform refuses to repaint
+/// is only logged.
+pub(crate) async fn start(
+    ctx: &CommandContext,
+    access: Arc<dyn ChannelAccess>,
+    request: Request,
+    page: Option<PageRequest>,
 ) -> Result<()> {
     let Request {
         stretch,
         report_language,
         delivery,
-        chat,
+        target,
+        origin,
+        ui_language,
     } = request;
-    let site = press.site;
-    let language = site.language;
     let running = DigestDialog::Running { stretch, delivery };
+    let query_id = page.as_ref().map(|page| page.query_id.clone());
+
+    if let Some(page) = &page {
+        let site = PageSite {
+            chat_id: page.chat_id,
+            chat_external_id: &page.chat_external_id,
+            chat_type: page.chat_type,
+            language: ui_language,
+        };
+        if let Err(e) = access
+            .edit_choice(
+                site.chat_external_id,
+                &page.message_external_id,
+                &copy::stage_text(ui_language, &running),
+                &[],
+            )
+            .await
+        {
+            tracing::warn!(chat_id = %site.chat_id, error = %e, "the running page could not be drawn");
+        }
+    } else if let Err(e) = access
+        .notice(&origin, &copy::stage_text(ui_language, &running))
+        .await
+    {
+        tracing::warn!(error = %e, "the digest could not announce that it is running");
+    }
+
     match ctx
         .agents
         .get_or_create(ctx.chat_id)
@@ -197,83 +274,144 @@ async fn start(
         .request_digest(stretch, report_language)
     {
         Ok(reply) => {
-            if let Err(e) = access
-                .edit_choice(
-                    site.chat_external_id,
-                    press.message_external_id,
-                    &copy::stage_text(language, &running),
-                    &[],
-                )
-                .await
-            {
-                tracing::warn!(chat_id = %site.chat_id, error = %e, "the running page could not be drawn");
-            }
-            let message_external_id = press.message_external_id.to_owned();
-            // The completion outlives this call, so it carries the site and its own handle to the
-            // channel.
-            let chat_external_id = site.chat_external_id.to_owned();
-            let target = chat.to_owned();
             let reply_access = access.clone();
             tokio::spawn(async move {
-                let site = PageSite {
-                    chat_external_id: &chat_external_id,
-                    ..site
-                };
                 if delivery == Delivery::Person
                     && let Err(e) = reply_access
-                        .notice(&target, &copy::dm_queued(language))
+                        .notice(&target, &copy::dm_queued(ui_language))
                         .await
                 {
-                    tracing::warn!(chat_id = %site.chat_id, error = %e, "digest notice could not be delivered");
+                    tracing::warn!(error = %e, "digest notice could not be delivered");
                 }
+                // The page the press drew, when there is one; the completion renders its outcome
+                // here because it outlives the press.
+                let site = page.as_ref().map(|page| PageSite {
+                    chat_id: page.chat_id,
+                    chat_external_id: &page.chat_external_id,
+                    chat_type: page.chat_type,
+                    language: ui_language,
+                });
                 match reply.await {
-                    Ok(Ok(report)) => {
-                        DeliveryJob {
-                            access: &*reply_access,
-                            pages: &pages,
-                            site,
-                            message_external_id: &message_external_id,
-                            delivery,
-                            target: &target,
+                    Ok(Ok(report)) => match (page.as_ref(), site) {
+                        (Some(page), Some(site)) => {
+                            DeliveryJob {
+                                access: &*reply_access,
+                                pages: &page.pages,
+                                site,
+                                message_external_id: &page.message_external_id,
+                                delivery,
+                                target: &target,
+                            }
+                            .send(stretch, &report.text, report.truncated)
+                            .await;
                         }
-                        .send(stretch, &report.text, report.truncated)
-                        .await;
-                    }
-                    Ok(Err(error)) => {
-                        let state = DigestDialog::Failed {
-                            stretch,
-                            error: error.into(),
-                            language: report_language,
-                            delivery,
-                        };
-                        draw_page(&*reply_access, &pages, site, &message_external_id, &state).await;
-                    }
+                        _ => {
+                            let caption = copy::caption(ui_language, stretch, report.truncated);
+                            if let Err(e) = reply_access
+                                .notice_document(
+                                    &target,
+                                    &copy::filename(stretch),
+                                    report.text.as_bytes().to_vec(),
+                                    &caption,
+                                )
+                                .await
+                            {
+                                let _ = reply_access
+                                    .notice(
+                                        &origin,
+                                        &copy::undelivered(ui_language, &e.to_string()),
+                                    )
+                                    .await;
+                            }
+                        }
+                    },
+                    Ok(Err(error)) => match (page.as_ref(), site) {
+                        (Some(page), Some(site)) => {
+                            let state = DigestDialog::Failed {
+                                stretch,
+                                error: error.into(),
+                                language: report_language,
+                                delivery,
+                            };
+                            draw_page(
+                                &*reply_access,
+                                &page.pages,
+                                site,
+                                &page.message_external_id,
+                                &state,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            let _ = reply_access
+                                .notice(&origin, &copy::failed(ui_language, &error))
+                                .await;
+                        }
+                    },
                     // The chat agent dropped the request; a restart is the ordinary reason.
-                    Err(_) => {
-                        let state = DigestDialog::Failed {
-                            stretch,
-                            error: copy::interrupted(language).into(),
-                            language: report_language,
-                            delivery,
-                        };
-                        draw_page(&*reply_access, &pages, site, &message_external_id, &state).await;
-                    }
+                    Err(_) => match (page.as_ref(), site) {
+                        (Some(page), Some(site)) => {
+                            let state = DigestDialog::Failed {
+                                stretch,
+                                error: copy::interrupted(ui_language).into(),
+                                language: report_language,
+                                delivery,
+                            };
+                            draw_page(
+                                &*reply_access,
+                                &page.pages,
+                                site,
+                                &page.message_external_id,
+                                &state,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            let _ = reply_access
+                                .notice(&origin, &copy::interrupted(ui_language))
+                                .await;
+                        }
+                    },
                 }
             });
         }
-        Err(e) => {
-            let failed = DigestDialog::Failed {
-                stretch,
-                error: e.to_string().into(),
-                language: report_language,
-                delivery,
-            };
-            draw_page(&*access, &pages, site, press.message_external_id, &failed).await;
-        }
+        Err(e) => match &page {
+            Some(page) => {
+                let site = PageSite {
+                    chat_id: page.chat_id,
+                    chat_external_id: &page.chat_external_id,
+                    chat_type: page.chat_type,
+                    language: ui_language,
+                };
+                let failed = DigestDialog::Failed {
+                    stretch,
+                    error: e.to_string().into(),
+                    language: report_language,
+                    delivery,
+                };
+                draw_page(
+                    &*access,
+                    &page.pages,
+                    site,
+                    &page.message_external_id,
+                    &failed,
+                )
+                .await;
+            }
+            None => {
+                let _ = access
+                    .notice(&origin, &copy::failed(ui_language, &e.to_string()))
+                    .await;
+            }
+        },
     }
-    access
-        .answer_callback(press.query_id, CallbackAnswer::Quiet)
-        .await
+
+    if let Some(query_id) = query_id {
+        access
+            .answer_callback(&query_id, CallbackAnswer::Quiet)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Draws one page where its message stands, tokens fresh; a rewrite the platform refuses goes out
@@ -549,6 +687,7 @@ mod tests {
             DigestArg {
                 stretch: None,
                 language: None,
+                delivery: None,
             },
             Language::Zh,
         )
@@ -562,6 +701,7 @@ mod tests {
             DigestArg {
                 stretch: Some(WEEK),
                 language: None,
+                delivery: None,
             },
             Language::En,
         )
@@ -595,6 +735,7 @@ mod tests {
             DigestArg {
                 stretch: Some(WEEK),
                 language: Some(Language::Ja),
+                delivery: None,
             },
             Language::En,
         )
@@ -677,6 +818,7 @@ mod tests {
         let confirm = DigestDialog::Confirm {
             stretch: WEEK,
             language: None,
+            delivery: None,
         };
         let options = page(&pages, group_site(), &confirm);
         assert_eq!(options.len(), 4, "two destinations, back and close");

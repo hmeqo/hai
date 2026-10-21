@@ -60,6 +60,10 @@ impl ChannelAccess for RecordingAccess {
         true
     }
 
+    fn command_prefix(&self) -> &'static str {
+        "/"
+    }
+
     async fn notice(&self, _chat_external_id: &str, _text: &str) -> Result<()> {
         Ok(())
     }

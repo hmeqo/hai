@@ -40,6 +40,7 @@ pub(crate) fn stage_text(language: Language, dialog: &DigestDialog) -> String {
         DigestDialog::Confirm {
             stretch,
             language: report,
+            ..
         } => {
             let line = stretch_line(language, *stretch);
             let report = report
@@ -106,6 +107,17 @@ pub(crate) fn empty(language: Language) -> String {
 /// material.
 pub(crate) fn truncated(language: Language) -> String {
     TRUNCATED.get(language.text_catalog()).into()
+}
+
+/// The pass failed, in its own words: the notice a command line gets where a page cannot show it.
+pub(crate) fn failed(language: Language, error: &str) -> String {
+    (FAILED_PAGE.get(language.text_catalog()))(error)
+}
+
+/// The pass wrote its report but the platform refused the delivery: there is no page to keep it on,
+/// so the failure is the whole message.
+pub(crate) fn undelivered(language: Language, error: &str) -> String {
+    (UNDELIVERED_CHAT_PAGE.get(language.text_catalog()))(error)
 }
 
 /// The chat agent went away while the pass was running, which a restart explains.
@@ -271,10 +283,14 @@ mod tests {
     fn a_digest_writes_a_report() {
         let week = Stretch::Last { secs: 7 * 86_400 };
         let pages = [
-            DigestDialog::Stretch { language: None },
+            DigestDialog::Stretch {
+                language: None,
+                delivery: None,
+            },
             DigestDialog::Confirm {
                 stretch: week,
                 language: None,
+                delivery: None,
             },
             DigestDialog::Running {
                 stretch: week,
@@ -352,6 +368,7 @@ mod tests {
         let page = |language| DigestDialog::Confirm {
             stretch: week,
             language,
+            delivery: None,
         };
         let named = |language: Language, catalog| language.names().get(catalog).as_str().to_owned();
 

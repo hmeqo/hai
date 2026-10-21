@@ -19,11 +19,17 @@ pub(crate) enum Delivery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DigestDialog {
     /// Choosing the stretch.
-    Stretch { language: Option<Language> },
+    Stretch {
+        language: Option<Language>,
+        /// The destination a command line already named, when it did.
+        delivery: Option<Delivery>,
+    },
     /// About to run.
     Confirm {
         stretch: Stretch,
         language: Option<Language>,
+        /// The destination a command line already named, when it did.
+        delivery: Option<Delivery>,
     },
     /// The pass is running, and where its report will land once it is written.
     Running {
@@ -51,11 +57,28 @@ impl DigestDialog {
     /// The report language this page was asked for, when it was named.
     pub(crate) fn language(&self) -> Option<Language> {
         match *self {
-            Self::Stretch { language }
+            Self::Stretch { language, .. }
             | Self::Confirm { language, .. }
             | Self::Failed { language, .. } => language,
             Self::Running { .. } | Self::Undelivered { .. } => None,
         }
+    }
+
+    pub(crate) fn delivery(&self) -> Option<Delivery> {
+        match *self {
+            Self::Stretch { delivery, .. } | Self::Confirm { delivery, .. } => delivery,
+            Self::Running { delivery, .. } | Self::Failed { delivery, .. } => Some(delivery),
+            Self::Undelivered { target, .. } => Some(target),
+        }
+    }
+}
+
+/// The label a named destination's start button reads, in the chat's kind.
+fn start_label(labels: &copy::DigestLabels, private: bool, delivery: Delivery) -> &'static str {
+    match (delivery, private) {
+        (Delivery::Person, _) => labels.dm,
+        (Delivery::Chat, true) => labels.start,
+        (Delivery::Chat, false) => labels.here,
     }
 }
 
@@ -66,7 +89,7 @@ pub(crate) enum DigestAction {
     Back,
     /// The advice that another stretch is typed as `/digest <days>`.
     Custom,
-    /// Take this stretch and ask for the confirmation.
+    /// Take this stretch; a named delivery starts it, otherwise it asks for the confirmation.
     Take(Stretch),
     /// Run the pass and deliver its report to this destination.
     Start(Delivery),
@@ -78,7 +101,7 @@ pub(crate) enum DigestAction {
 }
 
 /// One page's buttons, in the order they are shown; the layout is the platform's. The chat's kind
-/// decides what the delivery button promises.
+/// and any named delivery decide what the start button promises.
 pub(crate) fn options(
     language: Language,
     chat_type: ChatType,
@@ -95,6 +118,17 @@ pub(crate) fn options(
                 (labels.close.to_owned(), DigestAction::Close),
             ])
             .collect(),
+        DigestDialog::Confirm {
+            delivery: Some(delivery),
+            ..
+        } => vec![
+            (
+                start_label(&labels, private, delivery).to_owned(),
+                DigestAction::Start(delivery),
+            ),
+            (labels.back.to_owned(), DigestAction::Back),
+            (labels.close.to_owned(), DigestAction::Close),
+        ],
         DigestDialog::Confirm { .. } if private => vec![
             (labels.start.to_owned(), DigestAction::Start(Delivery::Chat)),
             (labels.back.to_owned(), DigestAction::Back),
@@ -160,7 +194,10 @@ mod tests {
         let week = Stretch::Last { secs: 7 * 86_400 };
 
         assert_eq!(
-            actions(DigestDialog::Stretch { language: None }),
+            actions(DigestDialog::Stretch {
+                language: None,
+                delivery: None,
+            }),
             vec![
                 DigestAction::Take(Stretch::Last { secs: 86_400 }),
                 DigestAction::Take(week),
@@ -173,6 +210,7 @@ mod tests {
             actions(DigestDialog::Confirm {
                 stretch: week,
                 language: None,
+                delivery: None,
             }),
             vec![
                 DigestAction::Start(Delivery::Person),
@@ -231,6 +269,7 @@ mod tests {
         let confirm = DigestDialog::Confirm {
             stretch: week,
             language: None,
+            delivery: None,
         };
         let buttons = |chat_type| {
             options(Language::Zh, chat_type, &confirm)
@@ -254,6 +293,57 @@ mod tests {
         assert_eq!(
             group[1],
             ("发到本群".to_owned(), DigestAction::Start(Delivery::Chat))
+        );
+    }
+
+    /// A destination the command line already named is not asked again: the confirmation offers that
+    /// one start, back and close.
+    #[test]
+    fn a_named_destination_is_not_asked_again() {
+        let week = Stretch::Last { secs: 7 * 86_400 };
+        let confirm = |delivery| DigestDialog::Confirm {
+            stretch: week,
+            language: None,
+            delivery: Some(delivery),
+        };
+        let actions = |delivery| {
+            options(Language::En, ChatType::Group, &confirm(delivery))
+                .into_iter()
+                .map(|(_, action)| action)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actions(Delivery::Person),
+            vec![
+                DigestAction::Start(Delivery::Person),
+                DigestAction::Back,
+                DigestAction::Close
+            ]
+        );
+        assert_eq!(
+            actions(Delivery::Chat),
+            vec![
+                DigestAction::Start(Delivery::Chat),
+                DigestAction::Back,
+                DigestAction::Close
+            ]
+        );
+
+        assert_eq!(
+            DigestDialog::Stretch {
+                language: None,
+                delivery: Some(Delivery::Person),
+            }
+            .delivery(),
+            Some(Delivery::Person)
+        );
+        assert_eq!(
+            DigestDialog::Stretch {
+                language: None,
+                delivery: None,
+            }
+            .delivery(),
+            None
         );
     }
 

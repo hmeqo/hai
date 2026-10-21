@@ -14,8 +14,9 @@ use crate::{
     agent::{
         channel::{CallbackAnswer, ChannelAccess, ChoiceOption, DeleteReport},
         command::{
-            CommandContext, PurgeArg,
+            Command, CommandContext, PurgeArg, Reply, Started, SystemCommand,
             dialog::{Audience, DialogPage, PageSite, Pages, Press, settle},
+            execute,
         },
         host_copy::HostCopy,
         inbound::Arrival,
@@ -127,8 +128,25 @@ pub(crate) async fn apply(
     .await
 }
 
-/// A confirmed purge becomes one change in the accumulation and rings the chat: the wipe itself
-/// is the chat's own work, so a restart before it runs reads the change and runs it then.
+/// A confirmed purge becomes one change in the accumulation and rings the chat: the wipe itself is
+/// the chat's own work, so a restart before it runs reads the change and runs it then. The
+/// confirmation page and a complete `--yes` command line submit the same `PurgeSpec` here.
+pub(crate) async fn queue(ctx: &CommandContext, spec: PurgeSpec) -> Result<()> {
+    let entry = ChatEntry::new(
+        EntryAudience::Agent,
+        EntryKind::Purge(spec),
+        jiff::Timestamp::now(),
+    );
+    ctx.services
+        .conversation
+        .append_entry(ctx.chat_id, &entry)
+        .await?;
+    ctx.agents.get_or_create(ctx.chat_id).await.notify();
+    Ok(())
+}
+
+/// One button press that confirmed the page: the same spec the command line submits, then the page
+/// is settled with the receipt.
 async fn confirm(
     ctx: &CommandContext,
     access: &dyn ChannelAccess,
@@ -146,18 +164,20 @@ async fn confirm(
             )
             .await;
     };
-    let spec = PurgeSpec { range, surfaces };
-    let entry = ChatEntry::new(
-        EntryAudience::Agent,
-        EntryKind::Purge(spec),
-        jiff::Timestamp::now(),
-    );
-    if let Err(e) = ctx
-        .services
-        .conversation
-        .append_entry(ctx.chat_id, &entry)
-        .await
-    {
+    let command = Command::System(SystemCommand::Purge(PurgeArg {
+        range: Some(range),
+        surfaces,
+        yes: true,
+    }));
+    let Reply::Started(Started::Purge(spec)) = execute(ctx, command).await? else {
+        return access
+            .answer_callback(
+                press.query_id,
+                CallbackAnswer::Toast(&HostCopy::DialogStale.render(site.language)),
+            )
+            .await;
+    };
+    if let Err(e) = queue(ctx, spec).await {
         tracing::warn!(chat_id = %site.chat_id, error = %e, "a confirmed purge could not be queued");
         return access
             .answer_callback(
@@ -166,7 +186,6 @@ async fn confirm(
             )
             .await;
     }
-    ctx.agents.get_or_create(ctx.chat_id).await.notify();
 
     settle(
         access,

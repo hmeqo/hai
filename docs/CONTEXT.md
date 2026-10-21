@@ -129,7 +129,7 @@ _Avoid_: "event" (the `event` table is the agent's audit trail)
 
 **WakeReason**: how one accumulated change reads: Observe, Direct, Mention, Scheduled or Command. Who a change was aimed at decides it, and a private chat always reads as Direct.
 
-**command table**: the agent's declaration of every command it offers — one row per command in `agent/command/spec.rs:DECLARATIONS`: wire name and aliases, menu copy (`agent/command/menu.rs`), the parse that reads its payload, and the `Interaction` it needs from a platform. A platform advertises the rows its `ChannelCapabilities` can run and merges its own declarations in front of them (`/start`).
+**command table**: the agent's declaration of every command it offers — one row per command in `agent/command/spec.rs:DECLARATIONS`: wire name and aliases, menu copy (`agent/command/menu.rs`), the positionals and long options it accepts (`agent/command/args.rs`), the parse that turns them into a `Command`, and the complete examples its `--help` shows. Every row has one complete command line; a page of buttons only collects the same arguments and never replaces the line. A platform advertises the rows and merges its own declarations in front of them (`/start`).
 _Avoid_: "command list", "registry" (the agent registry is a different thing)
 
 **command declaration**: one row of the **command table** — what a platform advertises in its menu and what the agent resolves a typed name through. A platform's own commands are declarations of its own (Telegram's `/start`), listed before the agent's.

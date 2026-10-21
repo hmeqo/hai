@@ -217,6 +217,10 @@ impl ChannelAccess for TelegramAdapter {
             .is_ok_and(|id| self.allowed_chat_ids.contains(&id))
     }
 
+    fn command_prefix(&self) -> &'static str {
+        "/"
+    }
+
     /// One message the host composes itself: delivered, never stored, and never pointing at anything.
     async fn notice(&self, chat_external_id: &str, text: &str) -> Result<()> {
         let cid = Self::chat_id(chat_external_id)?;

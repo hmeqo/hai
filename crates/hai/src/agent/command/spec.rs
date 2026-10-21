@@ -1,45 +1,51 @@
-//! The command identity: one declaration per command — its wire names, its menu copy, how a payload
-//! is read, and what answering it takes from the platform.
+//! The command table: one declaration per command.
 
 use crate::{
-    agent::{
-        channel::ChannelCapabilities,
-        command::{Invocation, menu, parse},
+    agent::command::{
+        Invocation,
+        args::Grammar,
+        menu,
+        parse::{self, DIGEST_GRAMMAR, EXPLAIN_GRAMMAR, LANG_GRAMMAR, PURGE_GRAMMAR},
     },
     agentcore::PerCatalog,
 };
 
-/// What answering a command takes from the platform: a reply it can show, or a page of choices it
-/// must put out and read a press back from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Interaction {
-    Answer,
-    Choices,
-}
-
-impl Interaction {
-    /// Whether a platform with these capabilities can run a command that needs this.
-    pub(crate) fn supported_by(self, capabilities: ChannelCapabilities) -> bool {
-        match self {
-            Self::Answer => true,
-            Self::Choices => capabilities.choices,
-        }
-    }
-}
-
-/// One command the agent offers, as data: what a platform advertises, and what the agent reads.
+/// One command the agent offers, as data.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Declaration {
     /// The wire name, without the platform's prefix.
-    pub name: &'static str,
+    pub(crate) name: &'static str,
     /// Other spellings the same command answers to.
-    pub aliases: &'static [&'static str],
+    pub(crate) aliases: &'static [&'static str],
     /// The menu copy, per client catalog.
-    pub copy: PerCatalog<&'static str>,
-    /// How a payload becomes an invocation.
-    pub parse: fn(&str) -> Invocation,
-    /// What answering it takes from the platform.
-    pub interaction: Interaction,
+    pub(crate) copy: PerCatalog<&'static str>,
+    pub(crate) grammar: Grammar,
+    /// Complete payloads, written without the command name or the platform prefix: the forms a
+    /// person can type as they stand. A page-only form is not an example.
+    pub(crate) examples: &'static [&'static str],
+    pub(crate) parse: fn(&str) -> Invocation,
+}
+
+impl Declaration {
+    /// The form a person types, derived from the grammar.
+    pub(crate) fn synopsis(&self) -> String {
+        self.grammar.synopsis(self.name)
+    }
+
+    /// The complete forms as the help prints them, behind the platform's own prefix.
+    pub(crate) fn example_lines(&self, prefix: &str) -> Vec<String> {
+        self.examples
+            .iter()
+            .map(|payload| {
+                let line = format!("{prefix}{}", self.name);
+                if payload.is_empty() {
+                    line
+                } else {
+                    format!("{line} {payload}")
+                }
+            })
+            .collect()
+    }
 }
 
 /// Every command the agent offers, in the order a menu lists them.
@@ -48,43 +54,49 @@ pub(crate) const DECLARATIONS: [Declaration; 6] = [
         name: "status",
         aliases: &[],
         copy: menu::STATUS_COPY,
+        grammar: Grammar::NONE,
+        examples: &[],
         parse: parse::status,
-        interaction: Interaction::Answer,
     },
     Declaration {
         name: "lang",
         aliases: &[],
         copy: menu::LANG_COPY,
+        grammar: LANG_GRAMMAR,
+        examples: &["zh", "--reset"],
         parse: parse::lang,
-        interaction: Interaction::Answer,
     },
     Declaration {
         name: "purge",
         aliases: &[],
         copy: menu::PURGE_COPY,
+        grammar: PURGE_GRAMMAR,
+        examples: &["7d --yes", "all --surfaces agent,files --yes"],
         parse: parse::purge,
-        interaction: Interaction::Choices,
     },
     Declaration {
         name: "organizememory",
         aliases: &[],
         copy: menu::ORGANIZE_MEMORY_COPY,
+        grammar: Grammar::NONE,
+        examples: &[],
         parse: parse::organize_memory,
-        interaction: Interaction::Answer,
     },
     Declaration {
         name: "explain",
         aliases: &["explan"],
         copy: menu::EXPLAIN_COPY,
+        grammar: EXPLAIN_GRAMMAR,
+        examples: &["the last plan", "-- --verbose"],
         parse: parse::explain,
-        interaction: Interaction::Answer,
     },
     Declaration {
         name: "digest",
         aliases: &[],
         copy: menu::DIGEST_COPY,
+        grammar: DIGEST_GRAMMAR,
+        examples: &["7d", "7d --to me --lang en"],
         parse: parse::digest,
-        interaction: Interaction::Choices,
     },
 ];
 
@@ -133,37 +145,101 @@ mod tests {
         assert!(find("unknown").is_none());
     }
 
-    /// Only a command that draws a page needs a platform that can show one.
+    /// Every command's synopsis is the one a person can type on any platform.
     #[test]
-    fn only_the_paged_commands_need_choices() {
-        let mut paged: Vec<&str> = DECLARATIONS
+    fn every_command_spells_its_own_form() {
+        let synopses: Vec<(&str, String)> = DECLARATIONS
             .iter()
-            .filter(|declared| declared.interaction == Interaction::Choices)
-            .map(|declared| declared.name)
+            .map(|declared| (declared.name, declared.synopsis()))
             .collect();
-        paged.sort_unstable();
-        assert_eq!(paged, ["digest", "purge"]);
+        assert_eq!(
+            synopses,
+            [
+                ("status", "status".to_owned()),
+                ("lang", "lang [CODE] [--reset]".to_owned()),
+                (
+                    "purge",
+                    "purge [RANGE] [--surfaces LIST] [--yes]".to_owned()
+                ),
+                ("organizememory", "organizememory".to_owned()),
+                ("explain", "explain [--] [TEXT...]".to_owned()),
+                (
+                    "digest",
+                    "digest [RANGE] [--lang CODE] [--to here|me]".to_owned()
+                ),
+            ]
+        );
+    }
 
-        let without = ChannelCapabilities {
-            forms: &[],
-            reference: false,
-            quote: false,
-            max_media_bytes: 0,
-            choices: false,
-        };
-        let with = ChannelCapabilities {
-            choices: true,
-            ..without
-        };
-        for declared in &DECLARATIONS {
-            let needs = declared.interaction == Interaction::Choices;
-            assert_eq!(
-                declared.interaction.supported_by(without),
-                !needs,
-                "{}",
-                declared.name
+    /// Every command has a line that names everything it needs: the form a platform without pages
+    /// answers with, and the one a page only shortens.
+    #[test]
+    fn every_command_has_a_complete_line() {
+        let complete = [
+            ("status", ""),
+            ("lang", "zh"),
+            ("purge", "7d --yes"),
+            ("organizememory", ""),
+            ("explain", "something worth explaining"),
+            ("digest", "7d --to here"),
+        ];
+        for (name, payload) in complete {
+            let declared = find(name).expect("a declared command");
+            assert!(
+                matches!((declared.parse)(payload), Invocation::Ready(_)),
+                "/{name} {payload}"
             );
-            assert!(declared.interaction.supported_by(with), "{}", declared.name);
         }
+    }
+
+    /// A command that takes a payload shows at least one complete form, and every example reads.
+    #[test]
+    fn every_argument_command_shows_an_example() {
+        for declared in &DECLARATIONS {
+            let takes_payload = !declared.grammar.positionals.is_empty()
+                || !declared.grammar.options.is_empty()
+                || declared.grammar.raw_tail;
+            if takes_payload {
+                assert!(
+                    !declared.examples.is_empty(),
+                    "{} takes a payload but shows no example",
+                    declared.name
+                );
+            }
+            for example in declared.examples {
+                assert!(
+                    matches!((declared.parse)(example), Invocation::Ready(_)),
+                    "/{} {example}",
+                    declared.name
+                );
+            }
+        }
+    }
+
+    /// The help prints the examples behind the platform's own prefix, and none for a command that
+    /// takes no payload.
+    #[test]
+    fn examples_carry_the_platform_prefix() {
+        let purge = find("purge").expect("a declared command");
+        assert_eq!(
+            purge.example_lines("/"),
+            vec![
+                "/purge 7d --yes".to_owned(),
+                "/purge all --surfaces agent,files --yes".to_owned(),
+            ]
+        );
+        assert_eq!(
+            purge.example_lines("!"),
+            vec![
+                "!purge 7d --yes".to_owned(),
+                "!purge all --surfaces agent,files --yes".to_owned(),
+            ]
+        );
+        assert!(
+            find("status")
+                .expect("a declared command")
+                .example_lines("!")
+                .is_empty()
+        );
     }
 }

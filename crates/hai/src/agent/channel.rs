@@ -268,6 +268,9 @@ pub trait Channel: Debug + Send + Sync + 'static {
 pub trait ChannelAccess: Debug + Send + Sync + 'static {
     /// Whether this chat may use the channel; the allowlist spelling is the platform's own.
     fn admits(&self, chat_external_id: &str) -> bool;
+    /// How this platform spells a command: `/` where a slash line is the convention, `!` where it is
+    /// not. Host copy that names a form prints it with this prefix.
+    fn command_prefix(&self) -> &'static str;
     /// Delivers host copy (a greeting, an unauthorized notice); never stored.
     async fn notice(&self, chat_external_id: &str, text: &str) -> Result<()>;
     /// Puts copy out with a row of buttons under it. Host copy like any other: delivered, never

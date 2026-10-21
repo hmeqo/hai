@@ -4,9 +4,9 @@
 use strum::IntoEnumIterator;
 use teloxide::{Bot, payloads::SetMyCommandsSetters, prelude::Requester, types::BotCommand};
 
-use super::super::{inbound::command::OWN_COMMANDS, wire::adapter::TELEGRAM_CAPABILITIES};
+use super::super::inbound::command::OWN_COMMANDS;
 use crate::{
-    agent::{channel::ChannelCapabilities, command::DECLARATIONS},
+    agent::command::DECLARATIONS,
     agentcore::{Language, TextCatalog},
 };
 
@@ -28,13 +28,11 @@ pub(in crate::platform::telegram) fn scopes() -> Vec<(Option<&'static str>, Text
 }
 
 /// The menu Telegram shows a client: the commands this platform owns outright, then the agent's
-/// declarations the channel can actually run, in declaration order. The name goes without the slash —
-/// Telegram's `BotCommand.command` allows only lowercase letters, digits and underscores — and the
-/// client renders the slash itself.
-pub(in crate::platform::telegram) fn bot_commands(
-    catalog: TextCatalog,
-    capabilities: ChannelCapabilities,
-) -> Vec<BotCommand> {
+/// declarations in declaration order. The name goes without the slash — Telegram's
+/// `BotCommand.command` allows only lowercase letters, digits and underscores — and the client
+/// renders the slash itself. A command whose bare form opens a page is listed here too: the menu is
+/// a UI index, not the command contract, and its complete command line works everywhere.
+pub(in crate::platform::telegram) fn bot_commands(catalog: TextCatalog) -> Vec<BotCommand> {
     let mut commands: Vec<BotCommand> = OWN_COMMANDS
         .iter()
         .map(|(name, copy)| BotCommand::new(*name, copy.get(catalog)))
@@ -42,7 +40,6 @@ pub(in crate::platform::telegram) fn bot_commands(
     commands.extend(
         DECLARATIONS
             .iter()
-            .filter(|declared| declared.interaction.supported_by(capabilities))
             .map(|declared| BotCommand::new(declared.name, declared.copy.get(catalog))),
     );
     commands
@@ -52,7 +49,7 @@ pub(in crate::platform::telegram) fn bot_commands(
 /// older menu.
 pub(in crate::platform::telegram) async fn install(bot: &Bot) {
     for (language_code, catalog) in scopes() {
-        let request = bot.set_my_commands(bot_commands(catalog, TELEGRAM_CAPABILITIES));
+        let request = bot.set_my_commands(bot_commands(catalog));
         let result = match language_code {
             Some(code) => request.language_code(code).await,
             None => request.await,
@@ -78,7 +75,7 @@ mod tests {
     #[test]
     fn menu_lists_every_command_by_its_bare_name() {
         for catalog in TextCatalog::iter() {
-            let listed: Vec<String> = bot_commands(catalog, TELEGRAM_CAPABILITIES)
+            let listed: Vec<String> = bot_commands(catalog)
                 .into_iter()
                 .map(|command| command.command)
                 .collect();
@@ -101,25 +98,5 @@ mod tests {
                 "the menu lists the two tables and nothing else"
             );
         }
-    }
-
-    /// A channel that cannot put out a page of buttons does not advertise the commands that need one.
-    #[test]
-    fn a_platform_without_choices_hides_the_paged_commands() {
-        let listed: Vec<String> = bot_commands(
-            TextCatalog::En,
-            ChannelCapabilities {
-                choices: false,
-                ..TELEGRAM_CAPABILITIES
-            },
-        )
-        .into_iter()
-        .map(|command| command.command)
-        .collect();
-
-        assert_eq!(
-            listed,
-            ["start", "status", "lang", "organizememory", "explain"]
-        );
     }
 }

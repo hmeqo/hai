@@ -73,13 +73,18 @@ pub(crate) enum HostCopy {
     LanguageUnsupported,
     /// The agent's own status block, which is absent when the agent is not running.
     Status(Option<String>),
-    /// Why a command's payload could not be read.
-    BadArgs(ArgError),
+    BadArgs {
+        error: ArgError,
+        usage: String,
+    },
+    Usage {
+        about: &'static PerCatalog<&'static str>,
+        usage: String,
+        examples: Vec<String>,
+    },
     /// A button whose page is gone, and one whose dialog belongs to somebody else.
     DialogStale,
     DialogForeign,
-    /// A command this channel cannot run: the platform cannot put out the page it needs.
-    Unsupported(&'static str),
 }
 
 impl HostCopy {
@@ -97,10 +102,27 @@ impl HostCopy {
             Self::LanguageUnsupported => LANGUAGE_UNSUPPORTED.get(catalog).into(),
             Self::Status(None) => STATUS_EMPTY.get(catalog).into(),
             Self::Status(Some(body)) => body,
-            Self::BadArgs(err) => (BAD_ARGS.get(catalog))(&err),
+            Self::BadArgs { error, usage } => {
+                format!("{}\n{usage}", (BAD_ARGS.get(catalog))(&error))
+            }
+            Self::Usage {
+                about,
+                usage,
+                examples,
+            } => {
+                let mut text = format!("{}\n{usage}", about.get(catalog));
+                if !examples.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(EXAMPLES.get(catalog));
+                    for example in examples {
+                        text.push('\n');
+                        text.push_str(&example);
+                    }
+                }
+                text
+            }
             Self::DialogStale => DIALOG_STALE.get(catalog).into(),
             Self::DialogForeign => DIALOG_FOREIGN.get(catalog).into(),
-            Self::Unsupported(name) => (UNSUPPORTED.get(catalog))(name),
         }
     }
 }
@@ -140,42 +162,56 @@ const DIALOG_FOREIGN: PerCatalog<&'static str> = PerCatalog {
     en: "that dialog belongs to somebody else.",
 };
 
-/// A command whose page this channel cannot put out: the name it was typed under, in the chat's own
-/// language.
-const UNSUPPORTED: PerCatalog<fn(&str) -> String> = PerCatalog {
-    zh: |name| format!("当前平台不支持 /{name}。"),
-    en: |name| format!("this platform does not support /{name}."),
+const EXAMPLES: PerCatalog<&'static str> = PerCatalog {
+    zh: "示例：",
+    en: "Examples:",
 };
 
 fn bad_args_zh(err: &ArgError) -> String {
     match err {
-        ArgError::UnknownFlag(token) => format!("未知参数 `{token}`。"),
-        ArgError::MissingValue(name) => format!("`--{name}` 需要一个值。"),
-        ArgError::UnexpectedValue(name) => format!("`--{name}` 不接受值。"),
-        ArgError::Duplicate(name) => format!("`--{name}` 给了两次。"),
-        ArgError::Conflict(first, second) => format!("`--{first}` 和 `--{second}` 不能同时给。"),
-        ArgError::ExtraPositional(token) => format!("多出来的参数：`{token}`。"),
-        ArgError::BadValue { arg, value } => format!("`--{arg}` 读不出值：`{value}`。"),
-        ArgError::OutOfRange { arg, value, max } => {
-            format!("`--{arg}` 最多 {max}，收到 `{value}`。")
+        ArgError::UnknownOption(token) => format!("未知参数 `{token}`。"),
+        ArgError::MissingValue(name) => format!("`{}` 需要一个值。", name.render()),
+        ArgError::UnexpectedValue(name) => format!("`{}` 不接受值。", name.render()),
+        ArgError::Duplicate(name) => format!("`{}` 给了两次。", name.render()),
+        ArgError::Conflict(first, second) => {
+            format!("`{}` 和 `{}` 不能同时给。", first.render(), second.render())
         }
+        ArgError::ExtraPositional(token) => format!("多出来的参数：`{token}`。"),
+        ArgError::MissingArgument(name) => format!("缺少 `{}`。", name.render()),
+        ArgError::BadValue { arg, value } => {
+            format!("`{}` 读不出值：`{value}`。", arg.render())
+        }
+        ArgError::OutOfRange {
+            arg,
+            value,
+            min,
+            max,
+        } => format!("`{}` 应在 {min}–{max} 之间，收到 `{value}`。", arg.render()),
     }
 }
 
 fn bad_args_en(err: &ArgError) -> String {
     match err {
-        ArgError::UnknownFlag(token) => format!("unknown argument `{token}`."),
-        ArgError::MissingValue(name) => format!("`--{name}` needs a value."),
-        ArgError::UnexpectedValue(name) => format!("`--{name}` takes no value."),
-        ArgError::Duplicate(name) => format!("`--{name}` was given twice."),
-        ArgError::Conflict(first, second) => {
-            format!("`--{first}` and `--{second}` cannot both be given.")
-        }
+        ArgError::UnknownOption(token) => format!("unknown argument `{token}`."),
+        ArgError::MissingValue(name) => format!("`{}` needs a value.", name.render()),
+        ArgError::UnexpectedValue(name) => format!("`{}` takes no value.", name.render()),
+        ArgError::Duplicate(name) => format!("`{}` was given twice.", name.render()),
+        ArgError::Conflict(first, second) => format!(
+            "`{}` and `{}` cannot both be given.",
+            first.render(),
+            second.render()
+        ),
         ArgError::ExtraPositional(token) => format!("unexpected argument `{token}`."),
-        ArgError::BadValue { arg, value } => format!("`--{arg}` cannot read `{value}`."),
-        ArgError::OutOfRange { arg, value, max } => {
-            format!("`--{arg}` takes at most {max}; got `{value}`.")
+        ArgError::MissingArgument(name) => format!("`{}` is missing.", name.render()),
+        ArgError::BadValue { arg, value } => {
+            format!("`{}` cannot read `{value}`.", arg.render())
         }
+        ArgError::OutOfRange {
+            arg,
+            value,
+            min,
+            max,
+        } => format!("`{}` takes {min}–{max}; got `{value}`.", arg.render()),
     }
 }
 
@@ -248,26 +284,68 @@ mod tests {
         }
     }
 
-    /// An unreadable argument is answered with the argument and the reason, in the language the
-    /// reply is spoken in.
+    /// An unreadable argument is answered with the argument and the reason, and the form follows.
     #[test]
     fn bad_args_name_the_argument_and_the_reason() {
-        let err = ArgError::MissingValue("days");
-        let zh = HostCopy::BadArgs(err.clone()).render(Language::Zh);
-        let en = HostCopy::BadArgs(err).render(Language::En);
-        assert!(zh.contains("`--days`"), "{zh}");
-        assert!(en.contains("`--days`"), "{en}");
+        let err = ArgError::MissingValue(crate::agent::command::ArgName::Option("surfaces"));
+        let usage = "purge [RANGE] [--surfaces LIST] [--yes]";
+        let zh = HostCopy::BadArgs {
+            error: err.clone(),
+            usage: usage.to_owned(),
+        }
+        .render(Language::Zh);
+        let en = HostCopy::BadArgs {
+            error: err,
+            usage: usage.to_owned(),
+        }
+        .render(Language::En);
+        assert!(zh.contains("`--surfaces`"), "{zh}");
+        assert!(en.contains("`--surfaces`"), "{en}");
+        assert!(zh.ends_with(usage), "{zh}");
+        assert!(en.ends_with(usage), "{en}");
         assert_ne!(zh, en);
     }
 
-    /// A command this channel cannot run is named as it was typed, in the chat's own words.
+    /// A command line that stopped before a required argument is answered as such, with the form it
+    /// should have had; the host says nothing about the platform's UI.
     #[test]
-    fn an_unsupported_command_is_named() {
-        let zh = HostCopy::Unsupported("purge").render(Language::Zh);
-        let en = HostCopy::Unsupported("purge").render(Language::En);
-        assert!(zh.contains("/purge"), "{zh}");
-        assert!(en.contains("/purge"), "{en}");
-        assert_ne!(zh, en);
+    fn a_missing_argument_is_named_with_the_form() {
+        let usage = "!purge 7d --yes";
+        let error = ArgError::MissingArgument(crate::agent::command::ArgName::Option("yes"));
+        let zh = HostCopy::BadArgs {
+            error: error.clone(),
+            usage: usage.to_owned(),
+        }
+        .render(Language::Zh);
+        let en = HostCopy::BadArgs {
+            error,
+            usage: usage.to_owned(),
+        }
+        .render(Language::En);
+        assert!(zh.contains("--yes"), "{zh}");
+        assert!(en.contains("--yes"), "{en}");
+        assert!(zh.ends_with(usage), "{zh}");
+        assert!(en.ends_with(usage), "{en}");
+    }
+
+    /// A command's help carries its complete forms under the synopsis, in the chat's language.
+    #[test]
+    fn usage_lists_examples() {
+        const ABOUT: PerCatalog<&'static str> = PerCatalog {
+            zh: "清理指定范围",
+            en: "Purge a range",
+        };
+        let copy = HostCopy::Usage {
+            about: &ABOUT,
+            usage: "/purge [RANGE] [--surfaces LIST] [--yes]".to_owned(),
+            examples: vec!["/purge 7d --yes".to_owned()],
+        };
+        let zh = copy.clone().render(Language::Zh);
+        let en = copy.render(Language::En);
+        assert!(zh.contains("示例：\n/purge 7d --yes"), "{zh}");
+        assert!(en.contains("Examples:\n/purge 7d --yes"), "{en}");
+        assert!(zh.starts_with("清理指定范围\n/purge [RANGE]"), "{zh}");
+        assert!(en.starts_with("Purge a range\n/purge [RANGE]"), "{en}");
     }
 
     /// A span is named in the unit that divides it exactly, so a five-minute window never reads as

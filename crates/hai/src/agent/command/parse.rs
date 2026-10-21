@@ -1,11 +1,11 @@
-//! What each command's payload denotes: the grammar read, the values checked, the invocation built.
+//! What each command's payload denotes: the declared grammar is read, the values checked, and the
+//! invocation built.
 
+use super::{
+    ArgError, ArgName, Command, DigestArg, Grammar, Invocation, LanguageArg, OptionSpec, Parsed,
+    Positional, PurgeArg, SystemCommand, args::parse, digest::Delivery,
+};
 use crate::{
-    agent::command::{
-        ArgError, Command, DigestArg, Grammar, Invocation, LanguageArg, PurgeArg, SystemCommand,
-        args::{FlagName, NoFlags, parse},
-        flags::{DigestFlag, LangFlag, PurgeFlag},
-    },
     agentcore::Language,
     domain::vo::{AgentCommand, PurgeSurface, PurgeSurfaces, Stretch},
 };
@@ -16,143 +16,252 @@ pub(crate) const MIN_DIGEST_DAYS: u32 = 1;
 /// The most days `/digest` runs over at once.
 pub(crate) const MAX_DIGEST_DAYS: u32 = 365;
 
-/// A command that takes no argument at all.
-pub(super) fn unit(payload: &str, command: Command) -> Invocation {
-    match parse::<NoFlags>(payload, &Grammar::None) {
-        Ok(_) => Invocation::Ready(command),
-        Err(err) => Invocation::Unreadable(err),
+pub(super) const LANG_GRAMMAR: Grammar = Grammar {
+    positionals: &[Positional {
+        name: "CODE",
+        required: false,
+    }],
+    options: &[OptionSpec {
+        name: "reset",
+        value: None,
+    }],
+    raw_tail: false,
+};
+
+/// The range spelling shared by `/purge` and `/digest`.
+pub(super) const RANGE: &str = "RANGE";
+
+/// The confirmation `/purge` needs on a channel without a page.
+pub(super) const YES: &str = "yes";
+
+pub(super) const PURGE_GRAMMAR: Grammar = Grammar {
+    positionals: &[Positional {
+        name: RANGE,
+        required: false,
+    }],
+    options: &[
+        OptionSpec {
+            name: "surfaces",
+            value: Some("LIST"),
+        },
+        OptionSpec {
+            name: YES,
+            value: None,
+        },
+    ],
+    raw_tail: false,
+};
+
+pub(super) const DIGEST_GRAMMAR: Grammar = Grammar {
+    positionals: &[Positional {
+        name: RANGE,
+        required: false,
+    }],
+    options: &[
+        OptionSpec {
+            name: "lang",
+            value: Some("CODE"),
+        },
+        OptionSpec {
+            name: "to",
+            value: Some("here|me"),
+        },
+    ],
+    raw_tail: false,
+};
+
+pub(super) const EXPLAIN_GRAMMAR: Grammar = Grammar::RAW;
+
+/// Reads an option/positional payload. Help and a refusal leave as the invocation the host answers;
+/// a raw tail belongs to `explain`, which reads its own grammar.
+fn read_args<'a>(payload: &'a str, grammar: &Grammar) -> Result<Parsed<'a>, Invocation> {
+    match parse(payload, grammar) {
+        Ok(Parsed::Help) => Err(Invocation::Help),
+        Ok(parsed @ Parsed::Args { .. }) => Ok(parsed),
+        Ok(Parsed::Raw(_)) => unreachable!("a grammar without a raw tail never parses one"),
+        Err(err) => Err(Invocation::Unreadable(err)),
     }
 }
 
-/// `/status`: a unit command the host answers.
+fn unit(payload: &str, grammar: &Grammar, command: Command) -> Invocation {
+    match read_args(payload, grammar) {
+        Ok(_) => Invocation::Ready(command),
+        Err(invocation) => invocation,
+    }
+}
+
 pub(super) fn status(payload: &str) -> Invocation {
-    unit(payload, Command::System(SystemCommand::Status))
+    unit(
+        payload,
+        &Grammar::NONE,
+        Command::System(SystemCommand::Status),
+    )
 }
 
-/// `/organizememory`: a unit command the agent is handed.
 pub(super) fn organize_memory(payload: &str) -> Invocation {
-    unit(payload, Command::Agent(AgentCommand::OrganizeMemory))
+    unit(
+        payload,
+        &Grammar::NONE,
+        Command::Agent(AgentCommand::OrganizeMemory),
+    )
 }
 
-/// `/lang`'s argument: the language to set, or the reset that drops the chat's own choice.
 pub(super) fn lang(payload: &str) -> Invocation {
-    let flags = match parse::<LangFlag>(payload, &Grammar::Flags) {
-        Ok(flags) => flags,
-        Err(err) => return Invocation::Unreadable(err),
+    let parsed = match read_args(payload, &LANG_GRAMMAR) {
+        Ok(parsed) => parsed,
+        Err(invocation) => return invocation,
     };
-    let code = flags.value(LangFlag::Code);
-    if flags.given(LangFlag::Reset) && code.is_some() {
-        return Invocation::Unreadable(ArgError::Conflict(
-            LangFlag::Code.name(),
-            LangFlag::Reset.name(),
-        ));
+    let code = parsed.positional(0);
+    if parsed.given("reset") {
+        if code.is_some() {
+            return Invocation::Unreadable(ArgError::Conflict(
+                ArgName::Positional("CODE"),
+                ArgName::Option("reset"),
+            ));
+        }
+        return Invocation::Ready(Command::System(SystemCommand::Lang(LanguageArg::Reset)));
     }
     let arg = match code {
-        // `/lang reset` names the same reset as a bare word.
+        // `/lang reset` names the same reset as the flag.
         Some("reset") => LanguageArg::Reset,
         Some(code) => match code.parse::<Language>() {
             Ok(language) => LanguageArg::Set(language),
             Err(_) => LanguageArg::Unsupported,
         },
-        None if flags.given(LangFlag::Reset) => LanguageArg::Reset,
         None => LanguageArg::Current,
     };
     Invocation::Ready(Command::System(SystemCommand::Lang(arg)))
 }
 
-/// `/explain`'s argument: the payload verbatim, and none when nothing was written.
-pub(super) fn explain(payload: &str) -> Invocation {
-    match parse::<NoFlags>(payload, &Grammar::RawText) {
-        Ok(payload) => Invocation::Ready(Command::Agent(AgentCommand::Explain(
-            payload
-                .text()
-                .filter(|target| !target.is_empty())
-                .map(str::to_string),
-        ))),
-        Err(err) => Invocation::Unreadable(err),
-    }
-}
-
-/// `/purge`'s argument: a stretch, and optionally the surfaces it holds. A bare token fills the first
-/// flag still unset, in declaration order (`ALL`), so `/purge all agent,files` names both; without a
-/// stretch the dialog asks for one.
 pub(super) fn purge(payload: &str) -> Invocation {
-    let flags = match parse::<PurgeFlag>(payload, &Grammar::Flags) {
-        Ok(flags) => flags,
-        Err(err) => return Invocation::Unreadable(err),
+    let parsed = match read_args(payload, &PURGE_GRAMMAR) {
+        Ok(parsed) => parsed,
+        Err(invocation) => return invocation,
     };
-    let range = match flags.value(PurgeFlag::Range) {
+    let range = match parsed.positional(0) {
         None => None,
         Some(token) => match stretch(token) {
             Some(range) => Some(range),
-            None => return Invocation::Unreadable(unreadable(PurgeFlag::Range, token)),
+            None => {
+                return Invocation::Unreadable(ArgError::BadValue {
+                    arg: ArgName::Positional("RANGE"),
+                    value: token.to_owned(),
+                });
+            }
         },
     };
-    let surfaces = match flags.value(PurgeFlag::Surfaces) {
+    let surfaces = match parsed.value("surfaces") {
         None => PurgeSurfaces::all(),
         Some(token) => match surfaces(token) {
             Some(surfaces) => surfaces,
-            None => return Invocation::Unreadable(unreadable(PurgeFlag::Surfaces, token)),
+            None => {
+                return Invocation::Unreadable(ArgError::BadValue {
+                    arg: ArgName::Option("surfaces"),
+                    value: token.to_owned(),
+                });
+            }
         },
     };
+    let yes = parsed.given("yes");
+    if yes && range.is_none() {
+        return Invocation::Unreadable(ArgError::MissingArgument(ArgName::Positional("RANGE")));
+    }
     Invocation::Ready(Command::System(SystemCommand::Purge(PurgeArg {
         range,
         surfaces,
+        yes,
     })))
 }
 
-/// `/digest`'s argument: the stretch it runs over, absent while nobody has chosen one, and the
-/// language it writes the report in, absent while the chat's own stands.
 pub(super) fn digest(payload: &str) -> Invocation {
-    let flags = match parse::<DigestFlag>(payload, &Grammar::Flags) {
-        Ok(flags) => flags,
-        Err(err) => return Invocation::Unreadable(err),
+    let parsed = match read_args(payload, &DIGEST_GRAMMAR) {
+        Ok(parsed) => parsed,
+        Err(invocation) => return invocation,
     };
-    let stretch = match flags.value(DigestFlag::Days) {
+    let stretch = match parsed.positional(0) {
         None => None,
-        Some(token) => match digest_days(token) {
+        Some(token) => match digest_stretch(token) {
             Ok(stretch) => Some(stretch),
             Err(err) => return Invocation::Unreadable(err),
         },
     };
-    let language = match flags.value(DigestFlag::Lang) {
+    let language = match parsed.value("lang") {
         None => None,
         Some(token) => match token.parse::<Language>() {
             Ok(language) => Some(language),
             Err(_) => {
                 return Invocation::Unreadable(ArgError::BadValue {
-                    arg: DigestFlag::Lang.name(),
-                    value: token.to_string(),
+                    arg: ArgName::Option("lang"),
+                    value: token.to_owned(),
                 });
             }
         },
     };
+    let delivery = match parsed.value("to") {
+        None => None,
+        Some("here") => Some(Delivery::Chat),
+        Some("me") => Some(Delivery::Person),
+        Some(token) => {
+            return Invocation::Unreadable(ArgError::BadValue {
+                arg: ArgName::Option("to"),
+                value: token.to_owned(),
+            });
+        }
+    };
     Invocation::Ready(Command::System(SystemCommand::Digest(DigestArg {
         stretch,
         language,
+        delivery,
     })))
 }
 
-/// The stretch a day count names: at least one day, at most [`MAX_DIGEST_DAYS`] of them.
-fn digest_days(token: &str) -> Result<Stretch, ArgError> {
-    let days = match token.parse::<u32>() {
-        Ok(days) if days >= MIN_DIGEST_DAYS => days,
-        _ => return Err(unreadable(DigestFlag::Days, token)),
+/// The payload verbatim; `None` when nothing was written.
+pub(super) fn explain(payload: &str) -> Invocation {
+    match parse(payload, &EXPLAIN_GRAMMAR) {
+        Ok(Parsed::Help) => Invocation::Help,
+        Ok(Parsed::Raw(text)) => Invocation::Ready(Command::Agent(AgentCommand::Explain(
+            (!text.is_empty()).then(|| text.to_owned()),
+        ))),
+        Ok(Parsed::Args { .. }) => unreachable!("the explain grammar has no options"),
+        Err(err) => Invocation::Unreadable(err),
+    }
+}
+
+/// A digest stretch is a whole number of days inside the report's own window; anything else is
+/// refused with the bound it missed.
+fn digest_stretch(token: &str) -> Result<Stretch, ArgError> {
+    let stretch = stretch(token).ok_or_else(|| ArgError::BadValue {
+        arg: ArgName::Positional("RANGE"),
+        value: token.to_owned(),
+    })?;
+    let days = match stretch {
+        Stretch::All => {
+            return Err(ArgError::BadValue {
+                arg: ArgName::Positional("RANGE"),
+                value: token.to_owned(),
+            });
+        }
+        Stretch::Last { secs } if secs % 86_400 == 0 => secs / 86_400,
+        Stretch::Last { .. } => {
+            return Err(ArgError::BadValue {
+                arg: ArgName::Positional("RANGE"),
+                value: token.to_owned(),
+            });
+        }
+        Stretch::Between { from, to } => (to.as_second() - from.as_second()).div_euclid(86_400) + 1,
     };
-    if days > MAX_DIGEST_DAYS {
+    if !(i64::from(MIN_DIGEST_DAYS)..=i64::from(MAX_DIGEST_DAYS)).contains(&days) {
         return Err(ArgError::OutOfRange {
-            arg: DigestFlag::Days.name(),
-            value: token.to_string(),
+            arg: ArgName::Positional("RANGE"),
+            value: token.to_owned(),
+            min: MIN_DIGEST_DAYS,
             max: MAX_DIGEST_DAYS,
         });
     }
-    Ok(Stretch::Last {
-        secs: i64::from(days) * 86_400,
-    })
+    Ok(stretch)
 }
 
-/// A stretch as a person writes it: `all`, a whole number of hours or days back from now, or two
-/// local dates covering whole days with the last one included.
+/// Reads the shared `RANGE` spelling documented in `docs/topics/commands.md`.
 fn stretch(token: &str) -> Option<Stretch> {
     if token == "all" {
         return Some(Stretch::All);
@@ -175,24 +284,23 @@ fn stretch(token: &str) -> Option<Stretch> {
 
     let (from, to) = token.split_once("..")?;
     let zone = jiff::tz::TimeZone::system();
-    let from: jiff::civil::Date = from.parse().ok()?;
-    let to: jiff::civil::Date = to.parse().ok()?;
-    if to < from {
-        return None;
-    }
-    let since = from.to_zoned(zone.clone()).ok()?.timestamp();
-    // The statement's upper bound is inclusive, so the last day runs to the nanosecond before the
-    // next one starts.
-    let until =
-        to.tomorrow().ok()?.to_zoned(zone).ok()?.timestamp() - jiff::SignedDuration::from_nanos(1);
-    Some(Stretch::Between {
-        from: since,
-        to: until,
-    })
+    let from = jiff::civil::Date::strptime("%Y-%m-%d", from)
+        .ok()?
+        .to_zoned(zone.clone())
+        .ok()?
+        .timestamp();
+    let to = jiff::civil::Date::strptime("%Y-%m-%d", to)
+        .ok()?
+        .tomorrow()
+        .ok()?
+        .to_zoned(zone)
+        .ok()?
+        .timestamp()
+        - jiff::SignedDuration::from_nanos(1);
+    (from <= to).then_some(Stretch::Between { from, to })
 }
 
-/// The surfaces as a comma-separated list of names; an unknown name makes the whole list unreadable,
-/// and a name that is not given is off.
+/// The four surfaces a comma-separated token names, or none when one of them is not a surface.
 fn surfaces(token: &str) -> Option<PurgeSurfaces> {
     let mut surfaces = PurgeSurfaces::none();
     for name in token.split(',') {
@@ -204,27 +312,14 @@ fn surfaces(token: &str) -> Option<PurgeSurfaces> {
     Some(surfaces)
 }
 
-/// A flag's value its own parser refused, as the person wrote it.
-fn unreadable(flag: impl FlagName, value: &str) -> ArgError {
-    ArgError::BadValue {
-        arg: flag.name(),
-        value: value.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::command::spec::Declaration;
-
-    /// A declared command, by its wire name.
-    fn declared(name: &str) -> &'static Declaration {
-        crate::agent::command::find(name).expect("a declared command")
-    }
 
     /// The invocation a payload denotes for the command declared under `name`.
     fn parsed(name: &str, payload: &str) -> Invocation {
-        (declared(name).parse)(payload)
+        let declared = crate::agent::command::find(name).expect("a declared command");
+        (declared.parse)(payload)
     }
 
     #[test]
@@ -249,84 +344,88 @@ mod tests {
         );
         assert_eq!(parsed("status", ""), ready(System(SystemCommand::Status)));
         assert_eq!(parsed("lang", "  "), ready(System(Lang(Current))));
+
+        for spelling in ["JA", "ja", "EN-GB"] {
+            let expected = if spelling == "EN-GB" {
+                Language::EnGb
+            } else {
+                Language::Ja
+            };
+            assert_eq!(
+                parsed("lang", spelling),
+                ready(System(Lang(Set(expected)))),
+                "{spelling}"
+            );
+        }
+        assert_eq!(parsed("lang", "jp"), ready(System(Lang(Unsupported))));
+        assert_eq!(parsed("lang", "reset"), ready(System(Lang(Reset))));
+        assert_eq!(parsed("lang", "--reset"), ready(System(Lang(Reset))));
+        assert_eq!(
+            parsed("lang", "zh --reset"),
+            Invocation::Unreadable(ArgError::Conflict(
+                ArgName::Positional("CODE"),
+                ArgName::Option("reset")
+            ))
+        );
+
         assert_eq!(
             parsed("explain", ""),
             ready(Agent(AgentCommand::Explain(None)))
         );
         assert_eq!(
             parsed("explain", "a  b"),
-            ready(Agent(AgentCommand::Explain(Some("a  b".into()))))
+            ready(Agent(AgentCommand::Explain(Some("a  b".into())))),
+            "the raw tail keeps its spacing"
         );
+        assert_eq!(
+            parsed("explain", "-- --verbose is broken"),
+            ready(Agent(AgentCommand::Explain(Some(
+                "--verbose is broken".into()
+            )))),
+            "a payload that starts with a dash is written after `--`"
+        );
+
         assert_eq!(
             parsed("digest", ""),
             ready(System(SystemCommand::Digest(DigestArg {
                 stretch: None,
                 language: None,
+                delivery: None,
             }))),
             "a bare `/digest` asks for a stretch in the dialog"
         );
         assert_eq!(
-            parsed("digest", "003"),
+            parsed("digest", "7d"),
             ready(System(SystemCommand::Digest(DigestArg {
-                stretch: Some(Stretch::Last { secs: 3 * 86_400 }),
+                stretch: Some(Stretch::Last { secs: 7 * 86_400 }),
                 language: None,
+                delivery: None,
             })))
         );
         assert_eq!(
-            parsed("digest", "--lang en"),
-            ready(System(SystemCommand::Digest(DigestArg {
-                stretch: None,
-                language: Some(Language::En),
-            }))),
-            "a language on its own still asks for the stretch in the dialog"
-        );
-        assert_eq!(
-            parsed("digest", "7 --lang=JA"),
+            parsed("digest", "7d --lang ja --to me"),
             ready(System(SystemCommand::Digest(DigestArg {
                 stretch: Some(Stretch::Last { secs: 7 * 86_400 }),
                 language: Some(Language::Ja),
-            }))),
-            "the code is read case-insensitively"
+                delivery: Some(Delivery::Person),
+            })))
+        );
+        assert_eq!(
+            parsed("digest", "7d --to=here"),
+            ready(System(SystemCommand::Digest(DigestArg {
+                stretch: Some(Stretch::Last { secs: 7 * 86_400 }),
+                language: None,
+                delivery: Some(Delivery::Chat),
+            })))
         );
         assert_eq!(
             parsed("digest", "en"),
             Invocation::Unreadable(ArgError::BadValue {
-                arg: "days",
+                arg: ArgName::Positional("RANGE"),
                 value: "en".into(),
             }),
-            "a bare word fills the day count, so a language has to be named"
+            "the positional is the range; a language is always named"
         );
-
-        // The bare word and the flag naming it are one argument, for every command.
-        assert_eq!(parsed("lang", "reset"), parsed("lang", "--reset"));
-        assert_eq!(parsed("lang", "--reset"), ready(System(Lang(Reset))));
-        assert_eq!(parsed("lang", "--code reset"), ready(System(Lang(Reset))));
-        for spelling in ["JA", "--code JA", "--code=JA"] {
-            assert_eq!(
-                parsed("lang", spelling),
-                ready(System(Lang(Set(Language::Ja)))),
-                "{spelling}"
-            );
-        }
-        assert_eq!(
-            parsed("lang", "EN-GB"),
-            ready(System(Lang(Set(Language::EnGb))))
-        );
-        assert_eq!(parsed("lang", "jp"), ready(System(Lang(Unsupported))));
-        assert_eq!(
-            parsed("explain", "--verbose is broken"),
-            ready(Agent(AgentCommand::Explain(Some(
-                "--verbose is broken".into()
-            )))),
-            "the payload of `/explain` is text, dashes and all"
-        );
-        for spelling in ["--days 3", "--days=3"] {
-            assert_eq!(
-                parsed("digest", spelling),
-                parsed("digest", "3"),
-                "{spelling}"
-            );
-        }
     }
 
     /// Every refusal says which argument it refused and why.
@@ -335,83 +434,101 @@ mod tests {
         let unreadable = Invocation::Unreadable;
         let cases = [
             (
-                declared("digest"),
-                "--days abc",
+                "digest",
+                "abc",
                 ArgError::BadValue {
-                    arg: "days",
+                    arg: ArgName::Positional("RANGE"),
                     value: "abc".into(),
                 },
             ),
             (
-                declared("digest"),
-                "0",
+                "digest",
+                "0d",
                 ArgError::BadValue {
-                    arg: "days",
-                    value: "0".into(),
+                    arg: ArgName::Positional("RANGE"),
+                    value: "0d".into(),
                 },
             ),
-            (declared("digest"), "--days", ArgError::MissingValue("days")),
             (
-                declared("digest"),
-                "--days 1 --days 2",
-                ArgError::Duplicate("days"),
+                "digest",
+                "25h",
+                ArgError::BadValue {
+                    arg: ArgName::Positional("RANGE"),
+                    value: "25h".into(),
+                },
             ),
             (
-                declared("digest"),
-                "--bogus 1",
-                ArgError::UnknownFlag("--bogus".into()),
-            ),
-            (
-                declared("digest"),
-                "366",
+                "digest",
+                "366d",
                 ArgError::OutOfRange {
-                    arg: "days",
-                    value: "366".into(),
+                    arg: ArgName::Positional("RANGE"),
+                    value: "366d".into(),
+                    min: 1,
                     max: 365,
                 },
             ),
             (
-                declared("digest"),
-                "--lang zz",
+                "digest",
+                "7d --lang",
+                ArgError::MissingValue(ArgName::Option("lang")),
+            ),
+            (
+                "digest",
+                "7d --lang zz",
                 ArgError::BadValue {
-                    arg: "lang",
+                    arg: ArgName::Option("lang"),
                     value: "zz".into(),
                 },
             ),
-            (declared("digest"), "--lang", ArgError::MissingValue("lang")),
             (
-                declared("lang"),
+                "digest",
+                "7d --to there",
+                ArgError::BadValue {
+                    arg: ArgName::Option("to"),
+                    value: "there".into(),
+                },
+            ),
+            (
+                "digest",
+                "7d --lang en --lang zh",
+                ArgError::Duplicate(ArgName::Option("lang")),
+            ),
+            (
+                "digest",
+                "--bogus 1",
+                ArgError::UnknownOption("--bogus".into()),
+            ),
+            (
+                "lang",
                 "--reset=1",
-                ArgError::UnexpectedValue("reset"),
+                ArgError::UnexpectedValue(ArgName::Option("reset")),
             ),
             (
-                declared("purge"),
-                "all agent,files extra",
-                ArgError::ExtraPositional("extra".into()),
+                "purge",
+                "--yes",
+                ArgError::MissingArgument(ArgName::Positional("RANGE")),
             ),
             (
-                declared("lang"),
-                "--code zh --reset",
-                ArgError::Conflict("code", "reset"),
+                "purge",
+                "7d agent,files",
+                ArgError::ExtraPositional("agent,files".into()),
+            ),
+            (
+                "purge",
+                "7d --surfaces agent,bogus",
+                ArgError::BadValue {
+                    arg: ArgName::Option("surfaces"),
+                    value: "agent,bogus".into(),
+                },
             ),
         ];
-        for (command, payload, reason) in cases {
+        for (name, payload, reason) in cases {
             assert_eq!(
-                (command.parse)(payload),
+                parsed(name, payload),
                 unreadable(reason.clone()),
-                "/{} {payload}",
-                command.name
+                "/{name} {payload}"
             );
         }
-
-        assert_eq!(
-            parsed("purge", "--surfaces agent"),
-            Invocation::Ready(Command::System(SystemCommand::Purge(PurgeArg {
-                range: None,
-                surfaces: PurgeSurfaces::none().with(PurgeSurface::Agent),
-            }))),
-            "naming the surfaces as a flag with no stretch goes on to the stretch question"
-        );
     }
 
     /// `/purge`'s grammar: a stretch alone or with the surfaces it holds, and a date range whose last
@@ -421,41 +538,44 @@ mod tests {
         use Command::System;
         use SystemCommand::Purge;
 
-        let ready =
-            |range, surfaces| Invocation::Ready(System(Purge(PurgeArg { range, surfaces })));
+        let ready = |range, surfaces, yes| {
+            Invocation::Ready(System(Purge(PurgeArg {
+                range,
+                surfaces,
+                yes,
+            })))
+        };
         let all = PurgeSurfaces::all();
 
-        assert_eq!(parsed("purge", ""), ready(None, all));
+        assert_eq!(parsed("purge", ""), ready(None, all, false));
         assert_eq!(
             parsed("purge", "   "),
-            ready(None, all),
+            ready(None, all, false),
             "a bare command starts at the stretch question"
         );
         assert_eq!(
             parsed("purge", "7d"),
-            ready(Some(Stretch::Last { secs: 7 * 86_400 }), all)
+            ready(Some(Stretch::Last { secs: 7 * 86_400 }), all, false)
+        );
+        assert_eq!(
+            parsed("purge", "7d --yes"),
+            ready(Some(Stretch::Last { secs: 7 * 86_400 }), all, true),
+            "the command line carries its own confirmation"
         );
         let agent_and_files = PurgeSurfaces::none()
             .with(PurgeSurface::Agent)
             .with(PurgeSurface::Files);
         assert_eq!(
-            parsed("purge", "all agent,files"),
-            ready(Some(Stretch::All), agent_and_files)
+            parsed("purge", "all --surfaces agent,files --yes"),
+            ready(Some(Stretch::All), agent_and_files, true)
         );
         assert_eq!(
-            parsed("purge", "--range all --surfaces=agent,files"),
-            ready(Some(Stretch::All), agent_and_files),
-            "the flags are the same argument as the bare words"
+            parsed("purge", "--surfaces=agent,files"),
+            ready(None, agent_and_files, false),
+            "naming the surfaces with no stretch goes on to the stretch question"
         );
 
-        for malformed in [
-            "0h",
-            "7x",
-            "7",
-            "2026-10-05..2026-10-01",
-            "7d agent,bogus",
-            "7d agent files",
-        ] {
+        for malformed in ["0h", "7x", "7", "2026-10-05..2026-10-01", "7d agent files"] {
             assert!(
                 matches!(parsed("purge", malformed), Invocation::Unreadable(_)),
                 "{malformed}"
@@ -489,5 +609,21 @@ mod tests {
                 .timestamp(),
             "the last day runs to its own last nanosecond"
         );
+    }
+
+    /// Every command answers `--help` with the same synopsis the declaration spells.
+    #[test]
+    fn every_command_answers_help() {
+        for name in [
+            "status",
+            "lang",
+            "purge",
+            "organizememory",
+            "explain",
+            "digest",
+        ] {
+            assert_eq!(parsed(name, "--help"), Invocation::Help, "{name}");
+            assert_eq!(parsed(name, "-h"), Invocation::Help, "{name}");
+        }
     }
 }

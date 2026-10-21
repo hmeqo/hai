@@ -16,7 +16,7 @@ use crate::{
     agent::{
         channel::{CallbackAnswer, ChannelAccess, ChannelCapabilities},
         command::{
-            CommandContext, DialogArg, Reply,
+            ArgError, CommandContext, DialogArg, Invocation, Reply, Started,
             dialog::{DialogPage, Miss, PageSite, Pages, Press},
             digest, execute, find, purge,
         },
@@ -170,52 +170,145 @@ impl Intake {
             return self.store(arrival).await;
         };
         let chat = self.ensure_chat(arrival).await?;
-        if !declared.interaction.supported_by(self.capabilities) {
-            let language = self.settings.language(chat.id).await?;
-            return self
-                .notice(arrival, HostCopy::Unsupported(declared.name), language)
-                .await;
-        }
+        // Every platform spells the same form; only the prefix is its own.
+        let prefix = self.access.command_prefix();
+        let usage = || format!("{prefix}{}", declared.synopsis());
+        let command = match (declared.parse)(payload) {
+            Invocation::Help => {
+                let language = self.settings.language(chat.id).await?;
+                return self
+                    .notice(
+                        arrival,
+                        HostCopy::Usage {
+                            about: &declared.copy,
+                            usage: usage(),
+                            examples: declared.example_lines(prefix),
+                        },
+                        language,
+                    )
+                    .await;
+            }
+            Invocation::Unreadable(error) => {
+                let language = self.settings.language(chat.id).await?;
+                return self
+                    .notice(
+                        arrival,
+                        HostCopy::BadArgs {
+                            error,
+                            usage: usage(),
+                        },
+                        language,
+                    )
+                    .await;
+            }
+            Invocation::Ready(command) => command,
+        };
         let ctx = CommandContext {
             chat_id: chat.id,
             settings: self.settings.clone(),
             agents: self.registry.clone(),
             services: self.services.clone(),
         };
-        match execute(&ctx, (declared.parse)(payload)).await? {
+        match execute(&ctx, command).await? {
             Reply::Said(said) => {
                 self.access
                     .notice(&arrival.chat.external_id, &said.copy.render(said.language))
                     .await?;
             }
-            // A command whose answer is a question: the host puts the first page out itself.
-            Reply::Dialog(dialog) => match dialog.arg {
-                DialogArg::Purge(arg) => {
-                    purge::open(
-                        &self.pages,
-                        &*self.access,
-                        chat.id,
-                        arrival,
-                        arg,
-                        dialog.language,
-                    )
-                    .await?;
+            // A command that stopped before its last decision: a page finishes it where the platform
+            // has one, and the complete command line is the answer everywhere else.
+            Reply::Dialog(dialog) => {
+                if !self.capabilities.choices {
+                    // No page to finish the line: the missing argument is the answer, exactly as a
+                    // command line reports it.
+                    let language = self.settings.language(chat.id).await?;
+                    let error = ArgError::MissingArgument(dialog.missing);
+                    return self
+                        .notice(
+                            arrival,
+                            HostCopy::BadArgs {
+                                error,
+                                usage: usage(),
+                            },
+                            language,
+                        )
+                        .await;
                 }
-                DialogArg::Digest(arg) => {
-                    digest::open(
-                        &self.pages,
-                        &*self.access,
-                        chat.id,
-                        arrival,
-                        arg,
-                        dialog.language,
-                    )
-                    .await?;
+                match dialog.arg {
+                    DialogArg::Purge(arg) => {
+                        purge::open(
+                            &self.pages,
+                            &*self.access,
+                            chat.id,
+                            arrival,
+                            arg,
+                            dialog.language,
+                        )
+                        .await?;
+                    }
+                    DialogArg::Digest(arg) => {
+                        digest::open(
+                            &self.pages,
+                            &*self.access,
+                            chat.id,
+                            arrival,
+                            arg,
+                            dialog.language,
+                        )
+                        .await?;
+                    }
                 }
-            },
+            }
+            Reply::Started(started) => self.start(&ctx, arrival, started).await?,
             Reply::Silent => {}
         }
         Ok(())
+    }
+
+    /// Submits the work a complete command line named. A page reaches these same functions with the
+    /// same request; the difference is only that the page also repaints itself.
+    async fn start(&self, ctx: &CommandContext, arrival: &Arrival, started: Started) -> Result<()> {
+        let language = self.settings.language(ctx.chat_id).await?;
+        match started {
+            Started::Purge(spec) => {
+                purge::queue(ctx, spec).await?;
+                self.access
+                    .notice(
+                        &arrival.chat.external_id,
+                        &purge::copy::started(language, &spec),
+                    )
+                    .await
+            }
+            Started::Digest(start) => {
+                let origin = arrival.chat.external_id.clone();
+                let target = match start.delivery {
+                    digest::Delivery::Chat => origin.clone(),
+                    digest::Delivery::Person => match arrival.sender.as_ref() {
+                        Some(sender) => sender.external_id.clone(),
+                        None => {
+                            return self
+                                .access
+                                .notice(&origin, &digest::copy::no_sender(language))
+                                .await;
+                        }
+                    },
+                };
+                digest::start(
+                    ctx,
+                    self.access.clone(),
+                    digest::Request {
+                        stretch: start.stretch,
+                        report_language: start.language,
+                        delivery: start.delivery,
+                        origin,
+                        target,
+                        ui_language: language,
+                    },
+                    None,
+                )
+                .await
+            }
+        }
     }
 
     /// One button press: the chat is registered without its sender (a press carries no message), and
