@@ -4,8 +4,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         model::ScheduledTask,
-        repo::ConversationRecordRepo,
-        vo::{ChannelKey, ChatEntry, ChatId, RepeatInterval, ScheduledTaskId},
+        repo::{ConversationRecordRepo, window},
+        vo::{ChannelKey, ChatEntry, ChatId, RepeatInterval, ScheduledTaskId, TimeRange},
     },
     error::Result,
 };
@@ -143,6 +143,24 @@ impl ScheduledTaskRepo {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Deletes the tasks a purge reaches, whole, and hands back their ids so the changes that fired
+    /// them can be consumed with the content they carried. Deactivation is not enough here: a dead
+    /// row still holds the description, which is content the purge is about.
+    pub(crate) async fn delete_in_range_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<ScheduledTaskId>> {
+        let sql = format!(
+            "DELETE FROM scheduled_task WHERE chat_id = $1 {} RETURNING id",
+            window::time_window("created_at", 2),
+        );
+        let query = sqlx::query_as::<_, (ScheduledTaskId,)>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(chat_id.0);
+        let rows = range.bind(query).fetch_all(&mut *tx).await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
 

@@ -1,7 +1,4 @@
-pub mod chunking;
 pub mod conversation_record;
-pub(crate) mod fuse;
-pub(crate) mod hydrate;
 pub mod identity;
 pub mod knowledge;
 pub mod memory;
@@ -9,8 +6,8 @@ pub mod message;
 pub mod perception;
 pub mod platform;
 pub mod preference;
-pub(crate) mod rank;
-pub mod recall;
+pub mod purge;
+pub(crate) mod retrieval;
 pub mod scheduled_task;
 pub mod topic;
 
@@ -25,8 +22,9 @@ pub use message::{MessageService, NewAgentMessage};
 pub use perception::PerceptionService;
 pub use platform::PlatformService;
 pub use preference::PreferenceService;
-pub(crate) use rank::ScorerErrorPolicy;
-pub use recall::{RecallItem, RecallQuery, RecallScope, recall};
+pub use purge::PurgeService;
+pub(crate) use retrieval::ScorerErrorPolicy;
+pub use retrieval::{RecallItem, RecallQuery, RecallScope, recall};
 pub use scheduled_task::ScheduledTaskService;
 pub use topic::TopicService;
 
@@ -53,6 +51,7 @@ pub struct ServicesInner {
     pub scorer: Option<Scorer>,
     pub perception: PerceptionService,
     pub preference: PreferenceService,
+    pub purge: PurgeService,
 }
 
 impl Services {
@@ -68,6 +67,7 @@ impl Services {
         let knowledge =
             KnowledgeService::new(repos.clone(), Arc::clone(&embedding), scorer.clone());
         let preference = PreferenceService::new(repos.clone());
+        let purge = PurgeService::new(repos.clone());
 
         Self(Arc::new(ServicesInner {
             platform,
@@ -81,6 +81,7 @@ impl Services {
             embedding,
             perception,
             preference,
+            purge,
             scorer,
         }))
     }

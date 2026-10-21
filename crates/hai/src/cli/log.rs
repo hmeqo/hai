@@ -21,7 +21,7 @@ pub async fn execute(args: super::LogArgs, cfg: &AppConfig) -> crate::error::Res
     if let Some(seq) = args.id {
         show_detail(seq, &repos).await?;
     } else {
-        super::tui::run_tui(repos, args.chat.map(ChatId), kind).await?;
+        super::tui::run_tui(repos, args.chat.map(ChatId), kind, args.session).await?;
     }
 
     Ok(())

@@ -14,6 +14,8 @@ pub struct Message {
     pub id: MessageId,
     pub chat_id: ChatId,
 
+    /// Who sent it: the person's own account for a message they wrote, the channel's own account for
+    /// a reply the agent sent.
     pub account_id: Option<AccountId>,
 
     pub role: MessageRole,

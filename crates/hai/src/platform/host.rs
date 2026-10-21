@@ -10,8 +10,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     agent::{
         channel::{Channel, ChannelAccess},
-        intake::Intake,
-        runtime::{AgentRuntime, AppContext, registry::AgentRegistry},
+        inbound::Intake,
+        process::{AgentRuntime, AppContext, registry::AgentRegistry},
     },
     domain::model::Platform,
     error::{AppError, Result},
@@ -62,6 +62,7 @@ impl ChannelRuntime {
         let access: Arc<dyn ChannelAccess> = adapter.clone();
         let intake = Arc::new(Intake::new(
             access,
+            adapter.capabilities(),
             ctx.services.clone(),
             ctx.settings.clone(),
             ctx.cfg.agent.language,

@@ -7,7 +7,8 @@ use async_trait::async_trait;
 
 use crate::{
     agent::channel::{
-        ChannelAccess, ChannelCapabilities, ChannelProfile, OutboundPayload, TypingGuard,
+        ChannelAccess, ChannelCapabilities, ChannelProfile, DeleteReport, OutboundPayload,
+        TypingGuard,
     },
     domain::{
         model::Platform,
@@ -25,10 +26,16 @@ pub(crate) trait ChannelAdapter: ChannelAccess + Debug + Send + Sync + 'static {
     fn platform(&self) -> Platform;
     /// The key this channel instance is stored under, spelled once where it is built.
     fn key(&self) -> &ChannelKey;
-    fn profile(&self) -> ChannelProfile;
+    fn profile(&self) -> &ChannelProfile;
     fn capabilities(&self) -> ChannelCapabilities;
     /// Sends one message the agent produced; the receipt is what the store records.
     async fn send(&self, msg: WireMessage) -> Result<SentMessage>;
+    /// Deletes these platform messages of one chat. Best effort by contract: an id the platform
+    /// refuses comes back named, and never fails the call.
+    async fn delete_messages(&self, chat_external_id: &str, ids: &[String])
+    -> Result<DeleteReport>;
+    /// Drops the local bytes cached for these platform files, and says how many it found.
+    async fn forget_cached(&self, file_ids: &[String]) -> Result<u64>;
     /// Starts this platform's typing indicator for a chat and hands back the guard that keeps it
     /// alive; `None` when the platform shows none or the platform's own id could not be read.
     #[must_use = "dropping the guard ends the indicator it started"]

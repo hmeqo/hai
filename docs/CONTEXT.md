@@ -12,7 +12,7 @@ _Avoid_: "room", "conversation"
 **chat language**: the language a Chat is spoken in — set per chat by `/lang`, otherwise the configured default. Not the user's own language, and not a fence: the agent still translates, practises a language or quotes someone when asked.
 _Avoid_: "locale" (that is a platform or client concept), "user language"
 
-**text catalog**: the text a chat language reads — Chinese has a catalog of its own and every other language reads the English one; it spans the built-in persona and chat-type layers, the wake instruction and situation text, host copy and status labels, while the `agents` and `wrap-up` layers carry one text every catalog reads, and an operator override replaces a single layer, never a catalog.
+**text catalog**: the text a chat language reads — Chinese has a catalog of its own and every other language reads the English one; it spans the built-in soul and chat-type layers, the wake instruction and situation text, host copy and status labels, while the `agents` and `wrap-up` layers carry one text every catalog reads, and an operator override replaces a single layer, never a catalog.
 _Avoid_: "message catalog" (a Message is a chat message), "resource bundle", "locale bundle", "built-in text set"
 
 **client code**: the two-letter ISO 639-1 code a client platform matches a client's language by (`agentcore/language/mod.rs:Language::client_code`); a regional variant has no code of its own, so `en-gb` is served by `en`. The chat language's stored value is not this — that tag is `Language::as_str`.
@@ -61,8 +61,10 @@ _Avoid_: calling `[providers.*]` "configuration" when availability is meant
 **Message**: one message in a Chat — its own text plus its attachments, each an `attachment` row holding a platform file handle.
 _Avoid_: "message record"
 
-**Event**: one observable event of an agent run, its payload a tagged enum, persisted for auditing.
+**Event**: one observable event of an agent run, its payload a tagged enum, persisted for auditing; the envelope names the chat and, for a model run, the session it belongs to.
 _Avoid_: "log" (log is tracing output)
+
+**Session**: the trace's top unit — one model run. A main session is one **Chapter**; a wrap-up and a digest each run as their own session (`SessionKind`: `main`, `wrap-up`, `digest`), and a wrap-up names the chapter it closes as its parent. A host transaction (a purge) is chat-scoped and belongs to no session. Events carry their `SessionRef` in the envelope, so `(session, turn, step)` names a row even though turn numbers restart with every session.
 
 **ConversationRecord**: the persisted conversation state — accumulated context messages, the chapter scalars, and the chat's `pending` accumulation. Its row is the one place a chat's state lives; the execution environment is rebuilt from it.
 _Avoid_: conflating with the in-memory Conversation
@@ -74,15 +76,15 @@ _Avoid_: "compaction", "cleanup"
 
 ### Runtime domain
 
-**ChatAgent**: the agent entity of one Chat — the counterpart the user talks to. It runs the event loop with an Idle/Busy state machine, is created lazily per Chat, and is rebuilt from the snapshot when needed.
+**ChatAgent**: the agent entity of one Chat — the counterpart the user talks to. It runs the event loop with an Idle/Busy state machine — a Turn, a chapter wrap-up, a purge and a digest all hold it Busy — is created lazily per Chat, and is rebuilt from the snapshot when needed.
 _Avoid_: "session", "instance"
 
-**Sandbox**: the environment the agent's tools act on — where a command runs and which paths a tool may open (`agent/runtime/sandbox/mod.rs:Sandbox`; two variants, picked from `[sandbox] enabled`: a container, or the host). The workspace and its read-only mounts are the tree both sides share, so `read` and `bash` reach the same files.
+**Sandbox**: the environment the agent's tools act on — where a command runs and which paths a tool may open (`agent/environment/sandbox/mod.rs:Sandbox`; two variants, picked from `[sandbox] enabled`: a container, or the host). The workspace and its read-only mounts are the tree both sides share, so `read` and `bash` reach the same files.
 _Avoid_: "shell" for the environment as a whole
 
-**Workspace**: the one writable directory of a Chat, given by `agent/runtime/workspace.rs:Workspace::for_chat` as `<data_dir>/workspaces/<chat id>`, bound at `/workspace` inside a container and the default working directory there; `workspace://<path>` is how a tool addresses it, so the directory's real location never enters the model's own spelling. A generated image lands in `generated/` inside it, and nothing reaches the chat except through `send_message`.
+**Workspace**: the one writable directory of a Chat, given by `agent/environment/workspace.rs:Workspace::for_chat` as `<data_dir>/workspaces/<chat id>`, bound at `/workspace` inside a container and the default working directory there; `workspace://<path>` is how a tool addresses it, so the directory's real location never enters the model's own spelling. A generated image lands in `generated/` inside it, and nothing reaches the chat except through `send_message`.
 
-**Turn**: the execution unit in which the agent fully responds to one wake-up — the whole loop from taking the accumulated changes to replying, possibly several Steps and tool calls. It ends as Success, Steered (a new event interrupted it, and what it already did takes effect) or Failed (an exception, with no state side effects). Numbered per chapter.
+**Turn**: the execution unit in which the agent fully responds to one wake-up — the whole loop from taking the accumulated changes to replying, possibly several Steps and tool calls. It ends as Success, Steered (a new event interrupted it, and what it already did takes effect) or Failed (an exception, with no state side effects). Numbered within its session (a main session is one chapter).
 _Avoid_: "round"
 
 **Step**: one LLM call together with that call's tool results, numbered within its Turn. Recorded at runtime, never persisted.
@@ -106,19 +108,19 @@ _Avoid_: "judge" for this stage (a judgement model is a criteria-based verifier,
 
 **context messages**: the accumulated sequence handed to the LLM — rendered messages, the chapter-opening block, and tool call/result chains, appended per Turn and persisted in the snapshot. Message is the stored content; context messages are the accumulated LLM product.
 
-**ContextMeta**: the chapter's persisted scalars — context tokens, successful Turn count, Step count — reset on reopen.
+**ContextMeta**: the chapter's persisted scalars — context tokens, successful Turn count, Step count, and the chapter's session id — reset on reopen, which mints a new session id.
 
 **chat preference**: a per-Chat setting that overrides the configured default (currently the language the chat speaks); no row means the chat inherits the default, and the stored blob tolerates fields a newer build added. `agent/settings.rs:Settings` is where a preference and the configured default are resolved into the value a chat runs with.
 
 **steering**: ending the current Turn early when a new event arrives, then opening a new Turn to handle it. Attention continuing, not work being preempted.
 
-**attention window**: the spell during which the agent keeps attending — opened by a change addressed to it, or by its own reply — and inside which everything pending dispatches (`agent/runtime/chat/scheduler.rs:EventScheduler::on_addressed`, `:on_spoke`).
+**attention window**: the spell during which the agent keeps attending — opened by a change addressed to it, or by its own reply — and inside which everything pending dispatches (`agent/chat/scheduler.rs:EventScheduler::on_addressed`, `:on_spoke`).
 _Avoid_: bare "window" (that one is the context window), "attention span"
 
 **Chapter wrap-up**: the pass that condenses a chapter into the next chapter's opening. It does not own topic lifecycle, runs with the same agent and tool surface as a normal turn, and its text output is machine-extracted.
 _Avoid_: "summarize", "digest" (a summary is a conversational reply)
 
-**ChatEntry**: one change to a chat as the state flow accumulates it — a message created, a message edited, a command, a scheduled task — carrying what happened and when, never the content (the message row holds that). Entries live in `conversation.pending`, ordered by when the change happened.
+**ChatEntry**: one change to a chat as the state flow accumulates it — a message created, a message edited, a command, a scheduled task, a confirmed purge — carrying what happened and when, never the content (the message row holds that). Entries live in `conversation.pending`, ordered by when the change happened.
 _Avoid_: "event" (the `event` table is the agent's audit trail)
 
 **accumulation** (`pending`): the changes of a chat that no Turn has consumed yet. A Turn takes the whole accumulation and consumes it only on a normal end; a failed Turn leaves it for the next attempt, and a generation start re-feeds it.
@@ -127,17 +129,31 @@ _Avoid_: "event" (the `event` table is the agent's audit trail)
 
 **WakeReason**: how one accumulated change reads: Observe, Direct, Mention, Scheduled or Command. Who a change was aimed at decides it, and a private chat always reads as Direct.
 
-**command table**: the declaration of every command — name, aliases, menu copy and payload grammar — in `agent/command/spec.rs`.
+**command table**: the agent's declaration of every command it offers — one row per command in `agent/command/spec.rs:DECLARATIONS`: wire name and aliases, menu copy (`agent/command/menu.rs`), the parse that reads its payload, and the `Interaction` it needs from a platform. A platform advertises the rows its `ChannelCapabilities` can run and merges its own declarations in front of them (`/start`).
 _Avoid_: "command list", "registry" (the agent registry is a different thing)
+
+**command declaration**: one row of the **command table** — what a platform advertises in its menu and what the agent resolves a typed name through. A platform's own commands are declarations of its own (Telegram's `/start`), listed before the agent's.
 
 **host operation**: a command the host answers on the spot, which never enters the conversation (`/start`, `/status`, `/lang`).
 _Avoid_: "built-in", "admin command"
 
-**agent task**: a command that is conversation with the agent — it joins the chat's accumulation as a command entry, so it survives a crash, and is answered in the conversation (`/organizememory`, `/explain`, `/digest`).
+**agent task**: a command that is conversation with the agent — it joins the chat's accumulation as a command entry, so it survives a crash, and is answered in the conversation (`/organizememory`, `/explain`).
 _Avoid_: "task" (a scheduled task is `WakeReason::Scheduled`)
 
-**host copy**: a reply the host composes itself instead of the agent, in the chat's language — keys and strings are `agent/copy.rs:HostCopy` and its `render`.
+**host copy**: a reply the host composes itself instead of the agent, in the chat's language — a variant of `agent/host_copy.rs:HostCopy` and its `render`. A dialog's pages and a pass's receipt are host copy as well: they are about the host's own operation, not something the agent said, and live beside the command that says them (`agent/command/<command>/copy.rs`).
 _Avoid_: "template", "i18n string"
+
+**purge**: one action that wipes a Chat's own traces over a **window** — the agent's records, the workspace files, the platform's messages, and the derived data — after the person confirmed it. It is deterministic: statements and file operations, no judgement by a model. The chat's own ChatAgent carries it out in a pass of its own, never inside a Turn.
+_Avoid_: "delete" (a message being removed on the platform is not this), "cleanup", "session reset"
+
+**surface**: one of the four independent things a purge can touch — the agent's records (`agent`), the workspace files (`files`), the platform's messages (`telegram`), and the derived data (`derived`: event rows, transcripts, and the cached bytes of attachments) (`domain/vo/purge.rs:PurgeSurface`). A purge that leaves `telegram` out forgets the conversation while the platform still shows it.
+
+**window**: the stretch of time a ranged statement narrows by — both ends optional, a missing one unbounded on that side, the upper end inclusive (`domain/vo/time.rs:TimeRange`). What a **stretch** resolves to at the moment it runs.
+
+**stretch**: how a person names a piece of time — everything, a span back from now, or two local dates covering whole days with the last one included (`domain/vo/stretch.rs:Stretch`). It resolves to a **window** only when the action runs, which is what lets a dialog hold a choice across a restart; `/purge` and `/digest` both name their time this way. A span is named in the largest whole unit that divides it (`domain/vo/stretch.rs:whole_units`), so a five-minute window never reads as zero hours, and the chat reads every span through `agent/host_copy.rs:stretch_text` alone — a range button, the confirmation it leads to and the receipt are the same words.
+
+**confirmation**: the pages of host copy a command goes through before it acts (`agent/command/purge/dialog.rs`, `agent/command/digest/dialog.rs`, put out through the shared engine `agent/command/dialog.rs`) — held in memory, bound to the chat, and good only until it expires. Who may press is the page's own policy (`agent/command/dialog.rs:Audience`): a page that acts on the person who asked (`/purge`) admits only them, while a page that acts on the chat (`/digest`) admits anybody in it. A page that is gone changes nothing, and a press the page does not admit is refused.
+_Avoid_: "wizard", "prompt" (a prompt is what the model reads)
 
 **Skill**: a specialist capability described by a SKILL.md file; the prompt lists the names and the body is loaded with `read skill://<name>`.
 _Avoid_: "plugin"
@@ -153,27 +169,27 @@ _Avoid_: "guard" (a guard's meaning is its lifetime — that is `TypingGuard`); 
 **channel key**: the `platform:key` spelling one channel instance is stored under — prepared once where the channel is built, read by the scheduled-task scope, the log labels and nothing else. An identity travels as a typed value; the spelling exists for the columns and the logs.
 _Avoid_: "channel id" (that is the platform's own instance identity), "instance name"
 
-**platform declaration**: what one platform offers the agent (`agent/channel.rs:ChannelCapabilities`) — the forms it can send and what each form takes, whether a message may point at another one or quote a part of it, and the upload ceiling. The code that must vary with the platform reads the declaration; a difference with no reader is not declared.
+**platform declaration**: what one platform offers the agent (`agent/channel.rs:ChannelCapabilities`) — the forms it can send and what each form takes, whether a message may point at another one or quote a part of it, whether it can put out a page of buttons and read a press back, and the upload ceiling. The code that must vary with the platform reads the declaration; a difference with no reader is not declared.
 _Avoid_: "capability list" (only the forms are a list), "platform config" (that is the `[channel.<name>]` section)
 
-**channel adapter**: one platform's own half of the platform layer (`platform/adapter.rs:ChannelAdapter`) — the key its channel is stored under, its **platform declaration**, reading its updates into an **arrival**, sending what the agent asked for and answering with a receipt (`platform/adapter.rs:SentMessage`), starting a **typing guard**, and file access. Only the platform layer names it; the agent speaks **channel** on the way out and **channel access** on the way in.
+**channel adapter**: one platform's own half of the platform layer (`platform/adapter.rs:ChannelAdapter`) — the key its channel is stored under, its **platform declaration**, reading its updates into an **arrival**, sending what the agent asked for and answering with a receipt (`platform/adapter.rs:SentMessage`), starting a **typing guard**, file access, and deleting messages the chat no longer wants. Only the platform layer names it; the agent speaks **channel** on the way out and **channel access** on the way in.
 _Avoid_: "transport" (that is HTTP or the vendor's client), "wire" (our own word for it), "adapter" for the layer as a whole
 
-**arrival**: one update a platform read off its own update stream and handed to the inbound tail (`agent/intake.rs:Arrival`) — chat (external id, kind, title), sender, text, attachments, external id, reply-to, the change kind with the platform's own times, who it was aimed at, the platform's own message meta, and what the platform made of the text (`Ordinary`, its own `Greeting`, or a `Command` with its name and payload). Platform ids are strings here; the tail resolves them to rows. It carries no platform-shaped field of its own: whatever a platform knows beyond this set rides in its `meta`.
+**arrival**: one update a platform read off its own update stream and handed to the inbound tail (`agent/inbound/arrival.rs:Arrival`) — chat (external id, kind, title), sender, text, attachments, external id, reply-to, the change kind with the platform's own times, who it was aimed at, the platform's own message meta, and what the platform made of it (`Ordinary`, its own `Greeting`, a `Command` with its name and payload, or a `Choice` — one of our own buttons pressed, carrying its token, the platform's answer handle and the message the buttons hang on). Platform ids are strings here; the tail resolves them to rows. It carries no platform-shaped field of its own: whatever a platform knows beyond this set rides in its `meta`.
 _Avoid_: "update" (that is the platform's own payload), "event" (that is the agent's audit trail)
 
-**channel access**: the inbound path's narrow handle on the platform (`agent/channel.rs:ChannelAccess`) — whether a chat may talk to this channel, and how to deliver host copy. The adapter answers it (`platform/adapter.rs:ChannelAdapter` declares it as a supertrait), so the tail reads two methods and no vendor type.
+**channel access**: the inbound path's narrow handle on the platform (`agent/channel.rs:ChannelAccess`) — whether a chat may talk to this channel, how to deliver host copy, and how to put a question with buttons to a person and read a press back. The adapter answers it (`platform/adapter.rs:ChannelAdapter` declares it as a supertrait), so the tail reads its methods and no vendor type.
 _Avoid_: "channel" bare when only the inbound half is meant
 
 **typing guard**: the live typing indicator, held as a value whose lifetime is the indicator's (`agent/channel.rs:TypingGuard`) — dropping it ends what the platform started. How it is kept alive between those two points is the platform's fact, so the agent never names a cadence; a platform with no indicator answers `None`.
 _Avoid_: "typing flag" (nothing declares whether a platform has an indicator — it answers with a guard or with nothing)
 
-**inbound tail**: the one path an **arrival** takes after a platform hands it over (`agent/intake.rs:Intake`) — admission, the command fork, resolving the chat and its account, one-transaction ingest, and the doorbell. It is agent-owned: everything it reaches for is agent or domain vocabulary, so a platform only reads its own updates into an arrival and hands it over.
+**inbound tail**: the one path an **arrival** takes after a platform hands it over (`agent/inbound/mod.rs:Intake`) — admission, the command fork, resolving the chat and its account, one-transaction ingest, and the doorbell. It is agent-owned: everything it reaches for is agent or domain vocabulary, so a platform only reads its own updates into an arrival and hands it over.
 _Avoid_: "dispatcher" (that is one platform's routing), "platform intake" (the tail is not the platform layer's)
 
 **ChannelHost**: the process-level host owning every channel — it starts them and orchestrates shutdown. What it keeps per channel is `platform/host.rs:ChannelRuntime`: the channel's `ChannelContext` (the adapter, the one inbound path, the chats' agents, and the token their shutdown hangs on) and the supervisor handle it stops.
 
-**AppContext**: the process-level container holding config, settings, database services, the chat transport, multimodal and the event bus (`agent/runtime/context.rs`).
+**AppContext**: the process-level container holding config, settings, database services, the chat transport, multimodal and the event bus (`agent/process/context.rs`).
 
 **MCP**: Model Context Protocol, the external tool-server protocol.
 

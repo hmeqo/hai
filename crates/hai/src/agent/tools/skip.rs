@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::{
-    agent::runtime::turn::ToolContext,
+    agent::run::turn::ToolContext,
     agentcore::tool::{AgentTool, ToolError, tool_ok},
 };
 

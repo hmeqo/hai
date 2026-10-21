@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     agent::{
-        context::sections::memory::memory_element,
-        runtime::turn::ToolContext,
+        prompt::context::sections::memory::memory_element,
+        run::turn::ToolContext,
         tools::util::{deserialize_option_lenient_i64_vec, required},
     },
     agentcore::{

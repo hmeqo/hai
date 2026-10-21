@@ -18,7 +18,7 @@ use super::{
     event_store::EventStore,
     filter::Query,
     guard::{InputReader, TerminalGuard},
-    timeline::Timeline,
+    timeline::{Level, Timeline},
 };
 use crate::{
     domain::{
@@ -47,10 +47,22 @@ pub(super) struct App {
 }
 
 impl App {
-    fn new(repos: Repos, chat_filter: Option<ChatId>, kind_filter: Option<EventKind>) -> Self {
+    fn new(
+        repos: Repos,
+        chat_filter: Option<ChatId>,
+        kind_filter: Option<EventKind>,
+        session_filter: Option<String>,
+    ) -> Self {
+        // The query line reads a prefix case-insensitively; the seeded filter has to match what the
+        // line parses, or the first keystroke would reload a window that is already right.
+        let session_filter = session_filter.map(|session| session.to_lowercase());
         Self {
-            store: EventStore::new(repos, chat_filter, kind_filter),
-            query: Query::new(seed_query(chat_filter, kind_filter)),
+            store: EventStore::new(repos, chat_filter, kind_filter, session_filter.clone()),
+            query: Query::new(seed_query(
+                chat_filter,
+                kind_filter,
+                session_filter.as_deref(),
+            )),
             chats: Chats::new(),
             timeline: Timeline::new(),
             detail: Detail::new(),
@@ -140,6 +152,7 @@ impl App {
             .stale_sql(
                 self.store.chat_filter.map(|chat| chat.0),
                 self.store.kind_filter,
+                self.store.session_filter.as_deref(),
             )
             .then_some(Effect::Reload)
     }
@@ -186,11 +199,15 @@ impl App {
                 let Some(row) = self.timeline.selected_row() else {
                     return;
                 };
-                let opens = self
-                    .timeline
-                    .group_of(row)
-                    .is_some_and(|group| group.turn.is_some());
-                if !row.child && opens {
+                let opens = match row.level {
+                    Level::Session => true,
+                    Level::Turn => self
+                        .timeline
+                        .group_of(row)
+                        .is_some_and(|group| group.turn.is_some()),
+                    Level::Event => false,
+                };
+                if opens {
                     self.timeline.toggle(row);
                 } else {
                     self.detail.show(Some(row.seq));
@@ -294,6 +311,7 @@ impl App {
             Effect::Reload => {
                 self.store.chat_filter = self.query.parsed.chat.map(ChatId);
                 self.store.kind_filter = self.query.parsed.kind;
+                self.store.session_filter = self.query.parsed.session.clone();
                 match self.store.load_end().await {
                     Ok(()) => self.timeline.follow_end(),
                     Err(e) => self.set_error(format!("reload: {e}")),
@@ -497,12 +515,12 @@ impl App {
         let text = Text::from(
             [
                 "panes    Tab/h/l   cycle  |  / opens the query line",
-                "query    type      chat:4242  kind:turn-ended  tool:send_*",
+                "query    type      chat:4242  kind:turn-ended  session:0a1b  tool:send_*",
                 "                   turn:5  slow:2s  err  \"free text\"",
                 "         Enter/Tab keep the terms and close  |  Esc puts back the",
                 "                   terms that were in effect when it opened",
-                "         (chat:/kind: re-read the window as they change; the rest",
-                "                   refilter what is already loaded)",
+                "         (chat:/kind:/session: re-read the window as they change; the",
+                "                   rest refilter what is already loaded)",
                 "chats    j/k       move  |  Enter filter by that chat (again to clear)",
                 "timeline j/k       move  |  Enter expand a turn, open an event",
                 "         PgUp/PgDn, Ctrl+U/Ctrl+D  page  |  g/G oldest loaded",
@@ -524,18 +542,25 @@ pub async fn run_tui(
     repos: Repos,
     chat_filter: Option<ChatId>,
     kind_filter: Option<EventKind>,
+    session_filter: Option<String>,
 ) -> Result<()> {
-    App::new(repos, chat_filter, kind_filter).run().await
+    App::new(repos, chat_filter, kind_filter, session_filter)
+        .run()
+        .await
 }
 
-/// The query line as the command line spelled it, so the reader sees what `--chat`/`--event` chose.
-fn seed_query(chat: Option<ChatId>, kind: Option<EventKind>) -> String {
+/// The query line as the command line spelled it, so the reader sees what `--chat`/`--event`/
+/// `--session` chose.
+fn seed_query(chat: Option<ChatId>, kind: Option<EventKind>, session: Option<&str>) -> String {
     let mut terms: Vec<String> = Vec::new();
     if let Some(chat) = chat {
         terms.push(format!("chat:{}", chat.0));
     }
     if let Some(kind) = kind {
         terms.push(format!("kind:{}", kind.as_str()));
+    }
+    if let Some(session) = session {
+        terms.push(format!("session:{session}"));
     }
     terms.join(" ")
 }

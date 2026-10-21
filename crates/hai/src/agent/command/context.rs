@@ -1,5 +1,5 @@
 use crate::{
-    agent::{runtime::registry::AgentRegistry, settings::Settings},
+    agent::{process::registry::AgentRegistry, settings::Settings},
     domain::{service::Services, vo::ChatId},
 };
 

@@ -7,12 +7,16 @@ use teloxide::{
     Bot,
     dispatching::{Dispatcher, ShutdownToken, UpdateFilterExt},
     dptree,
-    types::{Me, Message, Update},
+    prelude::Requester,
+    types::{CallbackQuery, Me, Message, Update},
 };
 use tokio::sync::oneshot;
 
-use super::arrival::{self, BotIdentity};
-use crate::{agent::intake::Intake, domain::repo::ChangeKind, error::Result};
+use super::inbound::arrival::{self, BotIdentity};
+use crate::{
+    agent::inbound::Intake, domain::repo::ChangeKind, error::Result,
+    platform::telegram::outbound::service::telegram_err,
+};
 
 pub(super) struct TelegramDispatcher {
     bot: Bot,
@@ -36,6 +40,11 @@ impl TelegramDispatcher {
             .branch(Update::filter_edited_message().endpoint(
                 |msg: Message, me: Me, dp: Arc<TelegramDispatcher>| async move {
                     dp.handle_edited(msg, me).await
+                },
+            ))
+            .branch(Update::filter_callback_query().endpoint(
+                |query: CallbackQuery, dp: Arc<TelegramDispatcher>| async move {
+                    dp.handle_callback(query).await
                 },
             ));
 
@@ -96,6 +105,25 @@ impl TelegramDispatcher {
                 Ok(())
             }
         }
+    }
+
+    /// A button press is an exchange, not a message: it enters the tail through the same door as
+    /// everything else, so admission and the host's own reading of it stay in one place.
+    async fn handle_callback(&self, query: CallbackQuery) -> Result<()> {
+        let Some(arrival) = arrival::callback_arrival(&query) else {
+            tracing::debug!(
+                from = %query.from.id,
+                "callback query without a message or a token, ignored",
+            );
+            // The client waits on an answer even when the press means nothing to us.
+            self.bot
+                .answer_callback_query(query.id)
+                .await
+                .map_err(telegram_err)?;
+            return Ok(());
+        };
+        tracing::debug!(chat_id = %arrival.chat.external_id, from = %query.from.id, "Button pressed");
+        self.intake.accept(arrival).await
     }
 }
 

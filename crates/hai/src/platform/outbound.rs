@@ -8,8 +8,8 @@ use async_trait::async_trait;
 
 use crate::{
     agent::channel::{
-        Channel, ChannelCapabilities, ChannelProfile, OutboundMessage, OutboundPayload, ReplyTo,
-        TypingGuard,
+        Channel, ChannelCapabilities, ChannelProfile, DeleteReport, OutboundMessage,
+        OutboundPayload, ReplyTo, TypingGuard,
     },
     domain::{
         model::{Chat, ChatType, NewAttachment, Platform},
@@ -214,7 +214,7 @@ impl Channel for OutboundRecorder {
         self.adapter.key()
     }
 
-    fn profile(&self) -> ChannelProfile {
+    fn profile(&self) -> &ChannelProfile {
         self.adapter.profile()
     }
 
@@ -237,7 +237,7 @@ impl Channel for OutboundRecorder {
             // under a record it is not part of.
             self.services.topic.get(chat_id, topic_id).await?;
         }
-        let text = text_of(&payload);
+        let payload_text = text_of(&payload);
         let sent = self
             .adapter
             .send(WireMessage {
@@ -246,7 +246,29 @@ impl Channel for OutboundRecorder {
                 payload,
             })
             .await?;
+        // The platform may have cut the caption: the row keeps what left, not what was asked for.
+        let text = sent
+            .attachments
+            .first()
+            .and_then(|attachment| attachment.caption.clone())
+            .unwrap_or(payload_text);
         self.record(chat_id, &reply, text, sent).await
+    }
+
+    /// The handle's chat is resolved so the platform gets its own id; the copy then goes out the way
+    /// the inbound contract delivers host copy, and nothing is recorded.
+    async fn notice(&self, chat_id: ChatId, text: &str) -> Result<()> {
+        let chat = self.resolve_chat(chat_id).await?;
+        self.adapter.notice(&chat.external_id, text).await
+    }
+
+    async fn delete_messages(&self, chat_id: ChatId, ids: &[String]) -> Result<DeleteReport> {
+        let chat = self.resolve_chat(chat_id).await?;
+        self.adapter.delete_messages(&chat.external_id, ids).await
+    }
+
+    async fn forget_cached(&self, file_ids: &[String]) -> Result<u64> {
+        self.adapter.forget_cached(file_ids).await
     }
 
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>> {

@@ -58,3 +58,6 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 unicode-width = { workspace = true }
 which = { workspace = true }
+
+[dev-dependencies]
+syn = { version = "3", features = ["full", "visit"] }

@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use crate::{
     domain::{
-        model::{Attachment, Message, MessageRole, NewAttachment, NewMessage},
+        model::{Attachment, AttachmentHandle, Message, MessageRole, NewAttachment, NewMessage},
         repo::Repos,
         vo::{
             AccountId, AttachmentId, ChatId, LlmMessageMeta, MessageId, MessageMeta,
-            PlatformMessageMeta, TopicId,
+            PlatformMessageMeta, TimeRange, TopicId,
         },
     },
     error::Result,
@@ -27,19 +27,6 @@ pub struct NewAgentMessage {
     pub topic_id: Option<TopicId>,
 }
 
-pub(crate) struct UpsertMessageParams {
-    pub chat_id: ChatId,
-    pub external_id: Option<String>,
-    pub role: MessageRole,
-    pub text: String,
-    pub attachments: Vec<NewAttachment>,
-    pub account_id: Option<AccountId>,
-    pub reply_to_id: Option<MessageId>,
-    pub meta: serde_json::Value,
-    pub sent_at: Option<jiff::Timestamp>,
-    pub topic_id: Option<TopicId>,
-}
-
 #[derive(Debug)]
 pub struct MessageService {
     repos: Repos,
@@ -50,42 +37,33 @@ impl MessageService {
         Self { repos }
     }
 
-    async fn upsert_by_external_id(&self, params: UpsertMessageParams) -> Result<Message> {
-        if let Some(ext_id) = &params.external_id
-            && let Some(existing) = self
-                .repos
-                .message
-                .find_by_chat_external_id(params.chat_id, ext_id)
-                .await?
-        {
-            return self
-                .repos
-                .message
-                .refresh(
-                    &existing,
-                    params.text,
-                    params.meta,
-                    existing.edited_at,
-                    &params.attachments,
-                )
-                .await;
+    /// Writes one message, refreshing the row a redelivery of the same external id names; the
+    /// caller hands the shape the repo inserts, so nothing here re-lays it out.
+    async fn upsert_by_external_id(&self, new: NewMessage) -> Result<Message> {
+        let existing = match &new.external_id {
+            Some(external_id) => {
+                self.repos
+                    .message
+                    .find_by_chat_external_id(new.chat_id, external_id)
+                    .await?
+            }
+            None => None,
+        };
+        match existing {
+            Some(existing) => {
+                self.repos
+                    .message
+                    .refresh(
+                        &existing,
+                        new.text,
+                        new.meta,
+                        existing.edited_at,
+                        &new.attachments,
+                    )
+                    .await
+            }
+            None => self.repos.message.create(new).await,
         }
-        self.repos
-            .message
-            .create(NewMessage {
-                chat_id: params.chat_id,
-                account_id: params.account_id,
-                role: params.role,
-                text: params.text,
-                attachments: params.attachments,
-                topic_id: params.topic_id,
-                reply_to_id: params.reply_to_id,
-                external_id: params.external_id,
-                meta: params.meta,
-                sent_at: params.sent_at,
-                edited_at: None,
-            })
-            .await
     }
 
     pub async fn save_agent_message(&self, msg: NewAgentMessage) -> Result<Message> {
@@ -96,17 +74,18 @@ impl MessageService {
                 reasoning: None,
             }),
         };
-        self.upsert_by_external_id(UpsertMessageParams {
+        self.upsert_by_external_id(NewMessage {
             chat_id: msg.chat_id,
-            external_id: msg.external_id,
+            account_id: msg.account_id,
             role: MessageRole::Assistant,
             text: msg.text,
             attachments: msg.attachments,
-            account_id: msg.account_id,
+            topic_id: msg.topic_id,
             reply_to_id: msg.reply_to_id,
+            external_id: msg.external_id,
             meta: serde_json::to_value(&meta)?,
             sent_at: msg.sent_at,
-            topic_id: msg.topic_id,
+            edited_at: None,
         })
         .await
     }
@@ -152,5 +131,31 @@ impl MessageService {
 
     pub async fn attachment_by_id(&self, id: AttachmentId) -> Result<Option<Attachment>> {
         self.repos.attachment.by_id(id).await
+    }
+
+    /// The messages of a window, ascending.
+    pub async fn in_range(&self, chat_id: ChatId, range: TimeRange) -> Result<Vec<Message>> {
+        self.repos.message.in_range(chat_id, range).await
+    }
+
+    /// The platform ids of a window's messages, for deleting them there.
+    pub async fn external_ids_in_range(
+        &self,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<String>> {
+        self.repos
+            .message
+            .external_ids_in_range(chat_id, range)
+            .await
+    }
+
+    /// The platform files a window's messages carry, for the bytes cache and the transcripts.
+    pub async fn attachment_handles_in_range(
+        &self,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<AttachmentHandle>> {
+        self.repos.attachment.handles_in_range(chat_id, range).await
     }
 }

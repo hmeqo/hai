@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         model::{Topic, TopicNote, TopicStatus},
-        repo::{lexical, vector},
+        repo::{lexical, vector, window},
         vo::{ChatId, MessageId, TimeRange, TopicId},
     },
     error::Result,
@@ -216,7 +216,7 @@ impl TopicRepo {
     ) -> Result<Vec<Topic>> {
         let sql = format!(
             "SELECT * FROM topic WHERE chat_id = $1 {} ORDER BY last_active_at DESC LIMIT $4",
-            time_window("last_active_at", 2)
+            window::time_window("last_active_at", 2)
         );
         let query = sqlx::query_as::<_, Topic>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
         range
@@ -268,6 +268,37 @@ impl TopicRepo {
             .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Deletes the topics a purge reaches — the ones it names and the ones the window touched — with
+    /// their notes, and unlinks the messages filed under them; the caller owns the transaction. A
+    /// note has no foreign key to its topic, so the notes of both sets are deleted by the ids the
+    /// topic delete returns, and the same statement unlinks the messages filed under them, so no
+    /// message keeps a topic that is gone.
+    pub(crate) async fn delete_many_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+        ids: &[TopicId],
+        range: TimeRange,
+    ) -> Result<u64> {
+        let sql = format!(
+            "WITH doomed AS ( \
+                 DELETE FROM topic WHERE chat_id = $1 \
+                 AND (id = ANY($2::uuid[]) OR {}) RETURNING id), \
+             notes AS ( \
+                 DELETE FROM topic_note WHERE topic_id IN (SELECT id FROM doomed)), \
+             unlinked AS ( \
+                 UPDATE message SET topic_id = NULL \
+                 WHERE chat_id = $1 AND topic_id IN (SELECT id FROM doomed)) \
+             SELECT count(*) FROM doomed",
+            window::predicate("last_active_at", 3),
+        );
+        let query = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(chat_id.0)
+            .bind(ids);
+        let (deleted,) = range.bind(query).fetch_one(&mut *tx).await?;
+        // `count(*)` is never negative.
+        Ok(deleted as u64)
     }
 }
 
@@ -341,18 +372,8 @@ fn keyword_search_sql() -> String {
          AND {} \
          ORDER BY {}, \
                   t.last_active_at DESC LIMIT $5",
-        time_window("t.last_active_at", 2),
+        window::time_window("t.last_active_at", 2),
         lexical::match_predicate(&["t.title", "t.summary"], 4),
         lexical::match_rank(&["t.title", "t.summary"], 4),
-    )
-}
-
-/// The time window a listing narrows by, over `column`: the bounds are the two placeholders from
-/// `first` on, and a NULL bound means unbounded on that side.
-fn time_window(column: &str, first: usize) -> String {
-    format!(
-        "AND (${first}::timestamptz IS NULL OR {column} >= ${first}) \
-         AND (${next}::timestamptz IS NULL OR {column} <= ${next})",
-        next = first + 1,
     )
 }

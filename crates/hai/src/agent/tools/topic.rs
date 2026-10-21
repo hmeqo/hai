@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     agent::{
-        runtime::turn::ToolContext,
+        run::turn::ToolContext,
         tools::util::{deserialize_option_lenient_i64_vec, required},
     },
     agentcore::tool::{AgentTool, ToolError, tool_data, tool_err, tool_ok},

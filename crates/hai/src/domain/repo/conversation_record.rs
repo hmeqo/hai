@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         model::ConversationRecord,
-        vo::{ChatEntry, ChatId},
+        vo::{ChapterWrite, ChatEntry, ChatId},
     },
     error::Result,
 };
@@ -37,26 +37,23 @@ impl ConversationRecordRepo {
     pub async fn save(
         &self,
         chat_id: ChatId,
-        messages: Value,
-        context_meta: Value,
+        chapter: ChapterWrite,
         consumed: &[Uuid],
         updated_at: jiff::Timestamp,
     ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO conversation (chat_id, messages, context_meta, updated_at) \
-             VALUES ($1, $2, $3, $5) \
-             ON CONFLICT (chat_id) DO UPDATE SET messages = $2, context_meta = $3, \
-             pending = COALESCE((SELECT jsonb_agg(e) FROM jsonb_array_elements(conversation.pending) e \
-             WHERE (e->>'id')::uuid <> ALL($4)), '[]'::jsonb), updated_at = $5",
-        )
-        .bind(chat_id.0)
-        .bind(messages)
-        .bind(context_meta)
-        .bind(consumed)
-        .bind(jiff_sqlx::Timestamp::from(updated_at))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        write_snapshot(&self.pool, chat_id, chapter, consumed, updated_at).await
+    }
+
+    /// The same write inside a caller's transaction, so a purge rewrites the snapshot and consumes
+    /// its changes in the statement that deletes them.
+    pub(crate) async fn save_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+        chapter: ChapterWrite,
+        consumed: &[Uuid],
+        updated_at: jiff::Timestamp,
+    ) -> Result<()> {
+        write_snapshot(&mut *tx, chat_id, chapter, consumed, updated_at).await
     }
 
     /// Appends one change on its own transaction, for a producer outside the ingest path.
@@ -92,17 +89,16 @@ impl ConversationRecordRepo {
     /// The accumulated changes of a chat, oldest first. A stored entry that no longer parses is an
     /// error, not an empty backlog.
     pub async fn pending_entries(&self, chat_id: ChatId) -> Result<Vec<ChatEntry>> {
-        let pending: Option<Value> =
-            sqlx::query_scalar("SELECT pending FROM conversation WHERE chat_id = $1")
-                .bind(chat_id.0)
-                .fetch_optional(&self.pool)
-                .await?;
-        let Some(pending) = pending else {
-            return Ok(Vec::new());
-        };
-        let mut entries: Vec<ChatEntry> = serde_json::from_value(pending)?;
-        entries.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));
-        Ok(entries)
+        read_pending(&self.pool, chat_id).await
+    }
+
+    /// The same read inside a caller's transaction: a purge has to know which changes its own
+    /// deletes invalidate before it consumes them.
+    pub(crate) async fn pending_entries_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+    ) -> Result<Vec<ChatEntry>> {
+        read_pending(&mut *tx, chat_id).await
     }
 
     pub async fn chats_with_pending(&self) -> Result<Vec<ChatId>> {
@@ -114,4 +110,51 @@ impl ConversationRecordRepo {
         .await?;
         Ok(ids.into_iter().map(ChatId).collect())
     }
+}
+
+/// Writes the snapshot and consumes the batch in one statement, whether or not the chat has a record
+/// yet: a separate insert branch races the ingest that appends to the same row, and its
+/// duplicate-key failure would lose the write. Consumption is relative to what `pending` holds when
+/// the write lands, which is what keeps an entry appended while the Turn ran.
+async fn write_snapshot(
+    executor: impl sqlx::PgExecutor<'_>,
+    chat_id: ChatId,
+    chapter: ChapterWrite,
+    consumed: &[Uuid],
+    updated_at: jiff::Timestamp,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO conversation (chat_id, messages, context_meta, updated_at) \
+         VALUES ($1, $2, $3, $5) \
+         ON CONFLICT (chat_id) DO UPDATE SET messages = $2, context_meta = $3, \
+         pending = COALESCE((SELECT jsonb_agg(e) FROM jsonb_array_elements(conversation.pending) e \
+         WHERE (e->>'id')::uuid <> ALL($4)), '[]'::jsonb), updated_at = $5",
+    )
+    .bind(chat_id.0)
+    .bind(chapter.messages)
+    .bind(chapter.context_meta)
+    .bind(consumed)
+    .bind(jiff_sqlx::Timestamp::from(updated_at))
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// The accumulated changes of a chat, oldest first. A stored entry that no longer parses is an
+/// error, not an empty backlog.
+async fn read_pending(
+    executor: impl sqlx::PgExecutor<'_>,
+    chat_id: ChatId,
+) -> Result<Vec<ChatEntry>> {
+    let pending: Option<Value> =
+        sqlx::query_scalar("SELECT pending FROM conversation WHERE chat_id = $1")
+            .bind(chat_id.0)
+            .fetch_optional(executor)
+            .await?;
+    let Some(pending) = pending else {
+        return Ok(Vec::new());
+    };
+    let mut entries: Vec<ChatEntry> = serde_json::from_value(pending)?;
+    entries.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));
+    Ok(entries)
 }

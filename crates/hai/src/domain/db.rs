@@ -50,8 +50,9 @@ pub async fn migrate(config: &AppConfig) -> Result<()> {
 
 /// Converges a database on the single spelling the code uses: NULL `source_message_ids` and
 /// `topic_note.message_ids` become the empty array the model reads, the columns every write path
-/// binds become NOT NULL, and the DDL defaults that disagree with the write paths (`memory.status`,
-/// the `now()` defaults on `account`/`topic` times) are dropped.
+/// binds become NOT NULL, the DDL defaults that disagree with the write paths (`memory.status`,
+/// the `now()` defaults on `account`/`topic` times) are dropped, and a chapter snapshot written
+/// before `context_meta.session` existed gets one.
 async fn normalize_legacy_columns(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(
         "UPDATE memory SET source_message_ids = '{}' WHERE source_message_ids IS NULL;\n\
@@ -64,7 +65,10 @@ async fn normalize_legacy_columns(pool: &PgPool) -> Result<()> {
          ALTER TABLE topic_note ALTER COLUMN message_ids SET NOT NULL;\n\
          ALTER TABLE account ALTER COLUMN last_active_at DROP DEFAULT;\n\
          ALTER TABLE topic ALTER COLUMN started_at DROP DEFAULT;\n\
-         ALTER TABLE topic ALTER COLUMN last_active_at DROP DEFAULT;",
+         ALTER TABLE topic ALTER COLUMN last_active_at DROP DEFAULT;\n\
+         UPDATE conversation\n\
+         SET context_meta = context_meta || jsonb_build_object('session', gen_random_uuid())\n\
+         WHERE context_meta->>'session' IS NULL;",
     )
     .execute(pool)
     .await?;

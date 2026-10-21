@@ -1,6 +1,8 @@
-use super::{Command, CommandContext, Invocation, LanguageArg, Reply, Said, SystemCommand};
+use super::{
+    Command, CommandContext, Dialog, DialogArg, Invocation, LanguageArg, Reply, Said, SystemCommand,
+};
 use crate::{
-    agent::copy::HostCopy,
+    agent::host_copy::HostCopy,
     agentcore::Language,
     domain::vo::{AgentCommand, ChatEntry, EntryAudience, EntryKind},
     error::Result,
@@ -8,7 +10,7 @@ use crate::{
 
 pub(crate) async fn execute(ctx: &CommandContext, invocation: Invocation) -> Result<Reply> {
     match invocation {
-        Invocation::Malformed => said(ctx, HostCopy::Unread).await,
+        Invocation::Unreadable(err) => said(ctx, HostCopy::BadArgs(err)).await,
         Invocation::Ready(Command::System(command)) => answer(ctx, command).await,
         Invocation::Ready(Command::Agent(command)) => {
             enqueue(ctx, command).await?;
@@ -22,6 +24,22 @@ async fn answer(ctx: &CommandContext, command: SystemCommand) -> Result<Reply> {
     match command {
         SystemCommand::Status => status(ctx).await,
         SystemCommand::Lang(arg) => language(ctx, arg).await,
+        // Nothing is enqueued yet: the confirmation decides what, if anything, the chat is asked to do.
+        SystemCommand::Purge(arg) => {
+            let language = host_language(ctx).await?;
+            Ok(Reply::Dialog(Dialog {
+                language,
+                arg: DialogArg::Purge(arg),
+            }))
+        }
+        // The stretch is settled in the dialog, so a bare `/digest` asks for one there.
+        SystemCommand::Digest(arg) => {
+            let language = host_language(ctx).await?;
+            Ok(Reply::Dialog(Dialog {
+                language,
+                arg: DialogArg::Digest(arg),
+            }))
+        }
     }
 }
 

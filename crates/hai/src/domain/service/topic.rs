@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::hydrate;
+use super::retrieval::hydrate;
 use crate::{
     agentcore::api::embedding::EmbeddingService,
     domain::{

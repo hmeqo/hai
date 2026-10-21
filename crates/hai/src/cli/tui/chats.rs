@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use super::event_store::TurnGroup;
+use super::event_store::SessionGroup;
 
 /// The chats the loaded window holds, with the turns each has in it. Counted here rather than queried:
 /// the window is already in memory, so a chat with nothing in it is simply not listed.
@@ -34,18 +34,18 @@ impl Chats {
     }
 
     /// Recount from the turns the timeline kept, so a count always matches the rows that chat shows.
-    pub fn rebuild(&mut self, groups: &[TurnGroup], filtered: Option<i64>) {
+    pub fn rebuild(&mut self, groups: &[SessionGroup], filtered: Option<i64>) {
         let mut entries: Vec<Entry> = Vec::new();
-        for group in groups {
+        for turn in groups.iter().flat_map(|group| &group.turns) {
             match entries
                 .iter_mut()
-                .find(|entry| entry.chat_id == group.chat_id)
+                .find(|entry| entry.chat_id == turn.chat_id)
             {
                 Some(entry) => entry.turns += 1,
                 None => entries.push(Entry {
-                    chat_id: group.chat_id,
+                    chat_id: turn.chat_id,
                     turns: 1,
-                    filtered: filtered == Some(group.chat_id),
+                    filtered: filtered == Some(turn.chat_id),
                 }),
             }
         }

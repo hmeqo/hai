@@ -14,7 +14,7 @@ pub mod scheduled_task;
 pub mod topic;
 
 pub use account::{Account, Platform};
-pub use attachment::{Attachment, NewAttachment};
+pub use attachment::{Attachment, AttachmentHandle, NewAttachment};
 pub use chat::{Chat, ChatType, NewChat};
 pub use chat_preference::ChatPreference;
 pub use conversation_record::ConversationRecord;
@@ -64,10 +64,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        agentcore::Language,
         domain::vo::{
             AgentEventPayload, AttachmentKind, AttachmentParser, BatchComposition, ChatEntry,
-            EntryAudience, EntryKind, EventKind, MessageId, ModelRetryReason, StartedBy,
-            StepNumber, StepOutput, TurnEndReason, TurnNumber, WakeReasonKind,
+            EntryAudience, EntryKind, EventKind, MessageId, ModelRetryReason, PurgeCounts,
+            PurgeSpec, PurgeSurface, PurgeSurfaces, StartedBy, StepNumber, StepOutput, Stretch,
+            TurnEndReason, TurnNumber, WakeReasonKind,
         },
         test_support::assert_names_agree,
     };
@@ -112,10 +114,12 @@ mod tests {
         match serde_json::from_value::<AgentEventPayload>(old).expect("a pre-field record decodes")
         {
             AgentEventPayload::TurnStarted {
+                prompt_messages,
                 started_by,
                 composition,
                 ..
             } => {
+                assert_eq!(prompt_messages, 17);
                 assert_eq!(started_by, None);
                 assert_eq!(composition, None);
             }
@@ -136,13 +140,14 @@ mod tests {
         assert_names_agree(AttachmentParser::iter(), |parser| parser.name());
         assert_names_agree(ModelRetryReason::iter(), |reason| reason.into());
         assert_names_agree(EventKind::iter(), |kind| kind.as_str());
+        assert_names_agree(PurgeSurface::iter(), |surface| surface.name());
         assert_names_agree(WakeReasonKind::iter(), |kind| kind.as_str());
         assert_names_agree(
             [
                 AgentEventPayload::TurnStarted {
                     turn: TurnNumber(0),
                     reason: WakeReasonKind::Observe,
-                    msg_count: 0,
+                    prompt_messages: 0,
                     full_prompt: String::new(),
                     started_by: None,
                     composition: None,
@@ -169,6 +174,8 @@ mod tests {
                         reasoning: None,
                         response: String::new(),
                     },
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
                 },
                 AgentEventPayload::TurnEnded {
                     turn: TurnNumber(0),
@@ -187,6 +194,29 @@ mod tests {
                     summary: String::new(),
                 },
                 AgentEventPayload::WrapUpFailed {
+                    error: String::new(),
+                },
+                AgentEventPayload::Purged {
+                    spec: PurgeSpec {
+                        range: Stretch::All,
+                        surfaces: PurgeSurfaces::all(),
+                    },
+                    counts: PurgeCounts::default(),
+                    telegram_deleted: 0,
+                    telegram_failed: 0,
+                    files_removed: 0,
+                    cached_removed: 0,
+                },
+                AgentEventPayload::DigestStarted {
+                    stretch: Stretch::All,
+                    language: Language::default(),
+                },
+                AgentEventPayload::DigestCompleted {
+                    steps: 0,
+                    truncated: false,
+                    report_chars: 0,
+                },
+                AgentEventPayload::DigestFailed {
                     error: String::new(),
                 },
             ],

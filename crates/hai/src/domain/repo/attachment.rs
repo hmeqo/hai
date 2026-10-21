@@ -1,7 +1,8 @@
 use crate::{
     domain::{
-        model::{Attachment, NewAttachment},
-        vo::{AttachmentId, MessageId},
+        model::{Attachment, AttachmentHandle, NewAttachment},
+        repo::window,
+        vo::{AttachmentId, ChatId, MessageId, TimeRange},
     },
     error::Result,
 };
@@ -72,5 +73,27 @@ impl AttachmentRepo {
             .execute(&mut *executor)
             .await?;
         Ok(())
+    }
+
+    /// The platform files a window's messages carry, ascending. An attachment has no clock of its
+    /// own, so the message it belongs to is what the window is read over.
+    pub async fn handles_in_range(
+        &self,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<AttachmentHandle>> {
+        let sql = format!(
+            "SELECT a.platform, a.file_unique_id, a.file_id FROM attachment a \
+             JOIN message m ON m.id = a.message_id \
+             WHERE m.chat_id = $1 {} ORDER BY a.id",
+            window::time_window("COALESCE(m.sent_at, m.created_at)", 2),
+        );
+        let query = sqlx::query_as::<_, AttachmentHandle>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(chat_id.0);
+        range
+            .bind(query)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 }

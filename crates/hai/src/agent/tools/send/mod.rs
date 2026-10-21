@@ -20,8 +20,9 @@ use crate::{
             BuildCapability, ChannelCapabilities, ChannelHandle, OutboundForm, OutboundKind,
             OutboundPayload, ReplyTo,
         },
+        environment::sandbox::Sandbox,
         multimodal::MultimodalService,
-        runtime::{sandbox::Sandbox, turn::ToolContext},
+        run::turn::ToolContext,
     },
     agentcore::tool::{AgentTool, ToolError, schema_of, tool_err, tool_ok},
     domain::vo::{MessageId, TopicId},
@@ -291,10 +292,10 @@ mod tests {
     use crate::{
         agent::{
             channel::{
-                Channel, ChannelCapabilities, ChannelHandle, ChannelProfile, OutboundField,
-                OutboundMessage, OutboundSource, TypingGuard,
+                Channel, ChannelCapabilities, ChannelHandle, ChannelProfile, DeleteReport,
+                OutboundField, OutboundMessage, OutboundSource, TypingGuard,
             },
-            runtime::{sandbox::Sandbox, workspace::Workspace},
+            environment::{sandbox::Sandbox, workspace::Workspace},
         },
         config::{AppConfig, ProviderRegistry},
         domain::vo::{AccountId, ChannelKey, ChatId},
@@ -371,12 +372,14 @@ mod tests {
             &KEY
         }
 
-        fn profile(&self) -> ChannelProfile {
-            ChannelProfile {
-                account_id: AccountId(1),
-                username: "test".to_owned(),
-                name: "Test".to_owned(),
-            }
+        fn profile(&self) -> &ChannelProfile {
+            static PROFILE: std::sync::LazyLock<ChannelProfile> =
+                std::sync::LazyLock::new(|| ChannelProfile {
+                    account_id: AccountId(1),
+                    username: "test".to_owned(),
+                    name: "Test".to_owned(),
+                });
+            &PROFILE
         }
 
         fn capabilities(&self) -> ChannelCapabilities {
@@ -386,6 +389,22 @@ mod tests {
         async fn send(&self, msg: OutboundMessage) -> crate::error::Result<()> {
             *self.sent.lock().expect("test channel lock") = Some(msg);
             Ok(())
+        }
+
+        async fn notice(&self, _chat_id: ChatId, _text: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn delete_messages(
+            &self,
+            _chat_id: ChatId,
+            _ids: &[String],
+        ) -> crate::error::Result<DeleteReport> {
+            Ok(DeleteReport::default())
+        }
+
+        async fn forget_cached(&self, _file_ids: &[String]) -> crate::error::Result<u64> {
+            Ok(0)
         }
 
         async fn start_typing(&self, _chat_id: ChatId) -> Option<Box<dyn TypingGuard>> {
@@ -416,6 +435,7 @@ mod tests {
             forms,
             reference,
             quote,
+            choices: false,
             max_media_bytes: 50 * 1024 * 1024,
         }
     }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{
     postgres::{PgArgumentBuffer, PgArguments, PgValueRef, Postgres},
-    query::QueryAs,
+    query::{Query, QueryAs},
 };
 
 /// A window on a timestamp column; either end may be open.
@@ -21,6 +21,16 @@ impl TimeRange {
         self,
         query: QueryAs<'q, Postgres, O, PgArguments>,
     ) -> QueryAs<'q, Postgres, O, PgArguments> {
+        query
+            .bind(self.since.map(jiff_sqlx::Timestamp::from))
+            .bind(self.until.map(jiff_sqlx::Timestamp::from))
+    }
+
+    /// The same two binds for a statement that returns nothing but affected rows (`DELETE`).
+    pub fn bind_execute<'q>(
+        self,
+        query: Query<'q, Postgres, PgArguments>,
+    ) -> Query<'q, Postgres, PgArguments> {
         query
             .bind(self.since.map(jiff_sqlx::Timestamp::from))
             .bind(self.until.map(jiff_sqlx::Timestamp::from))

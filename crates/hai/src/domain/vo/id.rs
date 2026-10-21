@@ -106,6 +106,15 @@ id_type!(
 id_type!(
     pub struct StepNumber(pub usize);
 );
+id_type!(
+    pub struct SessionId(pub uuid::Uuid);
+);
+
+impl SessionId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
 
 /// Namespace for attachment occurrence ids; never reused by another identity.
 const ATTACHMENT_NS: Uuid = Uuid::from_u128(0x8f4b_2c17_9e60_4a3d_b5c8_1e7f_9d02_6a34);

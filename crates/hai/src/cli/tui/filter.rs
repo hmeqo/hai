@@ -109,8 +109,15 @@ impl Query {
 
     /// The terms the window was queried with and the terms the query line holds have to agree for the
     /// rows to be the reader's; a mismatch is what queues a reload.
-    pub fn stale_sql(&self, chat_filter: Option<i64>, kind_filter: Option<EventKind>) -> bool {
-        chat_filter != self.parsed.chat || kind_filter != self.parsed.kind
+    pub fn stale_sql(
+        &self,
+        chat_filter: Option<i64>,
+        kind_filter: Option<EventKind>,
+        session_filter: Option<&str>,
+    ) -> bool {
+        chat_filter != self.parsed.chat
+            || kind_filter != self.parsed.kind
+            || session_filter != self.parsed.session.as_deref()
     }
 
     fn reparse(&mut self) {
@@ -202,8 +209,8 @@ impl Query {
     }
 }
 
-/// What a query line asks for. `chat` and `kind` are the two terms the database can narrow by; the
-/// rest are matched against an `EventDisplay` in memory.
+/// What a query line asks for. `chat`, `kind` and `session` are the terms the database can narrow by;
+/// the rest are matched against an `EventDisplay` in memory.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Terms {
     /// Bare words, joined by a space: searched for, case-insensitively, in each row's rendering.
@@ -213,6 +220,8 @@ pub(super) struct Terms {
     /// A glob: `*` matches any run, `?` one character.
     pub tool: Option<String>,
     pub turn: Option<TurnNumber>,
+    /// A session id prefix: what a session header shows and `hai log --session` takes.
+    pub session: Option<String>,
     pub only_errors: bool,
     /// Milliseconds a turn has to have taken to survive.
     pub slow: Option<u64>,
@@ -239,6 +248,7 @@ impl Terms {
                 "kind" => terms.kind = Some(parse_kind(value)?),
                 "tool" => terms.tool = Some(value.to_string()),
                 "turn" => terms.turn = Some(parse_turn(value)?),
+                "session" => terms.session = Some(value.to_lowercase()),
                 "slow" => terms.slow = Some(parse_duration(value)?),
                 _ => words.push(token),
             }
@@ -270,6 +280,13 @@ impl Terms {
         }
         if let Some(turn) = self.turn
             && display.facts.turn != Some(turn)
+        {
+            return false;
+        }
+        if let Some(prefix) = &self.session
+            && !display
+                .session
+                .is_some_and(|session| session.id.to_string().starts_with(prefix.as_str()))
         {
             return false;
         }
@@ -307,6 +324,9 @@ impl Terms {
         }
         if let Some(kind) = self.kind {
             parts.push(format!("kind:{}", kind.as_str()));
+        }
+        if let Some(session) = &self.session {
+            parts.push(format!("session:{session}"));
         }
         if let Some(tool) = &self.tool {
             parts.push(format!("tool:{tool}"));
@@ -401,7 +421,10 @@ mod tests {
     use crossterm::event::KeyModifiers;
 
     use super::*;
-    use crate::cli::display::{EventFacts, TurnOutcome};
+    use crate::{
+        cli::display::{EventFacts, TurnOutcome},
+        domain::vo::{SessionId, SessionRef},
+    };
 
     fn display(
         chat_id: i64,
@@ -414,6 +437,7 @@ mod tests {
             one_liner: String::from("TOOL  5.1  send_message(sent)  ✓"),
             sections: Vec::new(),
             chat_id,
+            session: None,
             kind: Some(EventKind::ToolCallResult),
             color: (0, 0, 0),
             facts: EventFacts {
@@ -421,6 +445,7 @@ mod tests {
                 tool: Some(tool.to_string()),
                 ok: Some(true),
                 outcome,
+                tokens: None,
             },
         }
     }
@@ -444,13 +469,15 @@ mod tests {
     /// rendering along with its seq and chat.
     #[test]
     fn a_query_parses_every_term() {
-        let terms =
-            Terms::parse("chat:4242 kind:tool-call-result tool:send_* turn:5 slow:1s hello")
-                .expect("a query that parses");
+        let terms = Terms::parse(
+            "chat:4242 kind:tool-call-result tool:send_* turn:5 session:3F9C slow:1s hello",
+        )
+        .expect("a query that parses");
         assert_eq!(terms.chat, Some(4242));
         assert_eq!(terms.kind, Some(EventKind::ToolCallResult));
         assert_eq!(terms.tool.as_deref(), Some("send_*"));
         assert_eq!(terms.turn, Some(TurnNumber(5)));
+        assert_eq!(terms.session.as_deref(), Some("3f9c"));
         assert_eq!(terms.slow, Some(1000));
         assert_eq!(terms.text, "hello");
         assert!(!terms.only_errors);
@@ -487,6 +514,28 @@ mod tests {
         assert_eq!(terms.text, "weird:1 slow");
         assert_eq!(terms.slow, None);
         assert_eq!(terms.chat, None);
+    }
+
+    /// A session term is a prefix of the id a header shows: its own rows match, another run's do not.
+    #[test]
+    fn a_session_prefix_keeps_its_rows() {
+        let session = SessionRef::main(SessionId::new());
+        let prefix = &session.id.to_string()[..4];
+        let row = EventDisplay {
+            session: Some(session),
+            ..display(7, Some(5), "send_message", None)
+        };
+        let other = EventDisplay {
+            session: Some(SessionRef::main(SessionId::new())),
+            ..display(7, Some(5), "send_message", None)
+        };
+
+        assert!(matches(&format!("session:{prefix}"), &row));
+        assert!(!matches(&format!("session:{prefix}"), &other));
+        assert!(
+            !matches("session:none", &row),
+            "a session row cannot match a prefix it does not carry"
+        );
     }
 
     /// A tool term is a glob: the family matches, an unrelated tool does not.
@@ -554,6 +603,22 @@ mod tests {
         query.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
         query.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(query.text, "x");
+    }
+
+    /// A session prefix is one of the terms the database narrows by: editing it re-reads the window,
+    /// and the header spells out what is in effect.
+    #[test]
+    fn a_session_term_reloads_the_window_and_shows_in_the_header() {
+        let query = Query::new("session:0a1b".to_owned());
+        assert!(
+            query.stale_sql(None, None, None),
+            "no filter is not this one"
+        );
+        assert!(
+            !query.stale_sql(None, None, Some("0a1b")),
+            "the same prefix is the window already loaded"
+        );
+        assert!(query.parsed.spelling().contains("session:0a1b"));
     }
 
     /// Picking a chat writes the term into the line, and picking it again takes it out; one chat

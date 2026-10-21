@@ -8,8 +8,7 @@ use std::{
 use futures::{TryStreamExt, stream::StreamExt};
 use sha2::{Digest, Sha256};
 
-use super::{
-    chunking::{self, ChunkCfg},
+use super::retrieval::{
     fuse::reciprocal_rank_fusion,
     hydrate,
     rank::{self, ScorerErrorPolicy},
@@ -17,6 +16,7 @@ use super::{
 use crate::{
     agentcore::api::{embedding::EmbeddingService, rerank::Scorer},
     domain::{
+        chunking::{self, ChunkCfg},
         model::{KnowledgeChunk, KnowledgeDocument, KnowledgeDocumentMeta},
         repo::{
             Repos,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::{
-    agent::{runtime::sandbox::Sandbox, web::WebUrl},
+    agent::{environment::sandbox::Sandbox, web::WebUrl},
     agentcore::{
         skills::SkillName,
         tool::{ToolError, tool_err},
@@ -171,7 +171,7 @@ impl Directory {
 mod tests {
     use super::*;
     use crate::{
-        agent::runtime::workspace::Workspace, config::schema::SandboxConfig, domain::vo::ChatId,
+        agent::environment::workspace::Workspace, config::schema::SandboxConfig, domain::vo::ChatId,
     };
 
     #[test]

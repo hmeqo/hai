@@ -46,6 +46,11 @@ pub trait AgentTool: Send + Sync {
     fn produces(&self) -> bool {
         false
     }
+
+    /// Whether this call only reads: nothing in the chat, the workspace or on the platform changes.
+    fn reads_only(&self) -> bool {
+        false
+    }
 }
 
 /// JSON Schema for a tool's args as schemars emits it; the root is normalized for the wire by

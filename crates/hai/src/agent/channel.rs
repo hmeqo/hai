@@ -1,8 +1,8 @@
 //! One channel as the agent sees it: `Channel` is the outbound side (send, files, typing, and what
-//! that channel declares), `ChannelAccess` the inbound one (who may enter, and how host copy is
-//! delivered). The platform layer implements both — an agent module holds a `Channel` and never a
-//! platform type. Acting on a chat goes through `ChannelHandle`, which binds the chat the agent
-//! belongs to.
+//! that channel declares); `ChannelAccess` is what the inbound tail and the commands it hands a page
+//! to are given — admission, host copy, a page of buttons and its press, and a file. The platform
+//! layer implements both — an agent module holds a `Channel` and never a platform type. Acting on a
+//! chat goes through `ChannelHandle`, which binds the chat the agent belongs to.
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -60,6 +60,28 @@ pub enum OutboundPayload {
     },
 }
 
+/// One button of a choice the host puts out: the label the client shows and the token the server
+/// reads back. The token is opaque to the platform: it only has to survive the round trip.
+#[derive(Debug, Clone)]
+pub struct ChoiceOption {
+    pub label: String,
+    pub token: String,
+}
+
+/// What deleting a batch of platform messages came to. `failed` carries the platform's own words per
+/// message; the host reports how many there were and leaves the reasons to the log.
+#[derive(Debug, Clone, Default)]
+pub struct DeleteReport {
+    pub deleted: u64,
+    pub failed: Vec<FailedDeletion>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailedDeletion {
+    pub external_id: String,
+    pub detail: String,
+}
+
 /// One outgoing message with its chat resolved: what the platform layer is handed to send.
 #[derive(Debug)]
 pub struct OutboundMessage {
@@ -90,7 +112,7 @@ impl ChannelHandle {
         self.channel.key()
     }
 
-    pub fn profile(&self) -> ChannelProfile {
+    pub fn profile(&self) -> &ChannelProfile {
         self.channel.profile()
     }
 
@@ -107,6 +129,23 @@ impl ChannelHandle {
                 payload,
             })
             .await
+    }
+
+    /// Delivers copy the host composed itself (a receipt, a notice) into this handle's chat; nothing
+    /// of it is stored, because the conversation the model reads is the one people had with it.
+    pub async fn notice(&self, text: &str) -> Result<()> {
+        self.channel.notice(self.chat_id, text).await
+    }
+
+    /// Deletes platform messages this handle's chat holds; what the platform refused comes back
+    /// named rather than as a failure.
+    pub async fn delete_messages(&self, ids: &[String]) -> Result<DeleteReport> {
+        self.channel.delete_messages(self.chat_id, ids).await
+    }
+
+    /// Drops the bytes cached locally for these platform files, and says how many it found.
+    pub async fn forget_cached(&self, file_ids: &[String]) -> Result<u64> {
+        self.channel.forget_cached(file_ids).await
     }
 
     /// Starts the platform's typing indicator for this handle's chat and hands back the guard
@@ -179,6 +218,8 @@ pub struct ChannelCapabilities {
     pub reference: bool,
     /// A message can quote a part of the one it points at.
     pub quote: bool,
+    /// The platform can put out a page of buttons and read a press back.
+    pub choices: bool,
     /// The largest single upload this platform takes; a bigger local file is refused before it is read.
     pub max_media_bytes: u64,
 }
@@ -197,10 +238,18 @@ pub trait TypingGuard: Send + 'static {}
 pub trait Channel: Debug + Send + Sync + 'static {
     /// The key this channel instance is stored under, spelled once where it is built.
     fn key(&self) -> &ChannelKey;
-    fn profile(&self) -> ChannelProfile;
+    fn profile(&self) -> &ChannelProfile;
     fn capabilities(&self) -> ChannelCapabilities;
     /// Sends something the agent produced and records what left.
     async fn send(&self, msg: OutboundMessage) -> Result<()>;
+    /// Delivers copy the host composed itself into one of this channel's chats. Nothing is recorded:
+    /// host copy is the frame around the conversation, not a turn in it.
+    async fn notice(&self, chat_id: ChatId, text: &str) -> Result<()>;
+    /// Deletes platform messages in one of this channel's chats. Best effort by contract: what the
+    /// platform refuses comes back named, and never fails the call.
+    async fn delete_messages(&self, chat_id: ChatId, ids: &[String]) -> Result<DeleteReport>;
+    /// Drops the local bytes cached for these platform files, and says how many it found.
+    async fn forget_cached(&self, file_ids: &[String]) -> Result<u64>;
     /// Downloads a platform file's bytes, for attachment analysis.
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>>;
     /// A platform file's URL, for multimodal analysis.
@@ -212,13 +261,54 @@ pub trait Channel: Debug + Send + Sync + 'static {
     async fn start_typing(&self, chat_id: ChatId) -> Option<Box<dyn TypingGuard>>;
 }
 
-/// What an inbound path needs from the channel's platform: whether a chat may talk here, and how to
-/// deliver copy the host composed. The inbound tail is the only reader, so this is exactly the
-/// adapter's two inbound methods and nothing else.
+/// What an inbound path needs from the channel's platform: whether a chat may talk here, how to
+/// deliver copy the host composed, and how to put a question to a person and read the answer. The
+/// tail reads it, and so do the commands it hands a page to (`purge`, `digest`).
 #[async_trait::async_trait]
 pub trait ChannelAccess: Debug + Send + Sync + 'static {
     /// Whether this chat may use the channel; the allowlist spelling is the platform's own.
     fn admits(&self, chat_external_id: &str) -> bool;
     /// Delivers host copy (a greeting, an unauthorized notice); never stored.
     async fn notice(&self, chat_external_id: &str, text: &str) -> Result<()>;
+    /// Puts copy out with a row of buttons under it. Host copy like any other: delivered, never
+    /// stored. What a token means belongs to the caller; how the buttons are laid out is the
+    /// platform's.
+    async fn ask(
+        &self,
+        chat_external_id: &str,
+        prompt: &str,
+        options: &[ChoiceOption],
+    ) -> Result<()>;
+    /// Rewrites one of the host's own button messages; no options takes the buttons away.
+    async fn edit_choice(
+        &self,
+        chat_external_id: &str,
+        message_external_id: &str,
+        prompt: &str,
+        options: &[ChoiceOption],
+    ) -> Result<()>;
+    /// Answers one button press, which is what stops the client from waiting.
+    async fn answer_callback(&self, query_id: &str, answer: CallbackAnswer<'_>) -> Result<()>;
+    /// Takes one of the host's own messages away, after the page it carried has done its job.
+    /// Host copy, so a refusal is cosmetic.
+    async fn delete_notice(&self, chat_external_id: &str, message_external_id: &str) -> Result<()>;
+    /// Delivers a file the host puts out itself (a digest's report), rather than a message the agent
+    /// sent: it bypasses the conversation and is never recorded, like any other host copy. `caption`
+    /// goes out with the file.
+    async fn notice_document(
+        &self,
+        chat_external_id: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+        caption: &str,
+    ) -> Result<()>;
+}
+
+/// What answering a press says: nothing at all (the client stops waiting and shows nothing), a toast
+/// that fades on its own, or a popup that waits to be dismissed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackAnswer<'a> {
+    Quiet,
+    Toast(&'a str),
+    Alert(&'a str),
 }

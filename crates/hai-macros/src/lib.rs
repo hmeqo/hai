@@ -6,15 +6,16 @@ use syn::{
     parse_macro_input,
 };
 
-/// Attribute syntax: `args = none` / `args = Type` / `speaks` / `ends_turn`, comma-separated so
-/// they compose (for example `args = FooArgs, ends_turn`). The generated implementation always
-/// uses `crate::` paths, so a call site needs neither the trait nor the error type imported (this
-/// crate is workspace-internal).
+/// Attribute syntax: `args = none` / `args = Type` / `speaks` / `ends_turn` / `reads_only`,
+/// comma-separated so they compose (for example `args = FooArgs, ends_turn`). The generated
+/// implementation always uses `crate::` paths, so a call site needs neither the trait nor the error
+/// type imported (this crate is workspace-internal).
 #[derive(Default)]
 struct ToolArgs {
     args_type: Option<Option<Box<syn::Type>>>,
     speaks: bool,
     ends_turn: bool,
+    reads_only: bool,
 }
 
 impl Parse for ToolArgs {
@@ -41,6 +42,7 @@ impl Parse for ToolArgs {
                 }
                 "speaks" => parsed.speaks = true,
                 "ends_turn" => parsed.ends_turn = true,
+                "reads_only" => parsed.reads_only = true,
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -169,6 +171,11 @@ fn metadata_tokens(parsed: &ToolArgs) -> proc_macro2::TokenStream {
     if parsed.ends_turn {
         tokens.extend(quote! {
             fn ends_turn(&self) -> bool { true }
+        });
+    }
+    if parsed.reads_only {
+        tokens.extend(quote! {
+            fn reads_only(&self) -> bool { true }
         });
     }
     tokens

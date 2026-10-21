@@ -111,4 +111,27 @@ impl PerceptionRepo {
         .await
         .map_err(Into::into)
     }
+
+    /// Deletes the transcripts of these subjects, whatever parser or focus wrote them. The rows
+    /// carry no chat, so the subject is the only scope a purge can name; its kind travels with its
+    /// value, so a URL subject cannot be read as a handle.
+    pub async fn delete_by_subjects(&self, subjects: &[Subject]) -> Result<u64> {
+        if subjects.is_empty() {
+            return Ok(0);
+        }
+        let kinds: Vec<&str> = subjects.iter().map(|subject| subject.kind.name()).collect();
+        let values: Vec<&str> = subjects
+            .iter()
+            .map(|subject| subject.value.as_str())
+            .collect();
+        let deleted = sqlx::query(
+            "DELETE FROM perception WHERE (subject_kind, subject) \
+             IN (SELECT * FROM unnest($1::text[], $2::text[]))",
+        )
+        .bind(&kinds)
+        .bind(&values)
+        .execute(&self.pool)
+        .await?;
+        Ok(deleted.rows_affected())
+    }
 }

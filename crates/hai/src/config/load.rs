@@ -77,6 +77,12 @@ impl AppConfig {
                 "must be at least 1"
             )));
         }
+        if self.agent.max_steps == 0 {
+            bail!(AppError::from(ConfigIssue::new(
+                "agent.max-steps",
+                "must be at least 1"
+            )));
+        }
         for mount in &self.sandbox.mounts {
             if !mount.is_absolute() {
                 bail!(AppError::from(ConfigIssue::new(
@@ -143,6 +149,14 @@ mod tests {
         let _guard = env_lock();
         let path = temp_toml("hai_cfg_chunk_max.toml", "[knowledge]\nchunk-max = 0\n");
         assert!(AppConfig::load(&path).is_err());
+    }
+
+    #[test]
+    fn a_zero_budget_is_refused() {
+        let _guard = env_lock();
+        let path = temp_toml("hai_cfg_max_steps.toml", "[agent]\nmax-steps = 0\n");
+        let err = AppConfig::load(&path).unwrap_err().to_string();
+        assert!(err.contains("agent.max-steps"), "{err}");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use super::addressing::{self, Directory};
 use crate::{
     agent::{
-        runtime::{sandbox::Sandbox, turn::ToolContext},
+        environment::sandbox::Sandbox, run::turn::ToolContext,
         tools::util::deserialize_option_lenient_u64,
     },
     agentcore::tool::{AgentTool, ToolError, schema_of, tool_data},

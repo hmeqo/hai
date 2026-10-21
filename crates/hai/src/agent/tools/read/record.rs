@@ -1,6 +1,6 @@
 use super::{ReadOutput, paging::Page};
 use crate::{
-    agent::context::sections::{memory::memory_record, topic::topic_record},
+    agent::prompt::context::sections::{memory::memory_record, topic::topic_record},
     agentcore::{render::render_xml, tool::ToolError},
     domain::{
         service::Services,

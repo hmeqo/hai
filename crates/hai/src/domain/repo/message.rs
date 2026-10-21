@@ -4,8 +4,8 @@ use sqlx::PgPool;
 use crate::{
     domain::{
         model::{Message, MessageRole, NewAttachment, NewMessage},
-        repo::AttachmentRepo,
-        vo::{ChatId, MessageId},
+        repo::{AttachmentRepo, window},
+        vo::{ChatId, MessageId, TimeRange, TopicId},
     },
     error::Result,
 };
@@ -235,4 +235,62 @@ impl MessageRepo {
             .await?;
         Ok(())
     }
+
+    /// The messages of a window, ascending: the whole of what the chat said and heard in it.
+    pub async fn in_range(&self, chat_id: ChatId, range: TimeRange) -> Result<Vec<Message>> {
+        let sql = format!(
+            "SELECT * FROM message \
+             WHERE chat_id = $1 {} ORDER BY COALESCE(sent_at, created_at), id",
+            window::time_window("COALESCE(sent_at, created_at)", 2),
+        );
+        let query = sqlx::query_as::<_, Message>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        Ok(range.bind(query).fetch_all(&self.pool).await?)
+    }
+
+    /// The platform ids of a window's messages, ascending; a row without one (a message this build
+    /// never saw leave) has nothing to delete there and is left out.
+    pub async fn external_ids_in_range(
+        &self,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT external_id FROM message \
+             WHERE chat_id = $1 AND external_id IS NOT NULL {} ORDER BY id",
+            window::time_window("COALESCE(sent_at, created_at)", 2),
+        );
+        let query =
+            sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let rows = range.bind(query).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|(external_id,)| external_id).collect())
+    }
+
+    /// Deletes a window's messages inside the caller's transaction and hands back what went, so the
+    /// purge can unlink the topics and consume the changes those rows stood for. The attachments of
+    /// a deleted message go with it, by the foreign key's own cascade.
+    pub(crate) async fn delete_in_range_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+        range: TimeRange,
+    ) -> Result<Vec<DeletedMessage>> {
+        let sql = format!(
+            "DELETE FROM message WHERE chat_id = $1 {} \
+             RETURNING id, topic_id",
+            window::time_window("COALESCE(sent_at, created_at)", 2),
+        );
+        let query =
+            sqlx::query_as::<_, DeletedMessage>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        range
+            .bind(query)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// One message a purge deleted, as far as the rest of the transaction needs it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DeletedMessage {
+    pub id: MessageId,
+    pub topic_id: Option<TopicId>,
 }

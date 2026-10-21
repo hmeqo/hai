@@ -59,10 +59,32 @@ impl Attachment {
 
     /// The perception subject for this file: the stable handle when the platform gave one.
     pub fn subject(&self) -> crate::domain::vo::Subject {
-        crate::domain::vo::Subject::handle(
-            self.platform.as_str(),
-            self.file_unique_id.as_deref().unwrap_or(&self.file_id),
-        )
+        subject_of(self.platform, self.file_unique_id.as_deref(), &self.file_id)
+    }
+}
+
+/// The perception subject one platform file is transcribed under: the stable handle when the
+/// platform gave one, the row's `file_id` (its download handle) when it did not.
+fn subject_of(
+    platform: Platform,
+    file_unique_id: Option<&str>,
+    file_id: &str,
+) -> crate::domain::vo::Subject {
+    crate::domain::vo::Subject::handle(platform.as_str(), file_unique_id.unwrap_or(file_id))
+}
+
+/// A window's message attachments, as far as a purge needs them: the platform file behind the bytes
+/// cache and the perception subject, without the rows themselves.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AttachmentHandle {
+    pub platform: Platform,
+    pub file_unique_id: Option<String>,
+    pub file_id: String,
+}
+
+impl AttachmentHandle {
+    pub fn subject(&self) -> crate::domain::vo::Subject {
+        subject_of(self.platform, self.file_unique_id.as_deref(), &self.file_id)
     }
 }
 

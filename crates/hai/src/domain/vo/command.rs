@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 pub enum AgentCommand {
     OrganizeMemory,
     Explain(Option<String>),
-    Digest(u32),
 }
 
 #[cfg(test)]
@@ -26,7 +25,6 @@ mod tests {
             AgentCommand::OrganizeMemory,
             AgentCommand::Explain(None),
             AgentCommand::Explain(Some("borrow checker".to_owned())),
-            AgentCommand::Digest(7),
         ] {
             assert_eq!(round_trip(command.clone()), command);
         }
@@ -35,8 +33,9 @@ mod tests {
     #[test]
     fn the_wire_form_names_the_command_and_its_argument() {
         assert_eq!(
-            serde_json::to_value(AgentCommand::Digest(7)).expect("serialize"),
-            serde_json::json!({ "command": "digest", "args": 7 })
+            serde_json::to_value(AgentCommand::Explain(Some("lifetimes".to_owned())))
+                .expect("serialize"),
+            serde_json::json!({ "command": "explain", "args": "lifetimes" })
         );
         assert_eq!(
             serde_json::to_value(AgentCommand::Explain(None)).expect("serialize"),
@@ -57,10 +56,10 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<AgentCommand>(
-                serde_json::json!({ "command": "digest", "args": "soon" })
+                serde_json::json!({ "command": "explain", "args": 7 })
             )
             .is_err(),
-            "a digest without a number of days must not decode"
+            "an argument of the wrong type must not decode"
         );
     }
 }

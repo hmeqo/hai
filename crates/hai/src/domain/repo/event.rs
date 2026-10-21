@@ -4,7 +4,8 @@ use sqlx::PgPool;
 use crate::{
     domain::{
         model::Event,
-        vo::{ChatId, EventKind},
+        repo::window,
+        vo::{ChatId, EventKind, TimeRange},
     },
     error::Result,
 };
@@ -12,6 +13,19 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct EventRepo {
     pool: PgPool,
+}
+
+/// One page of the log: the filters and the seq window it reads.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EventQuery<'a> {
+    pub chat: Option<ChatId>,
+    pub kind: Option<EventKind>,
+    /// A session id prefix; matched against the stored id, case-insensitively.
+    pub session: Option<&'a str>,
+    pub before: Option<i64>,
+    pub after: Option<i64>,
+    pub desc: bool,
+    pub limit: usize,
 }
 
 impl EventRepo {
@@ -27,32 +41,34 @@ impl EventRepo {
             .map_err(Into::into)
     }
 
-    pub async fn query(
-        &self,
-        chat_id: Option<ChatId>,
-        kind: Option<EventKind>,
-        before_seq: Option<i64>,
-        after_seq: Option<i64>,
-        desc: bool,
-        limit: usize,
-    ) -> Result<Vec<Event>> {
-        let sql = query_sql(chat_id, kind, before_seq, after_seq, desc);
+    pub async fn query(&self, page: EventQuery<'_>) -> Result<Vec<Event>> {
+        let sql = query_sql(
+            page.chat,
+            page.kind,
+            page.session,
+            page.before,
+            page.after,
+            page.desc,
+        );
 
-        let mut q = sqlx::query_as::<_, Event>(sqlx::AssertSqlSafe(sql.as_str()));
-        if let Some(cid) = chat_id {
-            q = q.bind(cid.0);
+        let mut stmt = sqlx::query_as::<_, Event>(sqlx::AssertSqlSafe(sql.as_str()));
+        if let Some(cid) = page.chat {
+            stmt = stmt.bind(cid.0);
         }
-        if let Some(k) = kind {
-            q = q.bind(k.as_str());
+        if let Some(k) = page.kind {
+            stmt = stmt.bind(k.as_str());
         }
-        if let Some(b) = before_seq {
-            q = q.bind(b);
+        if let Some(prefix) = page.session {
+            stmt = stmt.bind(format!("{}%", prefix.to_lowercase()));
         }
-        if let Some(a) = after_seq {
-            q = q.bind(a);
+        if let Some(b) = page.before {
+            stmt = stmt.bind(b);
         }
-        q = q.bind(limit as i64);
-        Ok(q.fetch_all(&self.pool).await?)
+        if let Some(a) = page.after {
+            stmt = stmt.bind(a);
+        }
+        stmt = stmt.bind(page.limit as i64);
+        Ok(stmt.fetch_all(&self.pool).await?)
     }
 
     pub async fn by_seq(&self, seq: i64) -> Result<Option<Event>> {
@@ -71,8 +87,9 @@ impl EventRepo {
         after_seq: i64,
         chat_id: Option<ChatId>,
         kind: Option<EventKind>,
+        session: Option<&str>,
     ) -> Result<i64> {
-        let sql = count_after_sql(chat_id, kind);
+        let sql = count_after_sql(chat_id, kind, session);
         let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql.as_str())).bind(after_seq);
         if let Some(cid) = chat_id {
             q = q.bind(cid.0);
@@ -80,7 +97,22 @@ impl EventRepo {
         if let Some(k) = kind {
             q = q.bind(k.as_str());
         }
+        if let Some(prefix) = session {
+            q = q.bind(format!("{}%", prefix.to_lowercase()));
+        }
         Ok(q.fetch_one(&self.pool).await?)
+    }
+
+    /// Deletes one chat's events inside a window: what the audit trail holds of the purge itself is
+    /// deleted after the write that recorded it left the bus, never inside the purge's transaction.
+    pub async fn delete_in_range(&self, chat_id: ChatId, range: TimeRange) -> Result<u64> {
+        let sql = format!(
+            "DELETE FROM event WHERE (payload->>'chat_id')::bigint = $1 {}",
+            window::time_window("created_at", 2),
+        );
+        let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let deleted = range.bind_execute(query).execute(&self.pool).await?;
+        Ok(deleted.rows_affected())
     }
 }
 
@@ -92,6 +124,7 @@ fn push_filters(
     n: usize,
     chat_id: Option<ChatId>,
     kind: Option<EventKind>,
+    session: Option<&str>,
 ) -> usize {
     let mut n = n;
     if chat_id.is_some() {
@@ -102,6 +135,10 @@ fn push_filters(
         n += 1;
         sql.push_str(&format!(" AND payload->'payload'->>'event' = ${n}"));
     }
+    if session.is_some() {
+        n += 1;
+        sql.push_str(&format!(" AND (payload->'session'->>'id') LIKE ${n}"));
+    }
     n
 }
 
@@ -109,12 +146,13 @@ fn push_filters(
 fn query_sql(
     chat_id: Option<ChatId>,
     kind: Option<EventKind>,
+    session: Option<&str>,
     before_seq: Option<i64>,
     after_seq: Option<i64>,
     desc: bool,
 ) -> String {
     let mut sql = String::from("SELECT seq, payload, created_at FROM event WHERE seq > 0");
-    let mut n = push_filters(&mut sql, 0, chat_id, kind);
+    let mut n = push_filters(&mut sql, 0, chat_id, kind, session);
     if before_seq.is_some() {
         n += 1;
         sql.push_str(&format!(" AND seq < ${n}"));
@@ -132,9 +170,13 @@ fn query_sql(
 }
 
 /// The statement `count_after` runs: `after_seq` owns `$1`, so the shared predicate starts at `$2`.
-fn count_after_sql(chat_id: Option<ChatId>, kind: Option<EventKind>) -> String {
+fn count_after_sql(
+    chat_id: Option<ChatId>,
+    kind: Option<EventKind>,
+    session: Option<&str>,
+) -> String {
     let mut sql = String::from("SELECT COUNT(*) FROM event WHERE seq > $1");
-    push_filters(&mut sql, 1, chat_id, kind);
+    push_filters(&mut sql, 1, chat_id, kind, session);
     sql
 }
 
@@ -146,23 +188,35 @@ mod tests {
     fn the_statement_binds_its_filters_windows_and_limit_in_order() {
         let chat = Some(ChatId(7));
         assert_eq!(
-            query_sql(None, None, None, None, false),
+            query_sql(None, None, None, None, None, false),
             "SELECT seq, payload, created_at FROM event WHERE seq > 0 \
              ORDER BY seq ASC LIMIT $1"
         );
         assert_eq!(
-            query_sql(chat, Some(EventKind::ToolCall), Some(9), Some(3), true),
+            query_sql(
+                chat,
+                Some(EventKind::ToolCall),
+                None,
+                Some(9),
+                Some(3),
+                true
+            ),
             "SELECT seq, payload, created_at FROM event WHERE seq > 0 \
              AND (payload->>'chat_id')::bigint = $1 AND payload->'payload'->>'event' = $2 \
              AND seq < $3 AND seq > $4 ORDER BY seq DESC LIMIT $5"
         );
         assert_eq!(
-            count_after_sql(chat, Some(EventKind::ToolCall)),
+            query_sql(None, None, Some("3f9c"), None, None, false),
+            "SELECT seq, payload, created_at FROM event WHERE seq > 0 \
+             AND (payload->'session'->>'id') LIKE $1 ORDER BY seq ASC LIMIT $2"
+        );
+        assert_eq!(
+            count_after_sql(chat, Some(EventKind::ToolCall), None),
             "SELECT COUNT(*) FROM event WHERE seq > $1 \
              AND (payload->>'chat_id')::bigint = $2 AND payload->'payload'->>'event' = $3"
         );
         assert_eq!(
-            count_after_sql(None, None),
+            count_after_sql(None, None, None),
             "SELECT COUNT(*) FROM event WHERE seq > $1"
         );
     }

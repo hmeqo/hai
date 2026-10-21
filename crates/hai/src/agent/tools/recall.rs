@@ -6,11 +6,11 @@ use serde_json::Value;
 
 use crate::{
     agent::{
-        context::{
+        prompt::context::{
             fmt::format_time_dyn,
             sections::{memory::memory_element, topic::topic_element},
         },
-        runtime::turn::ToolContext,
+        run::turn::ToolContext,
         tools::util::bounded_limit,
     },
     agentcore::{
@@ -59,7 +59,7 @@ pub struct RecallArgs {
 }
 
 /// Recalls past matters: searches this chat's personal memories and topic archives. Reach for it when the user mentions a name, date or earlier agreement you do not know; when they ask about "before / last time / what we said"; or when you are about to record a new memory and want to check whether one already exists. Give `query` a semantic question and `keywords` the terms to match exactly (names, verbatim error text, proper nouns); both may be given at once. With only since/until it lists the range newest first. Results carry summaries only; for the full text use read topic://<id> or read memory://<id>.
-#[hai_macros::tool]
+#[hai_macros::tool(reads_only)]
 pub struct Recall {
     pub chat_id: ChatId,
     pub services: Services,

@@ -27,7 +27,7 @@ impl Default for PersonalityConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct AgentConfig {
     /// Default for chats that never set their own (`docs/topics/prompting.md`).
@@ -38,6 +38,27 @@ pub struct AgentConfig {
     pub attention: AttentionConfig,
     pub multimodal: MultimodalConfig,
     pub retrieval: RetrievalConfig,
+    /// The most Steps one run may take — a Turn, a digest pass or a wrap-up. The loop stops there,
+    /// tells the model beforehand, and reports the cut-off to its caller.
+    pub max_steps: usize,
+}
+
+/// The ceiling a run gets unless `[agent] max-steps` says otherwise: twice the value the loop used to
+/// hard-code, because a reading pass spends steps on tool rounds and a Busy chat must still be capped.
+pub(crate) const DEFAULT_MAX_STEPS: usize = 40;
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            language: Language::default(),
+            context: ContextConfig::default(),
+            personality: PersonalityConfig::default(),
+            attention: AttentionConfig::default(),
+            multimodal: MultimodalConfig::default(),
+            retrieval: RetrievalConfig::default(),
+            max_steps: DEFAULT_MAX_STEPS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -658,6 +679,11 @@ mod tests {
 
     use super::*;
     use crate::test_support::assert_names_agree;
+
+    #[test]
+    fn the_agent_budget_defaults_to_forty() {
+        assert_eq!(AgentConfig::default().max_steps, 40);
+    }
 
     /// `[channel.<name>]` is neutral: the shared layer keeps the platform's own keys untouched, so a
     /// second platform's keys need no change here.

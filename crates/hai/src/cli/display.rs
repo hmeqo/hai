@@ -2,7 +2,10 @@ use serde::Deserialize;
 
 use crate::domain::{
     model::Event,
-    vo::{AgentEvent, AgentEventPayload, EventKind, StartedBy, TurnEndReason, TurnNumber},
+    vo::{
+        AgentEvent, AgentEventPayload, EventKind, PurgeCounts, PurgeSurface, PurgeSurfaces,
+        SessionRef, StartedBy, Stretch, TurnEndReason, TurnNumber, whole_units,
+    },
 };
 
 /// How many lines of a long field are shown before it folds.
@@ -16,6 +19,8 @@ pub(super) struct EventFacts {
     pub tool: Option<String>,
     pub ok: Option<bool>,
     pub outcome: Option<TurnOutcome>,
+    /// Prompt and completion tokens of a Step, for a session header's total.
+    pub tokens: Option<(u32, u32)>,
 }
 
 /// How a finished turn ended, as a timeline row summarises it without expanding.
@@ -100,6 +105,8 @@ pub(super) struct EventDisplay {
     pub one_liner: String,
     pub sections: Vec<Section>,
     pub chat_id: i64,
+    /// The run this event belongs to; `None` for a host transaction.
+    pub session: Option<SessionRef>,
     /// The kind this payload is stored as; `None` for a payload that failed to deserialize.
     pub kind: Option<EventKind>,
     pub color: (u8, u8, u8),
@@ -115,6 +122,7 @@ impl EventDisplay {
             one_liner: String::from("<unparsed>"),
             sections: vec![Section::body("Fields", "<unparsed event payload>")],
             chat_id: 0,
+            session: None,
             kind: None,
             color: (156, 163, 175),
             facts: EventFacts {
@@ -122,6 +130,7 @@ impl EventDisplay {
                 tool: None,
                 ok: None,
                 outcome: None,
+                tokens: None,
             },
         }
     }
@@ -147,12 +156,12 @@ impl EventDisplay {
             AgentEventPayload::TurnStarted {
                 turn,
                 reason,
-                msg_count,
+                prompt_messages,
                 started_by,
                 ..
             } => {
                 let by = started_by_label(started_by).unwrap_or("—");
-                format!("TURN   {turn}  {reason}  msgs:{msg_count}  by:{by}")
+                format!("TURN   {turn}  {reason}  prompt:{prompt_messages}  by:{by}")
             }
             AgentEventPayload::ToolCall {
                 turn,
@@ -224,15 +233,63 @@ impl EventDisplay {
                 let preview: String = error.chars().take(60).collect();
                 format!("FAIL   wrap-up  {preview}")
             }
+            AgentEventPayload::Purged { spec, counts, .. } => {
+                format!(
+                    "PURGE  {}  {}  {}",
+                    purge_range(&spec.range),
+                    purge_surfaces(&spec.surfaces),
+                    purge_counts(counts)
+                )
+            }
+            AgentEventPayload::DigestStarted { stretch, language } => {
+                format!(
+                    "DIGEST  start  {}  {}",
+                    stretch_label(stretch),
+                    language.as_str()
+                )
+            }
+            AgentEventPayload::DigestCompleted {
+                steps,
+                truncated,
+                report_chars,
+            } => {
+                let state = if *truncated { "truncated" } else { "complete" };
+                format!(
+                    "DIGEST  done  {steps} steps  {} chars  {state}",
+                    compact_count(*report_chars as u64)
+                )
+            }
+            AgentEventPayload::DigestFailed { error } => {
+                let preview: String = error.chars().take(60).collect();
+                format!("FAIL   digest  {preview}")
+            }
         };
 
-        let sections = sections(payload);
+        let sections = {
+            let mut sections = sections(payload);
+            if let Some(session) = ae.session {
+                let kind: &str = session.kind.into();
+                let parent = session
+                    .parent
+                    .map(|parent| parent.to_string())
+                    .unwrap_or_else(|| "—".to_owned());
+                sections.insert(
+                    0,
+                    Section::body(
+                        "Session",
+                        &format!("{}  {kind}  parent: {parent}", session.id),
+                    ),
+                );
+            }
+            sections
+        };
 
         Some(Self {
             tag,
             one_liner,
             sections,
             chat_id: ae.chat_id.0,
+            session: ae.session,
             kind: Some(payload.kind()),
             color,
             facts: facts(payload),
@@ -253,16 +310,29 @@ fn facts(payload: &AgentEventPayload) -> EventFacts {
         tool: None,
         ok: None,
         outcome: None,
+        tokens: None,
     };
     match payload {
         AgentEventPayload::TurnStarted { turn, .. }
-        | AgentEventPayload::StepCompleted { turn, .. }
         | AgentEventPayload::ModelRetry { turn, .. } => turn_only(*turn),
+        AgentEventPayload::StepCompleted {
+            turn,
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => EventFacts {
+            turn: Some(*turn),
+            tool: None,
+            ok: None,
+            outcome: None,
+            tokens: Some((*prompt_tokens, *completion_tokens)),
+        },
         AgentEventPayload::ToolCall { turn, tool, .. } => EventFacts {
             turn: Some(*turn),
             tool: Some(tool.clone()),
             ok: None,
             outcome: None,
+            tokens: None,
         },
         AgentEventPayload::ToolCallResult {
             turn,
@@ -274,12 +344,14 @@ fn facts(payload: &AgentEventPayload) -> EventFacts {
             tool: Some(tool.clone()),
             ok: Some(*success),
             outcome: None,
+            tokens: None,
         },
         AgentEventPayload::TurnEnded { turn, reason } => EventFacts {
             turn: Some(*turn),
             tool: None,
             ok: None,
             outcome: Some(outcome_of(reason)),
+            tokens: None,
         },
         // A wrap-up carries no turn number of its own: it stands alone on the timeline.
         AgentEventPayload::WrapUpStarted
@@ -289,8 +361,90 @@ fn facts(payload: &AgentEventPayload) -> EventFacts {
             tool: None,
             ok: None,
             outcome: None,
+            tokens: None,
+        },
+        // A purge is not a Turn either, and it names no tool.
+        AgentEventPayload::Purged { .. } => EventFacts {
+            turn: None,
+            tool: None,
+            ok: None,
+            outcome: None,
+            tokens: None,
+        },
+        AgentEventPayload::DigestStarted { .. } | AgentEventPayload::DigestCompleted { .. } => {
+            EventFacts {
+                turn: None,
+                tool: None,
+                ok: None,
+                outcome: None,
+                tokens: None,
+            }
+        }
+        AgentEventPayload::DigestFailed { .. } => EventFacts {
+            turn: None,
+            tool: None,
+            ok: Some(false),
+            outcome: None,
+            tokens: None,
         },
     }
+}
+
+/// One purge's range, as this inspector names it.
+fn purge_range(range: &Stretch) -> String {
+    match *range {
+        Stretch::All => "all".to_owned(),
+        Stretch::Last { secs } => {
+            let (count, unit) = whole_units(secs);
+            format!("last {count}{}", unit.suffix())
+        }
+        Stretch::Between { from, to } => format!("{from}..{to}"),
+    }
+}
+
+/// One purge's surfaces, in the order they are walked.
+fn purge_surfaces(surfaces: &PurgeSurfaces) -> String {
+    let covered: Vec<&str> = PurgeSurface::ALL
+        .into_iter()
+        .filter(|surface| surfaces.get(*surface))
+        .map(PurgeSurface::name)
+        .collect();
+    if covered.is_empty() {
+        "none".to_owned()
+    } else {
+        covered.join(",")
+    }
+}
+
+/// A stretch as the log names it, without the chat's own language.
+fn stretch_label(stretch: &Stretch) -> String {
+    match *stretch {
+        Stretch::All => "all".to_owned(),
+        Stretch::Last { secs } => format!("last {}d", secs / 86_400),
+        Stretch::Between { from, to } => format!("{from}…{to}"),
+    }
+}
+
+/// A count as a timeline row shows it: one decimal from a thousand up.
+pub(super) fn compact_count(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
+}
+
+/// One purge's counters, in one line.
+fn purge_counts(counts: &PurgeCounts) -> String {
+    format!(
+        "{} msgs  {} mem  {} topic  {} task  {} event  {} transcript",
+        counts.messages,
+        counts.memories,
+        counts.topics,
+        counts.scheduled,
+        counts.events,
+        counts.perceptions
+    )
 }
 
 /// What a finished turn reports: the summary a collapsed timeline row shows.
@@ -339,6 +493,11 @@ fn tag_for_kind(payload: &AgentEventPayload) -> &'static str {
         AgentEventPayload::ModelRetry { .. } => "RETRY",
         AgentEventPayload::WrapUpFailed { .. } => "FAIL",
         AgentEventPayload::WrapUpStarted | AgentEventPayload::WrapUpCompleted { .. } => "WRAP",
+        AgentEventPayload::Purged { .. } => "PURGE",
+        AgentEventPayload::DigestStarted { .. } | AgentEventPayload::DigestCompleted { .. } => {
+            "DIGEST"
+        }
+        AgentEventPayload::DigestFailed { .. } => "FAIL",
     }
 }
 
@@ -378,14 +537,14 @@ fn sections(ae: &AgentEventPayload) -> Vec<Section> {
         AgentEventPayload::TurnStarted {
             turn,
             reason,
-            msg_count,
+            prompt_messages,
             full_prompt,
             started_by,
             composition,
         } => {
             d.field("Turn", turn);
             d.field("Reason", reason);
-            d.field("Messages", msg_count);
+            d.field("Prompt messages", prompt_messages);
             if let Some(path) = started_by_label(started_by) {
                 d.field("Started by", path);
             }
@@ -415,8 +574,15 @@ fn sections(ae: &AgentEventPayload) -> Vec<Section> {
             d.field("Turn", turn);
             d.field("Reason", reason);
         }
-        AgentEventPayload::StepCompleted { turn, step, output } => {
+        AgentEventPayload::StepCompleted {
+            turn,
+            step,
+            output,
+            prompt_tokens,
+            completion_tokens,
+        } => {
             d.field("Step", format!("{}.{}", turn, step));
+            d.field("Tokens", format!("{prompt_tokens}+{completion_tokens}"));
             if let Some(rs) = &output.reasoning {
                 d.block("Thinking", rs);
             }
@@ -486,6 +652,52 @@ fn sections(ae: &AgentEventPayload) -> Vec<Section> {
         AgentEventPayload::WrapUpFailed { error } => {
             d.block("Error", error);
         }
+        AgentEventPayload::Purged {
+            spec,
+            counts,
+            telegram_deleted,
+            telegram_failed,
+            files_removed,
+            cached_removed,
+        } => {
+            d.field("Range", purge_range(&spec.range));
+            d.field("Surfaces", purge_surfaces(&spec.surfaces));
+            d.field(
+                "Agent",
+                format!(
+                    "{} msgs  {} mem  {} topic  {} task",
+                    counts.messages, counts.memories, counts.topics, counts.scheduled
+                ),
+            );
+            d.field(
+                "Derived",
+                format!(
+                    "{} event  {} transcript  {} cached",
+                    counts.events, counts.perceptions, cached_removed
+                ),
+            );
+            d.field("Files", files_removed);
+            d.field(
+                "Telegram",
+                format!("{telegram_deleted} deleted  {telegram_failed} failed"),
+            );
+        }
+        AgentEventPayload::DigestStarted { stretch, language } => {
+            d.field("Stretch", stretch_label(stretch));
+            d.field("Language", language.as_str());
+        }
+        AgentEventPayload::DigestCompleted {
+            steps,
+            truncated,
+            report_chars,
+        } => {
+            d.field("Steps", steps);
+            d.field("Truncated", truncated);
+            d.field("Report chars", report_chars);
+        }
+        AgentEventPayload::DigestFailed { error } => {
+            d.block("Error", error);
+        }
     }
 
     d.build()
@@ -514,7 +726,8 @@ fn color_rgb(payload: &AgentEventPayload) -> (u8, u8, u8) {
             reason: TurnEndReason::Failed { .. },
             ..
         }
-        | AgentEventPayload::WrapUpFailed { .. } => (239, 68, 68),
+        | AgentEventPayload::WrapUpFailed { .. }
+        | AgentEventPayload::DigestFailed { .. } => (239, 68, 68),
         AgentEventPayload::ModelRetry { .. } => (250, 176, 5),
         AgentEventPayload::StepCompleted { .. } => (56, 189, 248),
         AgentEventPayload::TurnStarted { .. } => (255, 255, 255),
@@ -524,6 +737,10 @@ fn color_rgb(payload: &AgentEventPayload) -> (u8, u8, u8) {
         AgentEventPayload::TurnEnded { .. } => (255, 255, 255),
         AgentEventPayload::WrapUpStarted | AgentEventPayload::WrapUpCompleted { .. } => {
             (168, 85, 247)
+        }
+        AgentEventPayload::Purged { .. } => (236, 72, 153),
+        AgentEventPayload::DigestStarted { .. } | AgentEventPayload::DigestCompleted { .. } => {
+            (14, 165, 233)
         }
     }
 }

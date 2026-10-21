@@ -40,7 +40,10 @@ pub mod event;
 pub mod id;
 pub mod meta;
 pub mod preference;
+pub mod purge;
+pub mod session;
 pub mod step;
+pub mod stretch;
 pub mod subject;
 pub mod time;
 pub mod tool_call_result;
@@ -49,7 +52,7 @@ pub use collection::{Collection, CollectionName};
 pub use command::AgentCommand;
 pub use content::{AttachmentKind, AttachmentMeta, AttachmentParser, ImageFormat, MediaCodec};
 pub use context_meta::ContextMeta;
-pub use conversation_snapshot::ConversationSnapshot;
+pub use conversation_snapshot::{ChapterWrite, ConversationSnapshot};
 pub use entry::{ChatEntry, EntryAudience, EntryKind};
 pub use event::{
     AgentEvent, AgentEventPayload, BatchComposition, EventKind, ModelRetryReason, StartedBy,
@@ -57,7 +60,7 @@ pub use event::{
 };
 pub use id::{
     AccountId, AttachmentId, ChannelKey, ChatId, IdentityId, KnowledgeChunkId, KnowledgeDocumentId,
-    MemoryId, MessageId, PerceptionId, ScheduledTaskId, StepNumber, TopicId, TurnNumber,
+    MemoryId, MessageId, PerceptionId, ScheduledTaskId, SessionId, StepNumber, TopicId, TurnNumber,
     attachment_id,
 };
 pub use meta::{
@@ -65,7 +68,10 @@ pub use meta::{
     TelegramMessageMeta, TelegramQuote,
 };
 pub use preference::ChatPreferences;
+pub use purge::{PurgeCounts, PurgeSpec, PurgeSurface, PurgeSurfaces};
+pub use session::{SessionKind, SessionRef};
 pub use step::Step;
-pub use subject::*;
+pub use stretch::{Stretch, TimeUnit, whole_units};
+pub use subject::{Subject, SubjectKind};
 pub use time::{RepeatInterval, TimeRange};
 pub use tool_call_result::ToolCallResult;

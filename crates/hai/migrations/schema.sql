@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS event (
 -- Payload filters; an expression index is only used where it matches the query expression exactly.
 CREATE INDEX IF NOT EXISTS idx_event_payload_chat ON event (((payload->>'chat_id')::bigint));
 CREATE INDEX IF NOT EXISTS idx_event_payload_event ON event (((payload->'payload'->>'event')));
+-- A session prefix scan (`hai log --session`, the `session:` term) matches the hyphenated id.
+CREATE INDEX IF NOT EXISTS idx_event_payload_session
+    ON event (((payload->'session'->>'id')) text_pattern_ops);
 
 CREATE TABLE IF NOT EXISTS identity (
     id         UUID PRIMARY KEY,

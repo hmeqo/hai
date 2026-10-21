@@ -3,8 +3,8 @@ use sqlx::PgPool;
 use crate::{
     domain::{
         model::{Memory, MemoryKind, MemoryStatus, NewMemory},
-        repo::{lexical, vector},
-        vo::{AccountId, ChatId, MemoryId, TimeRange},
+        repo::{lexical, vector, window},
+        vo::{AccountId, ChatId, MemoryId, MessageId, TimeRange},
     },
     error::Result,
 };
@@ -211,7 +211,7 @@ impl MemoryRepo {
         let sql = format!(
             "SELECT * FROM memory WHERE chat_id = $1 AND status = $2 {} \
              ORDER BY created_at DESC LIMIT $5",
-            time_window("created_at", 3)
+            window::time_window("created_at", 3)
         );
         let query = sqlx::query_as::<_, Memory>(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(chat_id.0)
@@ -234,6 +234,27 @@ impl MemoryRepo {
             .await?;
         Ok(deleted.rows_affected() > 0)
     }
+
+    /// Deletes the memories a purge reaches: the ones recorded from a deleted message, and the ones
+    /// created inside the window. An empty `message_ids` overlaps nothing, which is what a window
+    /// without messages leaves.
+    pub(crate) async fn delete_in_range_in_tx(
+        tx: &mut sqlx::PgConnection,
+        chat_id: ChatId,
+        message_ids: &[MessageId],
+        range: TimeRange,
+    ) -> Result<u64> {
+        let sql = format!(
+            "DELETE FROM memory WHERE chat_id = $1 \
+             AND (source_message_ids && $2::bigint[] OR {})",
+            window::predicate("created_at", 3),
+        );
+        let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(chat_id.0)
+            .bind(message_ids);
+        let deleted = range.bind_execute(query).execute(&mut *tx).await?;
+        Ok(deleted.rows_affected())
+    }
 }
 
 /// The lexical leg's statement: the keyword patterns are bound at `$5`.
@@ -243,18 +264,8 @@ fn keyword_search_sql() -> String {
          AND {} \
          ORDER BY {}, \
                   created_at DESC LIMIT $6",
-        time_window("created_at", 3),
+        window::time_window("created_at", 3),
         lexical::match_predicate(&["content"], 5),
         lexical::match_rank(&["content"], 5),
-    )
-}
-
-/// The time window a listing narrows by, over `column`: the bounds are the two placeholders from
-/// `first` on, and a NULL bound means unbounded on that side.
-fn time_window(column: &str, first: usize) -> String {
-    format!(
-        "AND (${first}::timestamptz IS NULL OR {column} >= ${first}) \
-         AND (${next}::timestamptz IS NULL OR {column} <= ${next})",
-        next = first + 1,
     )
 }

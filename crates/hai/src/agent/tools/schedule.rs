@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    agent::{channel::ChannelHandle, runtime::turn::ToolContext, tools::util::required},
+    agent::{channel::ChannelHandle, run::turn::ToolContext, tools::util::required},
     agentcore::tool::{AgentTool, ToolError, tool_data, tool_err, tool_ok},
     domain::{
         service::ScheduledTaskService,

@@ -75,6 +75,16 @@ impl FileCache {
         }
     }
 
+    /// Forgets one entry; `false` means the cache did not hold it, which is not a failure: the cache
+    /// keeps what it happens to keep.
+    pub async fn remove(&self, key: &str) -> Result<bool> {
+        match tokio::fs::remove_file(self.key_to_path(key)).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn key_to_path(&self, key: &str) -> PathBuf {
         self.cache_dir.join(sanitize_filename::sanitize(key))
     }
@@ -123,6 +133,25 @@ mod tests {
         assert!(
             cache.find("telegram-1").await.is_none(),
             "a swept entry is gone"
+        );
+    }
+
+    /// Forgetting an entry is what a purge does to the window's files; forgetting one that is not
+    /// there is not an error, it is nothing to do.
+    #[tokio::test]
+    async fn an_entry_is_forgotten_once_and_absence_is_not_a_failure() {
+        let dir = TempDir::create("hai-cache-test");
+        let cache = FileCache::new(dir.path().to_path_buf());
+        cache
+            .add("telegram-9", b"bytes")
+            .await
+            .expect("a writable cache");
+
+        assert!(cache.remove("telegram-9").await.expect("a writable cache"));
+        assert!(cache.find("telegram-9").await.is_none());
+        assert!(
+            !cache.remove("telegram-9").await.expect("a writable cache"),
+            "there was nothing left to forget"
         );
     }
 }

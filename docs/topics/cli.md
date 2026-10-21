@@ -1,10 +1,10 @@
 # CLI / event log TUI / rebuild
 
-> `hai`'s command surface: the management families, the destructive embedding rebuild, and the event-log TUI. Read before changing `cli.rs`, `cli/`, `cli/tui/`, `domain/db.rs` or `domain/repo/vector.rs`.
+> `hai`'s command surface: the management families, the destructive embedding rebuild, and the event-log TUI. Read before changing `cli/mod.rs`, `cli/`, `cli/tui/`, `domain/db.rs` or `domain/repo/vector.rs`.
 
 ## Overview
 
-One binary, two modes: with no subcommand it starts the bot (`app/mod.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` management command, assembled by `cli.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log` and `kb` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves that role alone, so it needs no chat model; the flags are the `clap` definitions behind `--help`.
+One binary, two modes: with no subcommand it starts the bot (`app/mod.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` management command, assembled by `cli/mod.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log` and `kb` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves that role alone, so it needs no chat model; the flags are the `clap` definitions behind `--help`.
 
 ## Design
 
@@ -26,11 +26,11 @@ One binary, two modes: with no subcommand it starts the bot (`app/mod.rs:serve`)
 
 ### log (`cli/log.rs`)
 
-`--id N` prints one event in full through the same section renderer the TUI uses (`cli/display.rs:render_sections`); otherwise `--chat` and `--event` seed the TUI's query line as `chat:<id>` and `kind:<name>`, which from there on governs the window.
+`--id N` prints one event in full through the same section renderer the TUI uses (`cli/display.rs:render_sections`); otherwise `--chat`, `--event` and `--session` seed the TUI's query line as `chat:<id>`, `kind:<name>` and `session:<prefix>`, which from there on governs the window (`--session` also narrows the database read).
 
 ### Event log TUI
 
-Three panes over one window — the chats the window holds, the timeline of turns, and the detail of one event — plus a query line that is not one of them: `/` opens it for as long as the reader is typing, `Enter`/`Tab` keep the terms and give the keyboard back, and `Esc` puts back the terms that were in effect when it opened. The detail shares the body with the timeline while it is open and takes all of it in fullscreen (`cli/tui/detail.rs:DetailLayout`). The key map is per mode: `cli/tui/action.rs:key_event` reads a key into a `cli/tui/action.rs:Action`, and `cli/tui/app.rs:App::update` applies it and returns the `cli/tui/action.rs:Effect`s the database has to run. Memory-only work happens where it was asked for; database-bound work runs in `cli/tui/app.rs:App::apply`, which keeps I/O off the key path.
+Three panes over one window — the chats the window holds, the timeline of sessions with their turns, and the detail of one event — plus a query line that is not one of them: `/` opens it for as long as the reader is typing, `Enter`/`Tab` keep the terms and give the keyboard back, and `Esc` puts back the terms that were in effect when it opened. The detail shares the body with the timeline while it is open and takes all of it in fullscreen (`cli/tui/detail.rs:DetailLayout`). The key map is per mode: `cli/tui/action.rs:key_event` reads a key into a `cli/tui/action.rs:Action`, and `cli/tui/app.rs:App::update` applies it and returns the `cli/tui/action.rs:Effect`s the database has to run. Memory-only work happens where it was asked for; database-bound work runs in `cli/tui/app.rs:App::apply`, which keeps I/O off the key path.
 
 The keys, by mode — `cli/tui/action.rs:key_event` is the one place a key becomes an action:
 
@@ -42,9 +42,9 @@ The keys, by mode — `cli/tui/action.rs:key_event` is the one place a key becom
 |detail|`j`/`k` scroll, `PageUp`/`PageDown` and `Ctrl+U`/`Ctrl+D` scroll further, `Enter` shows every long field, `f` fullscreen, `Esc` closes it|
 |query line|types the terms; `Enter`/`Tab` keep them and close, `Esc` puts back the ones that were in effect|
 
-The timeline's unit is a turn: `cli/tui/event_store.rs:group_turns` groups the window into runs of one chat and turn number, a turn is one row that opens into the events inside it, and a record carrying no turn of its own — a wrap-up — stands alone. A selection names the row's event *and* whether it is a child row (`cli/tui/timeline.rs:RowKey`), because an open turn's first event is both its header and one of its children; `cli/tui/timeline.rs:clamp_offset` keeps the selected row in the upper third of the viewport, and a prepend restores its visual position so loading older events does not jump. A prepend can also hand a turn events that come before the one the reader was on, which moves that turn's own first row: the selection follows its event to the turn that holds it (`cli/tui/timeline.rs:Timeline::reselect`) instead of falling back to the head, where it would pull the next page in on the same tick. The window is a seq-ascending slice of matching events and only grows — `extend_back` prepends, `append_new` appends, neither trims — because trimming would evict browsed history and invalidate the selection; only the initial load trims to capacity, which `cli/tui/event_store.rs:set_viewport` derives from the viewport height.
+The timeline's top unit is a session: `cli/tui/event_store.rs:group_sessions` splits the window into runs of one session, and a session is one header row — its kind, its parent when it has one, and its own turn/step/tool/token totals — that starts collapsed and opens into its turns; inside it `cli/tui/event_store.rs:group_turns` groups the rows into runs of one turn number, and a turn is one row that opens into the events inside it. A record carrying no turn of its own — a wrap-up's or a digest's start and end — stands alone. A selection names the row's event *and* its level (`cli/tui/timeline.rs:RowKey`), because an open turn's first event is both its header and one of its children; `cli/tui/timeline.rs:clamp_offset` keeps the selected row in the upper third of the viewport, and a prepend restores its visual position so loading older events does not jump. A prepend can also hand a turn events that come before the one the reader was on, which moves that turn's own first row: the selection follows its event to the turn that holds it (`cli/tui/timeline.rs:Timeline::reselect`) instead of falling back to the head, where it would pull the next page in on the same tick. The window is a seq-ascending slice of matching events and only grows — `extend_back` prepends, `append_new` appends, neither trims — because trimming would evict browsed history and invalidate the selection; only the initial load trims to capacity, which `cli/tui/event_store.rs:set_viewport` derives from the viewport height.
 
-The query line is the filter. `chat:` and `kind:` are the terms the database can narrow by and are re-read as soon as they change (`cli/tui/app.rs:App::update` compares them with what the window was queried with); `tool:` (a glob), `turn:`, `slow:`, `err` and bare text are matched against the rows already in memory (`cli/tui/filter.rs:Terms::matches`). A query that does not parse leaves the last one that did in effect, so a half-typed value never disturbs the window; the header spells out what is in effect, which is not always what was typed — a token the grammar does not know is a search, not a filter.
+The query line is the filter. `chat:`, `kind:` and `session:` (an id prefix) are the terms the database can narrow by and are re-read as soon as they change (`cli/tui/app.rs:App::update` compares them with what the window was queried with); `tool:` (a glob), `turn:`, `slow:`, `err` and bare text are matched against the rows already in memory (`cli/tui/filter.rs:Terms::matches`). A query that does not parse leaves the last one that did in effect, so a half-typed value never disturbs the window; the header spells out what is in effect, which is not always what was typed — a token the grammar does not know is a search, not a filter.
 
 Long fields fold: `cli/display.rs:Section` holds one field's lines, and the detail shows the first `cli/display.rs:PREVIEW_LINES` behind a `▸` plus a marker saying how much is hidden, until `Enter` unfolds every section.
 
@@ -52,12 +52,12 @@ New events are counted and offered (`G` loads them) unless the reader is followi
 
 ## Boundaries
 
-- The event log is read-only — no editing, deletion, export or retention policy — and the filters select one chat.
+- The event log is read-only — no editing or retention policy — and the filters select one chat. A purge's `derived` surface is the one thing that ever removes an event, deleting by the window it was given.
 
 ## Trade-offs and Reasons
 
 - **Only a term that changes the *set* of events goes back to the database.** The window is already in memory, so a keystroke refilters it (case-insensitive over the one-liner, seq and chat id) with no round trip; `chat:` and `kind:` change what the query returns, so they are re-read at once instead of on a timer.
-- **A turn's summary is its start record's line.** The header row reuses that rendering rather than parsing the reason and the message count back out of it, and a turn whose start is older than the window says so instead of passing a child off as the turn.
+- **A turn's header is its start record's line.** The header row reuses that rendering rather than parsing the reason and the message count back out of it, and a turn whose start is older than the window says so instead of passing a child off as the turn.
 - **Following lands on the newest turn, not on the newest record.** A stream of wrap-ups would otherwise pull the reader off the last thing that happened, so a record with no turn of its own never takes the selection.
 
 ## Pitfalls / common mistakes
@@ -68,7 +68,7 @@ New events are counted and offered (`G` loads them) unless the reader is followi
 - **`db migrate` does not create the vector index**, so without a rebuild retrieval scans instead of using IVFFlat — and that rebuild nulls every embedding first.
 - **A `kind:` term is coarser than its label**: one stored tag covers every `turn-ended` outcome, so `kind:turn-ended` also shows the turn that failed (`docs/architecture.md`).
 - **A query term is a key only where the grammar says so**: `slow` alone is a search for that word, `slow:abc` is a refusal — and the header spells out which one the reader is looking at.
-- **A turn number restarts with every chapter** (`agent/runtime/chat/conversation.rs:Conversation::turn_count`), so `(chat, turn)` names several turns over a log's life: a `turn:` term matches each chapter's turn of that number, and the TUI remembers an opened turn by its own first record instead (`cli/tui/event_store.rs:TurnGroup::anchor`).
+- **A turn number restarts with every chapter** (`agent/chat/conversation.rs:Conversation::turn_count`), so `(chat, turn)` names several turns over a log's life: a `turn:` term matches each chapter's turn of that number, and the TUI remembers an opened turn by its own first record instead (`cli/tui/event_store.rs:TurnGroup::anchor`).
 - **Input waits first, the log polls on a timeout** (`cli/tui/guard.rs:InputReader` plus the timeout in `cli/tui/app.rs:App::run`): a `select!` that races input against a timer drains a key burst at the timer's pace, which is 230 ms per key against 0.9 ms once input comes first — and it also makes a single keypress wait for the timer.
 
 ## Evolution Direction

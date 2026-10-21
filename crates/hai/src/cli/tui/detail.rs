@@ -203,6 +203,7 @@ mod tests {
             one_liner: String::new(),
             sections,
             chat_id: 7,
+            session: None,
             kind: None,
             color: (0, 0, 0),
             facts: EventFacts {
@@ -210,6 +211,7 @@ mod tests {
                 tool: None,
                 ok: None,
                 outcome: None,
+                tokens: None,
             },
         }
     }

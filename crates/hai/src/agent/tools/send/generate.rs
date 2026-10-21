@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    agent::{multimodal::MultimodalService, runtime::sandbox::Sandbox},
+    agent::{environment::sandbox::Sandbox, multimodal::MultimodalService},
     agentcore::{
         api::ImageUrl,
         tool::{AgentTool, ToolError, schema_of, tool_data, tool_err},

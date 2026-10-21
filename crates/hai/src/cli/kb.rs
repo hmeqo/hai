@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::AppConfig,
     domain::{
-        service::{Services, chunking::ChunkCfg},
+        chunking::ChunkCfg,
+        service::Services,
         vo::{Collection, KnowledgeDocumentId},
     },
     error::{AppError, Result, bail},
@@ -19,7 +20,7 @@ fn collection_of(label: &str) -> Collection {
 }
 
 pub async fn build_services(config: &AppConfig) -> Result<Services> {
-    Ok(crate::agent::runtime::assemble(config).await?.services)
+    Ok(crate::agent::process::assemble(config).await?.services)
 }
 
 pub fn chunk_cfg(config: &AppConfig) -> ChunkCfg {

@@ -4,7 +4,7 @@ use crate::{
     domain::{
         model::ConversationRecord,
         repo::Repos,
-        vo::{ChatEntry, ChatId, ConversationSnapshot},
+        vo::{ChapterWrite, ChatEntry, ChatId, ContextMeta, ConversationSnapshot},
     },
     error::{AppError, Result},
 };
@@ -34,22 +34,24 @@ impl ConversationRecordService {
         chat_id: ChatId,
         consumed: &[Uuid],
     ) -> Result<()> {
-        let messages = serde_json::to_value(&snap.context_messages)?;
-        let context_meta = serde_json::json!({
-            "tokens": snap.context_meta.tokens,
-            "turn_count": snap.context_meta.turn_count,
-            "step_count": snap.context_meta.step_count,
-        });
         self.repos
             .conversation_record
             .save(
                 chat_id,
-                messages,
-                context_meta,
+                snapshot_values(snap)?,
                 consumed,
                 jiff::Timestamp::now(),
             )
             .await
+    }
+
+    /// The clean chapter a purge resets a chat to: what `Conversation::start_new_chapter(None)`
+    /// holds, in the shape the conversation row stores.
+    pub(crate) fn fresh_chapter(&self) -> Result<ChapterWrite> {
+        snapshot_values(&ConversationSnapshot {
+            context_messages: Vec::new(),
+            context_meta: ContextMeta::new(),
+        })
     }
 
     pub(crate) fn restore(&self, record: &ConversationRecord) -> Result<ConversationSnapshot> {
@@ -73,6 +75,15 @@ impl ConversationRecordService {
     pub async fn chats_with_pending(&self) -> Result<Vec<ChatId>> {
         self.repos.conversation_record.chats_with_pending().await
     }
+}
+
+/// The conversation row's two JSON columns for one snapshot: the context messages as they render,
+/// and the chapter's counters.
+fn snapshot_values(snap: &ConversationSnapshot) -> Result<ChapterWrite> {
+    Ok(ChapterWrite {
+        messages: serde_json::to_value(&snap.context_messages)?,
+        context_meta: serde_json::to_value(snap.context_meta)?,
+    })
 }
 
 fn restore_snapshot(record: &ConversationRecord) -> Result<ConversationSnapshot> {
@@ -119,5 +130,24 @@ mod tests {
             .is_err(),
             "an unreadable snapshot must not be replaced by defaults"
         );
+    }
+
+    /// The write path serializes the whole meta, not a hand-picked subset: a field the reader
+    /// requires cannot be dropped from every row without this failing.
+    #[test]
+    fn a_snapshot_survives_its_own_write() {
+        let snap = ConversationSnapshot {
+            context_messages: Vec::new(),
+            context_meta: ContextMeta {
+                tokens: 3,
+                turn_count: 1,
+                step_count: 2,
+                session: crate::domain::vo::SessionId::new(),
+            },
+        };
+        let chapter = snapshot_values(&snap).expect("a snapshot writes");
+        let back = restore_snapshot(&record(chapter.messages, chapter.context_meta))
+            .expect("a written snapshot reads back");
+        assert_eq!(back.context_meta, snap.context_meta);
     }
 }

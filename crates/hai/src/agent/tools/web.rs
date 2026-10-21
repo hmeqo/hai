@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{
     agent::{
-        runtime::AgentRuntime,
+        process::AgentRuntime,
         tools::util::bounded_limit,
         web::{Recency, SearchRequest, SearchResponse, WebService},
     },

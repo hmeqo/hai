@@ -5,10 +5,11 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    adapter::TelegramAdapter, config::TelegramConfig, dispatcher::TelegramDispatcher, menu,
+    config::TelegramConfig, dispatcher::TelegramDispatcher, ui::menu,
+    wire::adapter::TelegramAdapter,
 };
 use crate::{
-    agent::runtime::{
+    agent::process::{
         AgentRuntime, AppContext, startup_refeed::spawn_startup_refeed,
         task_watcher::spawn_task_watcher,
     },

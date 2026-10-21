@@ -6,9 +6,8 @@ use serde_json::Value;
 
 use crate::{
     agent::{
-        context::sections::knowledge::related_knowledge_section,
-        runtime::{AgentRuntime, turn::ToolContext},
-        tools::util::bounded_limit,
+        process::AgentRuntime, prompt::context::sections::knowledge::related_knowledge_section,
+        run::turn::ToolContext, tools::util::bounded_limit,
     },
     agentcore::{
         render::render_json,
@@ -31,7 +30,7 @@ pub struct SearchKnowledgeBaseArgs {
 /// Searches the global knowledge base by meaning and by keyword, then reorders the candidates by
 /// relevance. The knowledge base is long-term curated material (not conversation memory); use it
 /// when an answer needs outside knowledge.
-#[hai_macros::tool]
+#[hai_macros::tool(reads_only)]
 pub struct SearchKnowledgeBase {
     pub services: Services,
 }

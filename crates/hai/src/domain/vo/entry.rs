@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-use super::{AgentCommand, MessageId, ScheduledTaskId};
+use super::{AgentCommand, MessageId, PurgeSpec, ScheduledTaskId};
 
 /// One change to a chat, in the order it happened. The content is not copied here: the message row
 /// holds the current value.
@@ -51,6 +51,9 @@ pub enum EntryKind {
         task_id: Option<ScheduledTaskId>,
         description: String,
     },
+    /// A confirmed purge: not a change to read, an instruction this chat carries out on its own,
+    /// outside a Turn.
+    Purge(PurgeSpec),
 }
 
 impl ChatEntry {
@@ -67,7 +70,7 @@ impl ChatEntry {
         match &self.kind {
             EntryKind::MessageCreated { message_id }
             | EntryKind::MessageEdited { message_id, .. } => Some(*message_id),
-            EntryKind::Command(_) | EntryKind::Scheduled { .. } => None,
+            EntryKind::Command(_) | EntryKind::Scheduled { .. } | EntryKind::Purge(_) => None,
         }
     }
 }
@@ -87,11 +90,15 @@ mod tests {
                 message_id: MessageId(7),
                 edited_at: at,
             },
-            EntryKind::Command(AgentCommand::Digest(3)),
+            EntryKind::Command(AgentCommand::OrganizeMemory),
             EntryKind::Scheduled {
                 task_id: Some(ScheduledTaskId(Uuid::from_u128(9))),
                 description: "take the medication".into(),
             },
+            EntryKind::Purge(PurgeSpec {
+                range: crate::domain::vo::Stretch::Last { secs: 86_400 },
+                surfaces: crate::domain::vo::PurgeSurfaces::all(),
+            }),
         ] {
             let entry = ChatEntry::new(EntryAudience::Agent, kind.clone(), at);
             let wire = serde_json::to_value(&entry).expect("serializable");

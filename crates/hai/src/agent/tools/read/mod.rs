@@ -20,11 +20,13 @@ use self::paging::{Page, page_data};
 use super::addressing::{self, Address};
 use crate::{
     agent::{
+        environment::sandbox::Sandbox,
         multimodal::{
             MultimodalService,
             analysis::{InlineLimit, MediaAnalyzer},
         },
-        runtime::{AgentRuntime, sandbox::Sandbox, turn::ToolContext},
+        process::AgentRuntime,
+        run::turn::ToolContext,
         web::{WebService, WebUrl},
     },
     agentcore::{
@@ -89,6 +91,11 @@ impl AgentTool for Read {
             }
         };
         tool_data(data)
+    }
+
+    /// A read changes nothing: it opens what the chat already has.
+    fn reads_only(&self) -> bool {
+        true
     }
 }
 
@@ -217,7 +224,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::{agent::runtime::workspace::Workspace, domain::vo::ChatId};
+    use crate::{agent::environment::workspace::Workspace, domain::vo::ChatId};
 
     /// The local path or the kind a `path` argument resolves to, as text so the borrow stays inside.
     fn resolved(path: &str, sandbox: &Sandbox) -> String {

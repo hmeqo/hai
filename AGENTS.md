@@ -31,7 +31,7 @@ Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 | `hai db create` | create the database |
 | `hai db migrate` | create tables, columns, query indexes and constraints from the schema |
 | `hai db rebuild embeddings` | rebuild every vector and its index |
-| `hai log [--id N] [--chat ID] [--event TAG]` | event-log TUI; `--id N` prints one event |
+| `hai log [--id N] [--chat ID] [--event TAG] [--session PREFIX]` | event-log TUI; `--id N` prints one event |
 | `hai kb import/list/search/delete/reindex` | knowledge-base management (idempotent import, semantic search, rebuild) |
 
 ## Code style
@@ -39,20 +39,21 @@ Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 <CRITICAL>
 
 - **Terms** follow `docs/CONTEXT.md`; never invent a second name for a concept that has one
-- **Layering holds**: `agentcore/` must not depend on `agent/` or `domain/`. The known cycles are listed in `docs/architecture.md`; add no new ones
+- **Layering holds**: `agentcore/` must not depend on `agent/` or `domain/`. The known cycles are listed in `docs/architecture.md`; add no new ones, and `crates/hai/tests/layering.rs` fails on any edge the table does not name
 - **Types over conventions**: domain identifiers are newtypes, fixed sets are enums, events are the typed payload enum — no bare identifier strings and no magic values across a boundary
 - **Missing data violates the contract**: fail fast, never substitute a fallback, and do not spread the legacy "swallow the error and return `Ok(None)`" pattern
 - **Enum wire form lives once**: `#[serde(rename_all = …)]` and `#[strum(serialize_all = …)]` spell the same naming (a consistency test pins it); the accessor stays, the mapping is written once — a hand-written match only where the accessor must compose information
 - **One change, one transaction**: the message row and its `ChatEntry` land together; a Turn consumes the accumulation it took only on a normal end, and a redelivery or an older edit is dropped whole
 - **Tool calls in a Step run sequentially**, never in parallel
 - **`read` does not cache page text**: re-reading a URL re-fetches it; only images reuse a transcription
-- **Text that faces the model is written to a standard**: tool docs state only what the JSON schema cannot (purpose, preconditions, result shape); prompts give judgment material rather than compliance clauses — no quotas, no receipts, and no decision the agent cannot see. Code, docs, comments and everything the model reads as a contract (tool descriptions, schema fields, `SYSTEM_PROMPT`, section headings) are English; the built-in persona and chat-type layers exist in Chinese and English, and which one a chat reads — with the output language that follows from it — is the chat's setting, while the operational `agents` and retention `wrap-up` layers are English-only (`docs/topics/prompting.md`)
+- **Text that faces the model is written to a standard**: tool docs state only what the JSON schema cannot (purpose, preconditions, result shape); prompts give judgment material rather than compliance clauses — no quotas, no receipts, and no decision the agent cannot see. Code, docs, comments and everything the model reads as a contract (tool descriptions, schema fields, `SYSTEM_PROMPT`, section headings) are English; the built-in soul and chat-type layers exist in Chinese and English, and which one a chat reads — with the output language that follows from it — is the chat's setting, while the operational `agents` and retention `wrap-up` layers are English-only (`docs/topics/prompting.md`)
 - **Comments carry only what naming and structure cannot**: a contract, a compatibility requirement, an external-library pitfall, a transaction boundary, test intent. Mechanism and rationale belong in `docs/`, and a comment that restates the code is deleted
 - **Artifacts state current facts**: a correction replaces what it corrects — no "previously", no "no longer", no debt narration in code, docs or messages
 - **Changes need confirmation**: present the plan before implementing; discussion is not an instruction to change
 - **Commits are user-initiated** (the agent reminds when changes accumulate): atomic, Conventional Commits prefix, message written against the final diff
 - **External actions** — issues, PRs, comments, tracking entries, decision records — are user-initiated or explicitly consented
 - **Privacy**: credentials, personal data and production or intranet details never enter docs or tracking, and information sources are not recorded; an example anywhere — prompt text, docs, tests — is invented, never quoted from a real conversation
+- **Default prompts carry EQ and non-aggression** — the agent is a person: most turns end with nothing said, a line is usually the whole reply, knowing something is no reason to say it, and what it does say it answers for — key facts checked, uncertainty stated, no show of erudition
 
 </CRITICAL>
 

@@ -4,8 +4,8 @@ use crate::{
     cli::display::{EventDisplay, TurnOutcome},
     domain::{
         model::Event,
-        repo::Repos,
-        vo::{ChatId, EventKind, TurnNumber},
+        repo::{EventQuery, Repos},
+        vo::{ChatId, EventKind, SessionRef, TurnNumber},
     },
 };
 
@@ -17,10 +17,9 @@ pub(super) struct TurnGroup {
     pub chat_id: i64,
     pub turn: Option<TurnNumber>,
     pub seqs: Vec<i64>,
-    /// What an open turn is remembered by. A turn's number restarts with each chapter, so `(chat,
-    /// turn)` names several turns over a log's life; the turn's first record is in the window and
-    /// names exactly one. A group the window begins inside is remembered by the first event of it the
-    /// window holds, which is all this log can offer.
+    /// What an open turn is remembered by: the turn's first record in the window. A turn number is
+    /// unique only inside its session, and the session is the group above this one, so the anchor
+    /// names the turn a reader has open.
     pub anchor: i64,
     /// The turn's own start record, when the window holds it: what a row summarises the turn from.
     pub start_seq: Option<i64>,
@@ -59,6 +58,71 @@ pub(super) fn group_turns(rows: &[(i64, &EventDisplay)]) -> Vec<TurnGroup> {
     groups
 }
 
+/// One session's events in the order they happened, its turns underneath.
+pub(super) struct SessionGroup {
+    /// `None` for a host record (a purge): it has no run and no header row.
+    pub session: Option<SessionRef>,
+    pub chat_id: i64,
+    pub turns: Vec<TurnGroup>,
+    pub totals: SessionTotals,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct SessionTotals {
+    /// Distinct turn numbers the session carries.
+    pub turns: usize,
+    pub steps: usize,
+    pub tools: usize,
+    /// Prompt plus completion tokens summed over `StepCompleted` rows.
+    pub tokens: u64,
+}
+
+/// Groups the window into sessions, then each session's rows into turns with the existing rule.
+/// Consecutive rows with the same `session` form one group; a `None` session is its own group, so a
+/// host record splits the run it interrupts.
+pub(super) fn group_sessions(rows: &[(i64, &EventDisplay)]) -> Vec<SessionGroup> {
+    let mut groups: Vec<SessionGroup> = Vec::new();
+    let mut start = 0;
+    for end in 1..=rows.len() {
+        let changed = end == rows.len() || rows[end].1.session != rows[start].1.session;
+        if !changed {
+            continue;
+        }
+        let chunk = &rows[start..end];
+        groups.push(SessionGroup {
+            session: chunk[0].1.session,
+            chat_id: chunk[0].1.chat_id,
+            turns: group_turns(chunk),
+            totals: totals(chunk.iter().map(|(_, display)| *display)),
+        });
+        start = end;
+    }
+    groups
+}
+
+/// What a session's rows add up to, over exactly the rows given.
+pub(super) fn totals<'a>(displays: impl IntoIterator<Item = &'a EventDisplay>) -> SessionTotals {
+    let mut totals = SessionTotals::default();
+    let mut turns: Vec<TurnNumber> = Vec::new();
+    for display in displays {
+        match display.kind {
+            Some(EventKind::StepCompleted) => totals.steps += 1,
+            Some(EventKind::ToolCall) => totals.tools += 1,
+            _ => {}
+        }
+        if let Some((prompt, completion)) = display.facts.tokens {
+            totals.tokens += u64::from(prompt) + u64::from(completion);
+        }
+        if let Some(turn) = display.facts.turn
+            && !turns.contains(&turn)
+        {
+            turns.push(turn);
+        }
+    }
+    totals.turns = turns.len();
+    totals
+}
+
 /// Seq-ascending sliding window over the events matching `chat_filter` and
 /// `kind_filter`. Query errors propagate as `Result`; the `at_start` edge is
 /// decided by what a query returned (a short or empty page), so a transient
@@ -67,6 +131,7 @@ pub(super) struct EventStore {
     repos: Repos,
     pub chat_filter: Option<ChatId>,
     pub kind_filter: Option<EventKind>,
+    pub session_filter: Option<String>,
 
     window: Vec<Event>,
     pub at_start: bool,
@@ -76,11 +141,17 @@ pub(super) struct EventStore {
 }
 
 impl EventStore {
-    pub fn new(repos: Repos, chat_filter: Option<ChatId>, kind_filter: Option<EventKind>) -> Self {
+    pub fn new(
+        repos: Repos,
+        chat_filter: Option<ChatId>,
+        kind_filter: Option<EventKind>,
+        session_filter: Option<String>,
+    ) -> Self {
         Self {
             repos,
             chat_filter,
             kind_filter,
+            session_filter,
             window: Vec::new(),
             at_start: false,
             capacity: PAGE_SIZE * 2,
@@ -139,19 +210,21 @@ impl EventStore {
         self.window.last().map(|e| e.seq)
     }
 
+    /// The page the store's filters ask for; a caller narrows it with a struct update.
+    fn page(&self) -> EventQuery<'_> {
+        EventQuery {
+            chat: self.chat_filter,
+            kind: self.kind_filter,
+            session: self.session_filter.as_deref(),
+            before: None,
+            after: None,
+            desc: true,
+            limit: self.capacity,
+        }
+    }
+
     pub async fn load_end(&mut self) -> crate::error::Result<()> {
-        let mut events = self
-            .repos
-            .event
-            .query(
-                self.chat_filter,
-                self.kind_filter,
-                None,
-                None,
-                true,
-                self.capacity,
-            )
-            .await?;
+        let mut events = self.repos.event.query(self.page()).await?;
         events.reverse(); // query returns newest-first; the window is seq-ascending
         // A short page means nothing older exists.
         self.at_start = events.len() < self.capacity;
@@ -167,14 +240,10 @@ impl EventStore {
         let mut older = self
             .repos
             .event
-            .query(
-                self.chat_filter,
-                self.kind_filter,
-                Some(min),
-                None,
-                true,
-                self.capacity,
-            )
+            .query(EventQuery {
+                before: Some(min),
+                ..self.page()
+            })
             .await?;
         older.reverse();
         if older.is_empty() {
@@ -192,14 +261,11 @@ impl EventStore {
         let events = self
             .repos
             .event
-            .query(
-                self.chat_filter,
-                self.kind_filter,
-                None,
+            .query(EventQuery {
                 after,
-                false,
-                self.capacity,
-            )
+                desc: false,
+                ..self.page()
+            })
             .await?;
         if events.is_empty() {
             return Ok(0);
@@ -216,7 +282,12 @@ impl EventStore {
         let count = self
             .repos
             .event
-            .count_after(after, self.chat_filter, self.kind_filter)
+            .count_after(
+                after,
+                self.chat_filter,
+                self.kind_filter,
+                self.session_filter.as_deref(),
+            )
             .await?;
         Ok(count.max(0) as usize)
     }
@@ -247,7 +318,10 @@ impl EventStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::display::EventFacts;
+    use crate::{
+        cli::display::EventFacts,
+        domain::vo::{SessionId, SessionKind},
+    };
 
     fn display(
         kind: EventKind,
@@ -260,6 +334,7 @@ mod tests {
             one_liner: String::new(),
             sections: Vec::new(),
             chat_id,
+            session: None,
             kind: Some(kind),
             color: (0, 0, 0),
             facts: EventFacts {
@@ -267,6 +342,7 @@ mod tests {
                 tool: None,
                 ok: None,
                 outcome,
+                tokens: None,
             },
         }
     }
@@ -320,5 +396,62 @@ mod tests {
             "a record with no turn has no start"
         );
         assert_eq!(groups[4].seqs, [15], "a turn-less record stands alone");
+    }
+
+    fn in_session(
+        session: Option<SessionRef>,
+        kind: EventKind,
+        chat_id: i64,
+        turn: Option<usize>,
+    ) -> EventDisplay {
+        EventDisplay {
+            session,
+            ..display(kind, chat_id, turn, None)
+        }
+    }
+
+    /// The same turn number in three sessions is three runs: the session split keeps them apart, and
+    /// without it the middle turns would have merged into one group.
+    #[test]
+    fn turns_of_two_sessions_do_not_merge() {
+        let main = SessionRef::main(SessionId::new());
+        let wrap = SessionRef::wrap_up(SessionId::new(), main.id);
+        let digest = SessionRef::digest(SessionId::new());
+        let first = in_session(Some(main), EventKind::TurnStarted, 7, Some(1));
+        let second = in_session(Some(wrap), EventKind::TurnStarted, 7, Some(1));
+        let third = in_session(Some(digest), EventKind::TurnStarted, 7, Some(1));
+        let displays = [(1, &first), (2, &second), (3, &third)];
+
+        let groups = group_sessions(&displays);
+
+        assert_eq!(groups.len(), 3, "one group per session");
+        assert!(groups.iter().all(|group| group.turns.len() == 1));
+        assert_eq!(
+            groups[1].session.map(|session| session.kind),
+            Some(SessionKind::WrapUp)
+        );
+        assert_eq!(
+            groups[2].session.map(|session| session.kind),
+            Some(SessionKind::Digest)
+        );
+    }
+
+    /// A session's header totals the rows it holds: turns it names, steps, tool calls and tokens.
+    #[test]
+    fn a_session_header_counts_its_own_rows() {
+        let session = SessionRef::main(SessionId::new());
+        let started = in_session(Some(session), EventKind::TurnStarted, 7, Some(1));
+        let mut step = in_session(Some(session), EventKind::StepCompleted, 7, Some(1));
+        step.facts.tokens = Some((100, 20));
+        let call = in_session(Some(session), EventKind::ToolCall, 7, Some(1));
+        let displays = [(1, &started), (2, &step), (3, &call)];
+
+        let groups = group_sessions(&displays);
+
+        let totals = groups[0].totals;
+        assert_eq!(
+            (totals.turns, totals.steps, totals.tools, totals.tokens),
+            (1, 1, 1, 120)
+        );
     }
 }

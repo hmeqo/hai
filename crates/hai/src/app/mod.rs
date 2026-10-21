@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    agent::runtime::{AgentRuntime, AppContext},
+    agent::process::{AgentRuntime, AppContext},
     config::AppConfig,
     error::Result,
     platform::host::ChannelHost,

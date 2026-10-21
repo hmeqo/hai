@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
-    agent::runtime::turn::ToolContext,
+    agent::run::turn::ToolContext,
     agentcore::tool::{AgentTool, ToolError, tool_err, tool_ok},
 };
 

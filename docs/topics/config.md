@@ -1,10 +1,10 @@
 # Config and error handling
 
-> How the config is loaded, model-role and provider/channel resolution, Paths, and the error type. Read before changing `config/`, `error.rs` or the container in `agent/runtime/context.rs`.
+> How the config is loaded, model-role and provider/channel resolution, Paths, and the error type. Read before changing `config/`, `error.rs` or the container in `agent/process/context.rs`.
 
 ## Overview
 
-`config` is a data layer plus provider resolution; `config/load.rs:AppConfig::load` resolves the sources once at startup into a plain value, and `agent/runtime/context.rs:AppContext` turns that value into the process context. Nothing writes the config file back and nothing reloads it, so a setting that changes at runtime belongs to the database (`domain/service/preference.rs`) and is reached through `agent/settings.rs:Settings`, not here.
+`config` is a data layer plus provider resolution; `config/load.rs:AppConfig::load` resolves the sources once at startup into a plain value, and `agent/process/context.rs:AppContext` turns that value into the process context. Nothing writes the config file back and nothing reloads it, so a setting that changes at runtime belongs to the database (`domain/service/preference.rs`) and is reached through `agent/settings.rs:Settings`, not here.
 
 ## Design
 
@@ -18,7 +18,7 @@ flowchart LR
   load["config/load.rs:AppConfig::load"] --> resolved[resolved AppConfig]
 ```
 
-`cli.rs:Cli::execute` calls it once, before any command runs, and passes the value down; a missing config file is the defaults, and a parse failure or an unreadable file fails startup.
+`cli/mod.rs:Cli::execute` calls it once, before any command runs, and passes the value down; a missing config file is the defaults, and a parse failure or an unreadable file fails startup.
 
 - **The sources merge key by key.** A key set by a later source wins, every other key keeps its earlier value, and a section no source mentions comes from `AppConfig`'s `Default`. `HAI__MODEL_ROLES__DEFAULT__MAX_TOKENS` therefore leaves the file's other `[model-roles.default]` fields alone.
 - **Environment naming**: the separator is part of the prefix, so a key must start with `HAI__` (`HAI_MODELS__DEFAULT__MAX_TOKENS` is skipped), and each `__` segment is lowercased and kebab-cased to match `rename_all = "kebab-case"` (`HAI__MODEL_ROLES__DEFAULT__MAX_TOKENS` → `model-roles.default.max-tokens`). An unknown `HAI__*` variable fails startup like an unknown file key.
@@ -54,7 +54,7 @@ A `[providers.<name>]` block declares an **override** — transport (`type`), en
 | a kind with no shared root (`azureopenai`) and no `base-url` | no: `[providers.azureopenai] has no endpoint: set \`base-url\` here` |
 | a name that is neither a kind nor a declared block | no: `[providers.nope] is not a supported provider: …` |
 
-`[model-roles.default] provider = "ollama"` therefore works with no block at all while the service runs, and `OPENROUTER_API_KEY` alone is a complete openrouter setup. Unavailability fails startup where the provider is named (`agent/runtime/context.rs:assemble`); a declared block nothing references is never consulted.
+`[model-roles.default] provider = "ollama"` therefore works with no block at all while the service runs, and `OPENROUTER_API_KEY` alone is a complete openrouter setup. Unavailability fails startup where the provider is named (`agent/process/context.rs:assemble`); a declared block nothing references is never consulted.
 
 A block states an endpoint (`base-url`) rather than proving one, so a self-hosted gateway with no credential stays available on its word — only the endpoint HAI assumes for a keyless kind is probed.
 

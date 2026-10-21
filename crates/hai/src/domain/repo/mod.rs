@@ -12,16 +12,18 @@ pub(crate) mod lexical;
 pub mod memory;
 pub mod message;
 pub mod perception;
+pub mod purge;
 pub mod scheduled_task;
 pub mod topic;
 pub mod vector;
+pub(crate) mod window;
 
 pub use account::AccountRepo;
 pub use attachment::AttachmentRepo;
 pub use chat::ChatRepo;
 pub use chat_preference::ChatPreferenceRepo;
 pub use conversation_record::ConversationRecordRepo;
-pub use event::EventRepo;
+pub use event::{EventQuery, EventRepo};
 pub use identity::IdentityRepo;
 pub use ingest::{ChangeKind, IngestRepo, PlatformChange};
 pub use knowledge_chunk::KnowledgeChunkRepo;
@@ -29,6 +31,7 @@ pub use knowledge_document::KnowledgeDocumentRepo;
 pub use memory::MemoryRepo;
 pub use message::MessageRepo;
 pub use perception::PerceptionRepo;
+pub use purge::{PurgeRepo, PurgeWiped};
 pub use scheduled_task::ScheduledTaskRepo;
 use sqlx::PgPool;
 pub use topic::TopicRepo;
@@ -48,6 +51,7 @@ pub struct Repos {
     pub memory: MemoryRepo,
     pub message: MessageRepo,
     pub perception: PerceptionRepo,
+    pub purge: PurgeRepo,
     pub scheduled_task: ScheduledTaskRepo,
     pub topic: TopicRepo,
 }
@@ -68,6 +72,7 @@ impl Repos {
             memory: MemoryRepo::new(pool.clone()),
             message: MessageRepo::new(pool.clone()),
             perception: PerceptionRepo::new(pool.clone()),
+            purge: PurgeRepo::new(pool.clone()),
             scheduled_task: ScheduledTaskRepo::new(pool.clone()),
             topic: TopicRepo::new(pool.clone()),
         }

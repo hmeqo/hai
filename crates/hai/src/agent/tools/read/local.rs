@@ -327,7 +327,7 @@ impl Read {
 mod tests {
     use super::*;
     use crate::{
-        agent::runtime::sandbox::Sandbox, config::schema::SandboxConfig, test_support::TempDir,
+        agent::environment::sandbox::Sandbox, config::schema::SandboxConfig, test_support::TempDir,
     };
 
     #[test]
