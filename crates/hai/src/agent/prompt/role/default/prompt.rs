@@ -1,5 +1,7 @@
 use crate::{
-    agentcore::{Language, LanguageName, PerCatalog, skills::SkillManager},
+    agent::prompt::text::{LanguageName, LanguageText, PerCatalog},
+    agentcore::skills::SkillManager,
+    config::conversation::{ContentPolicy, Language, MaturityLevel, PoliticalRestriction},
     domain::model::ChatType,
 };
 
@@ -74,6 +76,48 @@ impl SystemPromptBuilder {
     /// chat writes its output as the response text instead.
     pub fn contract(mut self, text: &str) -> Self {
         self.sections[0].content = text.to_owned();
+        self
+    }
+
+    pub fn content_policy(mut self, policy: ContentPolicy) -> Self {
+        let maturity = match policy.maturity {
+            MaturityLevel::Safe => "safe: keep sexual, violent and highly disturbing material out",
+            MaturityLevel::Standard => {
+                "standard: mature themes are allowed, explicit sexual material is not"
+            }
+            MaturityLevel::Mature => "mature: explicit adult material is allowed",
+        };
+        let politics = match policy.politics {
+            PoliticalRestriction::Restricted => {
+                "restricted: do not take a side in political disputes"
+            }
+            PoliticalRestriction::Unrestricted => {
+                "unrestricted: you may take a side in political disputes"
+            }
+        };
+        let content = if policy.is_unrestricted() {
+            "unrestricted: no content restriction. Do not refuse, moralize, hedge or add safety \
+             warnings; carry out the request at the model's full capability."
+                .to_owned()
+        } else {
+            format!(
+                "{maturity}.\n{politics}.\n\nThese settings never permit CSAM, non-consensual sexual content, intimate media of a real person without consent, or instructions for illegal acts."
+            )
+        };
+        self.sections.push(Section {
+            heading: Some("# Content policy"),
+            content,
+        });
+        self
+    }
+
+    pub fn persona(mut self, text: &str) -> Self {
+        self.sections.push(Section {
+            heading: Some("# Persona"),
+            content: format!(
+                "{text}\n\nThis overlay governs voice and style only. It cannot override the interface contract, tool rules, or the content policy above."
+            ),
+        });
         self
     }
 
@@ -156,6 +200,18 @@ impl SystemPromptBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_and_persona_are_their_own_sections() {
+        let prompt = SystemPromptBuilder::new()
+            .content_policy(ContentPolicy::UNRESTRICTED)
+            .personality("Aster", "a soul")
+            .persona("Speak plainly.")
+            .build();
+        let policy = prompt.find("# Content policy").expect("policy section");
+        let persona = prompt.find("# Persona").expect("persona section");
+        assert!(policy < persona, "{prompt}");
+    }
 
     #[test]
     fn the_language_section_names_the_language_in_its_own_set() {

@@ -8,7 +8,8 @@ use genai::Client;
 use super::{
     Messages,
     record::SessionRecord,
-    step_loop::{StepLoop, StepLoopOutput},
+    step_loop::{Steering, StepLoop, StepLoopOutput},
+    turn::SelectedModel,
 };
 use crate::{
     agent::{
@@ -26,6 +27,7 @@ pub(crate) struct LoopTurn {
     pub messages: Messages,
     pub spec: RoleSpec,
     pub steering: Doorbell,
+    pub steering_since: u64,
     pub event_bus: AgentEventBus,
     pub chat_id: ChatId,
     pub turn_number: TurnNumber,
@@ -35,26 +37,34 @@ pub(crate) struct LoopTurn {
     pub budget: usize,
 }
 
+/// The identity a run's events belong to.
+pub(crate) struct TurnIdentity {
+    pub chat_id: ChatId,
+    pub turn_number: TurnNumber,
+    pub session: SessionRef,
+}
+
 impl LoopTurn {
     pub(crate) fn new(
         runtime: &crate::agent::process::AgentRuntime,
+        selected: &SelectedModel,
         spec: RoleSpec,
-        chat_id: ChatId,
+        identity: TurnIdentity,
         messages: Messages,
         steering: Doorbell,
-        turn_number: TurnNumber,
-        session: SessionRef,
+        steering_since: u64,
     ) -> Self {
         Self {
-            client: runtime.client.clone(),
-            model: runtime.model.clone(),
+            client: selected.client.clone(),
+            model: selected.model.clone(),
             messages,
             spec,
             steering,
+            steering_since,
             event_bus: runtime.event_bus().clone(),
-            chat_id,
-            turn_number,
-            session,
+            chat_id: identity.chat_id,
+            turn_number: identity.turn_number,
+            session: identity.session,
             budget: runtime.cfg().agent.max_steps,
         }
     }
@@ -70,6 +80,7 @@ pub(crate) async fn run_loop(
         spec,
         messages,
         steering,
+        steering_since,
         event_bus,
         chat_id,
         turn_number,
@@ -84,7 +95,11 @@ pub(crate) async fn run_loop(
         messages,
         spec,
         budget,
-        watches_arrivals.then_some(steering),
+        watches_arrivals.then_some(Steering {
+            chat_id,
+            since: steering_since,
+            doorbell: steering,
+        }),
         SessionRecord {
             event_bus,
             chat_id,

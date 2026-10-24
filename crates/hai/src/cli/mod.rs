@@ -11,9 +11,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    app,
+    bootstrap,
     config::{AppConfig, Paths, env},
-    domain::db,
+    domain::{
+        repo::Repos,
+        service::ConversationService,
+        storage,
+        vo::{ChatId, ConversationId},
+    },
 };
 
 #[derive(Parser)]
@@ -45,6 +50,29 @@ pub enum Commands {
         #[command(subcommand)]
         action: KbAction,
     },
+    /// Inspect or change Conversation membership
+    Conversation {
+        #[command(subcommand)]
+        action: ConversationAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConversationAction {
+    /// Move one Chat into an existing Conversation, carrying its pending entries
+    Attach {
+        #[arg(long)]
+        chat: i64,
+        #[arg(long)]
+        conversation: i64,
+    },
+    /// Move one Chat into a fresh Conversation, carrying its pending entries
+    Detach {
+        #[arg(long)]
+        chat: i64,
+    },
+    /// List Conversations and their member Chats
+    List,
 }
 
 #[derive(Args)]
@@ -146,10 +174,10 @@ impl Cli {
                 },
                 Commands::Db { action } => match action {
                     DbAction::Create => {
-                        db::create_database(&cfg.database.url).await?;
+                        storage::create_database(&cfg.database.url).await?;
                     }
                     DbAction::Migrate => {
-                        db::migrate(&cfg).await?;
+                        storage::migrate(&cfg).await?;
                     }
                     DbAction::Rebuild { target } => match target {
                         RebuildTarget::Embeddings => {
@@ -163,9 +191,36 @@ impl Cli {
                 Commands::Kb { action } => {
                     kb::execute(action, &cfg).await?;
                 }
+                Commands::Conversation { action } => {
+                    let pool = sqlx::PgPool::connect(&cfg.database.url).await?;
+                    let service = ConversationService::new(Repos::new(pool));
+                    match action {
+                        ConversationAction::Attach { chat, conversation } => {
+                            service
+                                .attach(ChatId(chat), ConversationId(conversation))
+                                .await?;
+                            println!("Chat {chat} moved to Conversation {conversation}");
+                        }
+                        ConversationAction::Detach { chat } => {
+                            let conversation = service.detach(ChatId(chat)).await?;
+                            println!("Chat {chat} moved to Conversation {conversation}");
+                        }
+                        ConversationAction::List => {
+                            for conversation in service.list().await? {
+                                println!("conversation {}", conversation.id);
+                                for chat in conversation.chats {
+                                    println!(
+                                        "  chat {} alias={} channel={} external={}",
+                                        chat.id, chat.alias, chat.channel_key, chat.external_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         } else {
-            app::serve(cfg).await?;
+            bootstrap::serve(cfg).await?;
         }
         Ok(())
     }

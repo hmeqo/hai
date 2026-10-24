@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::{Topic, TopicNote, TopicStatus},
         repo::{lexical, vector, window},
-        vo::{ChatId, MessageId, TimeRange, TopicId},
+        vo::{ConversationId, MessageId, TimeRange, TopicId},
     },
     error::Result,
 };
@@ -24,15 +24,15 @@ impl TopicRepo {
     /// transaction.
     pub async fn open(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         title: &str,
         summary: &str,
         embedding: &[f32],
         message_ids: &[MessageId],
     ) -> Result<Topic> {
         let mut tx = self.pool.begin().await?;
-        let topic = insert_topic(&mut tx, chat_id, title, summary, embedding).await?;
-        link_in_tx(&mut tx, topic.id, message_ids).await?;
+        let topic = insert_topic(&mut tx, conversation_id, title, summary, embedding).await?;
+        link_in_tx(&mut tx, conversation_id, topic.id, message_ids).await?;
         tx.commit().await?;
         Ok(topic)
     }
@@ -42,21 +42,22 @@ impl TopicRepo {
     /// statement, not the caller's memory.
     pub async fn link_messages(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         topic_id: TopicId,
         message_ids: &[MessageId],
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let ours =
-            sqlx::query("UPDATE topic SET updated_at = now() WHERE id = $1 AND chat_id = $2")
-                .bind(topic_id.0)
-                .bind(chat_id.0)
-                .execute(&mut *tx)
-                .await?;
+        let ours = sqlx::query(
+            "UPDATE topic SET updated_at = now() WHERE id = $1 AND conversation_id = $2",
+        )
+        .bind(topic_id.0)
+        .bind(conversation_id.0)
+        .execute(&mut *tx)
+        .await?;
         if ours.rows_affected() == 0 {
             return Ok(false);
         }
-        link_in_tx(&mut tx, topic_id, message_ids).await?;
+        link_in_tx(&mut tx, conversation_id, topic_id, message_ids).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -64,20 +65,20 @@ impl TopicRepo {
     /// Adds the note only when the topic is this chat's; `None` means it is not.
     pub async fn add_note(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         topic_id: TopicId,
         text: &str,
         message_ids: &[MessageId],
     ) -> Result<Option<TopicNote>> {
         sqlx::query_as::<_, TopicNote>(
             "INSERT INTO topic_note (topic_id, text, message_ids) \
-             SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM topic WHERE id = $1 AND chat_id = $4) \
+             SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM topic WHERE id = $1 AND conversation_id = $4) \
              RETURNING *",
         )
         .bind(topic_id.0)
         .bind(text)
         .bind(message_ids)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
@@ -112,7 +113,7 @@ impl TopicRepo {
     /// vector go in one statement, so retrieval never matches a meaning the row no longer has.
     pub async fn update_fields(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         topic_id: TopicId,
         title: Option<&str>,
         summary: Option<&str>,
@@ -121,10 +122,10 @@ impl TopicRepo {
         sqlx::query_as::<_, Topic>(
             "UPDATE topic SET title = COALESCE($3, title), summary = COALESCE($4, summary), \
              embedding = $5::vector, updated_at = now() \
-             WHERE id = $1 AND chat_id = $2 RETURNING *",
+             WHERE id = $1 AND conversation_id = $2 RETURNING *",
         )
         .bind(topic_id.0)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(title)
         .bind(summary)
         .bind(vector::vec_to_pgstring(embedding))
@@ -135,14 +136,18 @@ impl TopicRepo {
 
     /// Closes the topic: status and time range only, `summary` stays as it is. `None` when the topic
     /// is not this chat's, in which case nothing is written.
-    pub async fn close(&self, chat_id: ChatId, topic_id: TopicId) -> Result<Option<Topic>> {
+    pub async fn close(
+        &self,
+        conversation_id: ConversationId,
+        topic_id: TopicId,
+    ) -> Result<Option<Topic>> {
         let mut tx = self.pool.begin().await?;
         let topic = sqlx::query_as::<_, Topic>(
             "UPDATE topic SET status = $3, closed_at = $4, updated_at = $4 \
-             WHERE id = $1 AND chat_id = $2 RETURNING *",
+             WHERE id = $1 AND conversation_id = $2 RETURNING *",
         )
         .bind(topic_id.0)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(TopicStatus::Closed.as_str())
         .bind(jiff_sqlx::Timestamp::from(jiff::Timestamp::now()))
         .fetch_optional(&mut *tx)
@@ -155,10 +160,14 @@ impl TopicRepo {
         Ok(Some(topic))
     }
 
-    pub async fn by_id(&self, chat_id: ChatId, id: TopicId) -> Result<Option<Topic>> {
-        sqlx::query_as::<_, Topic>("SELECT * FROM topic WHERE id = $1 AND chat_id = $2")
+    pub async fn by_id(
+        &self,
+        conversation_id: ConversationId,
+        id: TopicId,
+    ) -> Result<Option<Topic>> {
+        sqlx::query_as::<_, Topic>("SELECT * FROM topic WHERE id = $1 AND conversation_id = $2")
             .bind(id.0)
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .fetch_optional(&self.pool)
             .await
             .map_err(Into::into)
@@ -175,11 +184,14 @@ impl TopicRepo {
             .map_err(Into::into)
     }
 
-    pub async fn active_by_chat(&self, chat_id: ChatId) -> Result<Vec<Topic>> {
+    pub async fn active_by_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Vec<Topic>> {
         sqlx::query_as::<_, Topic>(
-            "SELECT * FROM topic WHERE chat_id = $1 AND status = $2 ORDER BY last_active_at DESC",
+            "SELECT * FROM topic WHERE conversation_id = $1 AND status = $2 ORDER BY last_active_at DESC",
         )
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(TopicStatus::Active.as_str())
         .fetch_all(&self.pool)
         .await
@@ -189,15 +201,15 @@ impl TopicRepo {
     /// Nearest topics by meaning; every topic stays retrievable, closed or not.
     pub async fn search_by_embedding(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<(TopicId, f64)>> {
-        let rows = vector::search_chat_embedding_vec(
+        let rows = vector::search_conversation_embedding_vec(
             &self.pool,
-            vector::ChatTable::Topic,
+            vector::ConversationTable::Topic,
             query,
-            chat_id,
+            conversation_id,
             None,
             limit,
         )
@@ -208,17 +220,18 @@ impl TopicRepo {
             .collect())
     }
 
-    pub async fn by_chat_time(
+    pub async fn by_conversation_time(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Topic>> {
         let sql = format!(
-            "SELECT * FROM topic WHERE chat_id = $1 {} ORDER BY last_active_at DESC LIMIT $4",
+            "SELECT * FROM topic WHERE conversation_id = $1 {} ORDER BY last_active_at DESC LIMIT $4",
             window::time_window("last_active_at", 2)
         );
-        let query = sqlx::query_as::<_, Topic>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let query =
+            sqlx::query_as::<_, Topic>(sqlx::AssertSqlSafe(sql.as_str())).bind(conversation_id.0);
         range
             .bind(query)
             .bind(limit)
@@ -229,14 +242,14 @@ impl TopicRepo {
 
     pub async fn search_by_keywords(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         keywords: &[String],
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Topic>> {
         let patterns = lexical::patterns(keywords);
         let query = sqlx::query_as::<_, Topic>(sqlx::AssertSqlSafe(keyword_search_sql().as_str()))
-            .bind(chat_id.0);
+            .bind(conversation_id.0);
         range
             .bind(query)
             .bind(&patterns)
@@ -248,11 +261,11 @@ impl TopicRepo {
 
     /// Removes the topic with its notes, and unlinks its messages; `false` when it is not this
     /// chat's, which the caller reports as a missing topic rather than a silent success.
-    pub async fn delete(&self, chat_id: ChatId, topic_id: TopicId) -> Result<bool> {
+    pub async fn delete(&self, conversation_id: ConversationId, topic_id: TopicId) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let ours = sqlx::query("DELETE FROM topic WHERE id = $1 AND chat_id = $2")
+        let ours = sqlx::query("DELETE FROM topic WHERE id = $1 AND conversation_id = $2")
             .bind(topic_id.0)
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .execute(&mut *tx)
             .await?;
         if ours.rows_affected() == 0 {
@@ -277,24 +290,24 @@ impl TopicRepo {
     /// message keeps a topic that is gone.
     pub(crate) async fn delete_many_in_tx(
         tx: &mut sqlx::PgConnection,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         ids: &[TopicId],
         range: TimeRange,
     ) -> Result<u64> {
         let sql = format!(
             "WITH doomed AS ( \
-                 DELETE FROM topic WHERE chat_id = $1 \
+                 DELETE FROM topic WHERE conversation_id = $1 \
                  AND (id = ANY($2::uuid[]) OR {}) RETURNING id), \
              notes AS ( \
                  DELETE FROM topic_note WHERE topic_id IN (SELECT id FROM doomed)), \
              unlinked AS ( \
                  UPDATE message SET topic_id = NULL \
-                 WHERE chat_id = $1 AND topic_id IN (SELECT id FROM doomed)) \
+                 WHERE conversation_id = $1 AND topic_id IN (SELECT id FROM doomed)) \
              SELECT count(*) FROM doomed",
             window::predicate("last_active_at", 3),
         );
         let query = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .bind(ids);
         let (deleted,) = range.bind(query).fetch_one(&mut *tx).await?;
         // `count(*)` is never negative.
@@ -305,19 +318,19 @@ impl TopicRepo {
 /// Inserts a topic with the vector it is retrieved by; the caller owns the transaction.
 async fn insert_topic(
     tx: &mut Transaction<'_, Postgres>,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     title: &str,
     summary: &str,
     embedding: &[f32],
 ) -> Result<Topic> {
     let now = jiff_sqlx::Timestamp::from(jiff::Timestamp::now());
     sqlx::query_as::<_, Topic>(
-        "INSERT INTO topic (id, chat_id, title, summary, status, started_at, last_active_at, \
+        "INSERT INTO topic (id, conversation_id, title, summary, status, started_at, last_active_at, \
          created_at, updated_at, embedding) \
          VALUES ($1, $2, $3, $4, $5, $6, $6, $6, $6, $7::vector) RETURNING *",
     )
     .bind(Uuid::now_v7())
-    .bind(chat_id.0)
+    .bind(conversation_id.0)
     .bind(title)
     .bind(summary)
     .bind(TopicStatus::Active.as_str())
@@ -332,15 +345,20 @@ async fn insert_topic(
 /// and has already established that the topic is the chat's.
 async fn link_in_tx(
     tx: &mut Transaction<'_, Postgres>,
+    conversation_id: ConversationId,
     topic_id: TopicId,
     message_ids: &[MessageId],
 ) -> Result<()> {
     if !message_ids.is_empty() {
-        sqlx::query("UPDATE message SET topic_id = $2 WHERE id = ANY($1)")
-            .bind(message_ids)
-            .bind(topic_id.0)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            "UPDATE message SET topic_id = $2 \
+             WHERE id = ANY($1) AND conversation_id = $3",
+        )
+        .bind(message_ids)
+        .bind(topic_id.0)
+        .bind(conversation_id.0)
+        .execute(&mut **tx)
+        .await?;
     }
     sync_topic_times(tx, topic_id).await
 }
@@ -368,7 +386,7 @@ async fn sync_topic_times(tx: &mut Transaction<'_, Postgres>, topic_id: TopicId)
 /// The lexical leg's statement: the keyword patterns are bound at `$4`.
 fn keyword_search_sql() -> String {
     format!(
-        "SELECT t.* FROM topic t WHERE t.chat_id = $1 {} \
+        "SELECT t.* FROM topic t WHERE t.conversation_id = $1 {} \
          AND {} \
          ORDER BY {}, \
                   t.last_active_at DESC LIMIT $5",

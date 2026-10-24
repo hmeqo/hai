@@ -2,7 +2,7 @@ use crate::{
     domain::{
         model::{Attachment, AttachmentHandle, NewAttachment},
         repo::window,
-        vo::{AttachmentId, ChatId, MessageId, TimeRange},
+        vo::{AttachmentId, ChatId, ConversationId, MessageId, TimeRange},
     },
     error::Result,
 };
@@ -79,16 +79,18 @@ impl AttachmentRepo {
     /// own, so the message it belongs to is what the window is read over.
     pub async fn handles_in_range(
         &self,
+        conversation_id: ConversationId,
         chat_id: ChatId,
         range: TimeRange,
     ) -> Result<Vec<AttachmentHandle>> {
         let sql = format!(
             "SELECT a.platform, a.file_unique_id, a.file_id FROM attachment a \
              JOIN message m ON m.id = a.message_id \
-             WHERE m.chat_id = $1 {} ORDER BY a.id",
-            window::time_window("COALESCE(m.sent_at, m.created_at)", 2),
+             WHERE m.conversation_id = $1 AND m.chat_id = $2 {} ORDER BY a.id",
+            window::time_window("COALESCE(m.sent_at, m.created_at)", 3),
         );
         let query = sqlx::query_as::<_, AttachmentHandle>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(conversation_id.0)
             .bind(chat_id.0);
         range
             .bind(query)

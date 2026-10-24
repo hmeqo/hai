@@ -2,7 +2,7 @@ use crate::domain::{
     model::Platform,
     vo::{
         AttachmentId, AttachmentKind, AttachmentMeta, AttachmentParser, ChatId, MediaCodec,
-        MessageId,
+        MessageId, Subject, attachment_id,
     },
 };
 
@@ -58,19 +58,15 @@ impl Attachment {
     }
 
     /// The perception subject for this file: the stable handle when the platform gave one.
-    pub fn subject(&self) -> crate::domain::vo::Subject {
+    pub fn subject(&self) -> Subject {
         subject_of(self.platform, self.file_unique_id.as_deref(), &self.file_id)
     }
 }
 
 /// The perception subject one platform file is transcribed under: the stable handle when the
 /// platform gave one, the row's `file_id` (its download handle) when it did not.
-fn subject_of(
-    platform: Platform,
-    file_unique_id: Option<&str>,
-    file_id: &str,
-) -> crate::domain::vo::Subject {
-    crate::domain::vo::Subject::handle(platform.as_str(), file_unique_id.unwrap_or(file_id))
+fn subject_of(platform: Platform, file_unique_id: Option<&str>, file_id: &str) -> Subject {
+    Subject::handle(platform.as_str(), file_unique_id.unwrap_or(file_id))
 }
 
 /// A window's message attachments, as far as a purge needs them: the platform file behind the bytes
@@ -83,7 +79,7 @@ pub struct AttachmentHandle {
 }
 
 impl AttachmentHandle {
-    pub fn subject(&self) -> crate::domain::vo::Subject {
+    pub fn subject(&self) -> Subject {
         subject_of(self.platform, self.file_unique_id.as_deref(), &self.file_id)
     }
 }
@@ -117,7 +113,7 @@ impl NewAttachment {
         meta: AttachmentMeta,
     ) -> Self {
         Self {
-            id: crate::domain::vo::attachment_id(platform.as_str(), chat_id, external_id, ordinal),
+            id: attachment_id(platform.as_str(), chat_id, external_id, ordinal),
             ordinal,
             platform,
             file_unique_id,

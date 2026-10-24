@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         repo::{PurgeWiped, Repos},
-        vo::{ChapterWrite, ChatId, PurgeSurfaces, Subject, TimeRange},
+        vo::{ChapterWrite, ConversationId, PurgeSurfaces, TimeRange},
     },
     error::Result,
 };
@@ -21,12 +21,12 @@ impl PurgeService {
         Self { repos }
     }
 
-    /// Wipes one chat's agent surface in a single transaction. `chapter` is the snapshot the
+    /// Wipes one Conversation's agent surface in a single transaction. `chapter` is the snapshot the
     /// conversation row is rewritten to; `also_consumed` names the changes to prune with the ones the
     /// deletes invalidated — the confirmed `Purge` entry this pass runs.
     pub async fn purge(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         surfaces: PurgeSurfaces,
         range: TimeRange,
         chapter: ChapterWrite,
@@ -34,19 +34,31 @@ impl PurgeService {
     ) -> Result<PurgeWiped> {
         self.repos
             .purge
-            .wipe(chat_id, surfaces, range, chapter, also_consumed)
+            .wipe(conversation_id, surfaces, range, chapter, also_consumed)
             .await
     }
 
-    /// Deletes this chat's audit trail inside the window. The caller flushes the event bus first: an
-    /// event that was already queued when this ran would land after it and survive the purge.
-    pub async fn delete_events(&self, chat_id: ChatId, range: TimeRange) -> Result<u64> {
-        self.repos.event.delete_in_range(chat_id, range).await
+    /// Deletes the audit trail of every member Chat inside the window.
+    pub async fn delete_events(
+        &self,
+        conversation_id: ConversationId,
+        range: TimeRange,
+    ) -> Result<u64> {
+        self.repos
+            .event
+            .delete_in_range_for_conversation(conversation_id, range)
+            .await
     }
 
-    /// Deletes the transcripts of these attachment subjects — the only scope a perception row has,
-    /// it carries no chat.
-    pub async fn delete_perceptions(&self, subjects: &[Subject]) -> Result<u64> {
-        self.repos.perception.delete_by_subjects(subjects).await
+    /// Deletes this Conversation's cached analyses inside the window, whatever subject wrote them.
+    pub async fn delete_perceptions(
+        &self,
+        conversation_id: ConversationId,
+        range: TimeRange,
+    ) -> Result<u64> {
+        self.repos
+            .perception
+            .delete_in_range_for_conversation(conversation_id, range)
+            .await
     }
 }

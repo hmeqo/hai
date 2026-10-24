@@ -1,16 +1,20 @@
-//! What a chat's agent carries while it works: the request that started a pass, and the outcome it
-//! reports back.
+//! What a Conversation's agent carries while it works: the request that started a pass, and the
+//! outcome it reports back.
 
 use crate::{
-    agent::command::{digest::run::DigestReport, purge::PurgeReport},
-    agentcore::Language,
-    domain::vo::{SessionRef, Stretch},
+    agent::{
+        command::{digest::run::DigestReport, purge::PurgeReport},
+        run::TurnOutput,
+    },
+    config::conversation::Language,
+    domain::vo::{ChatId, SessionRef, Stretch},
 };
 
 /// One digest a person confirmed: the stretch to summarize, the language its report is written in
 /// when one was named, and the reply its report comes back over. Where the report goes is settled by
 /// the dialog that asked; nothing about it is stored, so a restart drops it.
 pub(crate) struct DigestRequest {
+    pub chat_id: ChatId,
     pub stretch: Stretch,
     pub language: Option<Language>,
     pub reply: tokio::sync::oneshot::Sender<Result<DigestReport, String>>,
@@ -19,10 +23,10 @@ pub(crate) struct DigestRequest {
 /// The completion signal of a Busy state: the outcome of a Turn or a steering interruption, a
 /// wrap-up, a purge, a digest, or the process stopping.
 pub(crate) enum BusySignal {
-    Turn(crate::agent::run::TurnOutput),
+    Turn(TurnOutput),
     /// Ended early because something new arrived mid-turn (steering): everything already
     /// processed takes effect, and the arrival starts the next turn right away.
-    Steered(crate::agent::run::TurnOutput),
+    Steered(TurnOutput),
     WrapUp {
         summary: String,
         context_tokens: u32,

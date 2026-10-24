@@ -11,14 +11,14 @@ use crate::{
                 load_perceptions, load_reply_map,
             },
             render_context::RenderContextData,
-            render_main_context, render_situation_only,
+            render_main_context,
             types::BuiltContext,
         },
         run::turn::TurnContext,
     },
     domain::{
-        model::{Account, Attachment, Chat, Memory, Message, Topic},
-        vo::MessageId,
+        model::{Account, Attachment, ChatRoster, Memory, Message, Topic},
+        vo::{ChatId, MessageId},
     },
     error::Result,
 };
@@ -31,7 +31,8 @@ struct PromptInput {
     pinned_memories: Vec<Memory>,
     window_text: String,
     accounts: Vec<Account>,
-    chat: Option<Chat>,
+    chat: Option<ChatRoster>,
+    chat_aliases: HashMap<ChatId, String>,
 }
 
 /// Loads every input `build_prompt` needs.
@@ -41,7 +42,8 @@ async fn prepare_prompt_input(
     is_first: bool,
 ) -> Result<PromptInput> {
     let services = &ctx.app.services;
-    let chat_id = ctx.tool.chat.chat_id();
+    let chat_id = ctx.origin_chat;
+    let conversation_id = ctx.tool.conversation_id;
 
     let reply_map = load_reply_map(services, messages).await?;
 
@@ -69,21 +71,50 @@ async fn prepare_prompt_input(
             message.content(own)
         })
         .collect();
-    let perception = load_perceptions(services, &window_attachments, &texts, is_first).await?;
+    let perception = load_perceptions(
+        services,
+        conversation_id,
+        &window_attachments,
+        &texts,
+        is_first,
+    )
+    .await?;
 
     let (topics, pinned_memories, chat) = if is_first {
         (
-            services.topic.active_topics(chat_id).await?,
+            services.topic.active_topics(conversation_id).await?,
             services
                 .memory
-                .pinned(chat_id, ctx.app.cfg.agent.context.pinned_memory_limit)
+                .pinned(
+                    conversation_id,
+                    ctx.app.cfg.agent.context.pinned_memory_limit,
+                )
                 .await?,
-            Some(load_chat(services, chat_id).await?),
+            Some(load_chat(services, chat_id).await?.roster()),
         )
     } else {
         (Vec::new(), Vec::new(), None)
     };
     let accounts = collect_accounts(services, messages, &reply_map).await?;
+    let current: HashSet<ChatId> = ctx.chats.iter().map(|chat| chat.id).collect();
+    let retired: Vec<ChatId> = messages
+        .iter()
+        .map(|message| message.chat_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter(|chat_id| !current.contains(chat_id))
+        .collect();
+    let chat_aliases = if retired.is_empty() {
+        HashMap::new()
+    } else {
+        services
+            .platform
+            .chats_by_ids(&retired)
+            .await?
+            .into_iter()
+            .map(|chat| (chat.id, chat.alias))
+            .collect()
+    };
 
     Ok(PromptInput {
         messages: ContextMessages::new(messages.to_vec(), reply_map),
@@ -94,6 +125,7 @@ async fn prepare_prompt_input(
         window_text: texts.join("\n"),
         accounts,
         chat,
+        chat_aliases,
     })
 }
 
@@ -103,23 +135,16 @@ pub async fn build_prompt(
     messages: &[Message],
     is_first: bool,
     new_message_ids: &HashSet<MessageId>,
+    origin_chat: ChatId,
 ) -> Result<BuiltContext> {
     let cfg = &ctx.app.cfg;
-
-    if !is_first && messages.is_empty() {
-        let rendered = render_situation_only(&ctx.events.coalesce(ctx.language));
-        return Ok(BuiltContext {
-            messages: vec![ChatMessage::user(&rendered)],
-            rendered_prompt: rendered,
-        });
-    }
 
     let data = prepare_prompt_input(ctx, messages, is_first).await?;
 
     let recalled = if is_first {
         chapter_recall(
             &ctx.app.services,
-            ctx.tool.chat.chat_id(),
+            ctx.tool.conversation_id,
             &data.window_text,
             &data.pinned_memories,
             &data.topics,
@@ -132,6 +157,12 @@ pub async fn build_prompt(
     let context_data = RenderContextData {
         channel: ctx.tool.chat.profile().clone(),
         chat: data.chat,
+        chats: ctx.chats.clone(),
+        chat_aliases: data.chat_aliases,
+        origin_chat,
+        roster_dirty: ctx.roster_dirty,
+        host_actions: ctx.host_actions.clone(),
+        language: ctx.language,
         current_time: jiff::Zoned::now().to_string(),
         first_turn: is_first,
         messages: data.messages,

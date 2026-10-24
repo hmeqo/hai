@@ -13,7 +13,7 @@ use crate::{
     agentcore::tool::{AgentTool, ToolError, tool_data, tool_err, tool_ok},
     domain::{
         service::TopicService,
-        vo::{ChatId, MessageId, TopicId},
+        vo::{ConversationId, MessageId, TopicId},
     },
 };
 
@@ -61,7 +61,7 @@ pub struct TopicArgs {
 /// Topic archive maintenance: the record of one matter over a stretch of time. Ops: open (start an archive; needs title/summary) / note (append raw material; needs topic_id/text) / revise (change title or summary, at least one) / close (wrap it up; needs topic_id) / link (attach messages; needs topic_id/message_ids) / drop (delete the whole archive; needs topic_id). The summary is the retrieval surface — what this is about at a glance, kept short — and the details go into notes; notes are append-only and never overwritten, so revising the summary loses nothing.
 #[hai_macros::tool]
 pub struct Topic {
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub topics: TopicService,
 }
 
@@ -75,7 +75,7 @@ impl Topic {
                 let summary = required(args.summary, "summary", op)?;
                 let topic = self
                     .topics
-                    .open(self.chat_id, &title, &summary, &ids)
+                    .open(self.conversation_id, &title, &summary, &ids)
                     .await?;
                 tool_data(serde_json::json!({ "topic_id": topic.id.0 }))
             }
@@ -83,7 +83,7 @@ impl Topic {
                 let topic_id = required(args.topic_id, "topic_id", op)?;
                 let text = required(args.text, "text", op)?;
                 self.topics
-                    .note(self.chat_id, topic_id, &text, &ids)
+                    .note(self.conversation_id, topic_id, &text, &ids)
                     .await?;
                 tool_ok()
             }
@@ -94,7 +94,7 @@ impl Topic {
                 }
                 self.topics
                     .revise(
-                        self.chat_id,
+                        self.conversation_id,
                         topic_id,
                         args.title.as_deref(),
                         args.summary.as_deref(),
@@ -104,7 +104,7 @@ impl Topic {
             }
             TopicOp::Close => {
                 let topic_id = required(args.topic_id, "topic_id", op)?;
-                self.topics.close(self.chat_id, topic_id).await?;
+                self.topics.close(self.conversation_id, topic_id).await?;
                 tool_ok()
             }
             TopicOp::Link => {
@@ -112,12 +112,14 @@ impl Topic {
                 if ids.is_empty() {
                     return Err(tool_err("link requires message_ids"));
                 }
-                self.topics.link(self.chat_id, topic_id, &ids).await?;
+                self.topics
+                    .link(self.conversation_id, topic_id, &ids)
+                    .await?;
                 tool_ok()
             }
             TopicOp::Drop => {
                 let topic_id = required(args.topic_id, "topic_id", op)?;
-                self.topics.drop(self.chat_id, topic_id).await?;
+                self.topics.drop(self.conversation_id, topic_id).await?;
                 tool_ok()
             }
         }
@@ -126,7 +128,7 @@ impl Topic {
 
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     vec![Arc::new(Topic {
-        chat_id: ctx.chat.chat_id(),
+        conversation_id: ctx.conversation_id,
         topics: ctx.services.topic.clone(),
     })]
 }

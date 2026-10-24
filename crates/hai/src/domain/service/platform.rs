@@ -1,10 +1,16 @@
 use crate::{
     domain::{
-        model::{Account, Chat, ChatType, Message, NewChat, Platform},
+        model::{
+            Account, Chat, ChatLocation, ChatType, Message, NewChat, Platform, PlatformChannel,
+            chat_address,
+        },
         repo::{PlatformChange, Repos},
-        vo::{AccountId, ChannelKey, ChatId, IdentityId},
+        vo::{
+            AccountId, ChannelKey, ChatAddress, ChatId, ChatOrigin, ConversationId,
+            PlatformChannelId,
+        },
     },
-    error::Result,
+    error::{AppError, Result},
 };
 
 #[derive(Debug)]
@@ -22,37 +28,94 @@ impl PlatformService {
         self.repos.ingest.apply(change).await
     }
 
+    /// One configured HAI channel, created on first use. A changed remote origin is refused rather
+    /// than merged: the channel key is the local trust anchor.
+    pub async fn ensure_platform_channel(
+        &self,
+        channel_key: &ChannelKey,
+        platform: Platform,
+        origin: Option<&ChatOrigin>,
+    ) -> Result<PlatformChannel> {
+        if let Some(channel) = self.repos.platform_channel.by_key(channel_key).await? {
+            if channel.platform != platform {
+                return Err(AppError::message(format!(
+                    "platform channel {} is {}, not {}",
+                    channel_key,
+                    channel.platform.as_str(),
+                    platform.as_str()
+                )));
+            }
+            if let Some(incoming) = origin {
+                match &channel.origin {
+                    Some(stored) if stored != incoming => {
+                        return Err(AppError::message(format!(
+                            "platform channel {}: origin changed; use a new channel key",
+                            channel_key
+                        )));
+                    }
+                    None => {
+                        return self
+                            .repos
+                            .platform_channel
+                            .set_origin_if_null(channel.id, incoming)
+                            .await;
+                    }
+                    Some(_) => {}
+                }
+            }
+            return Ok(channel);
+        }
+
+        self.repos
+            .platform_channel
+            .create(channel_key, platform, origin)
+            .await
+    }
+
+    pub async fn platform_channel(&self, id: PlatformChannelId) -> Result<PlatformChannel> {
+        self.repos
+            .platform_channel
+            .by_id(id)
+            .await?
+            .ok_or_else(|| AppError::message(format!("platform channel {id} not found")))
+    }
+
     pub async fn ensure_chat_and_account(
         &self,
-        platform: Platform,
-        external_chat_id: &str,
+        location: ChatLocation<'_>,
         chat_type: ChatType,
         chat_name: Option<&str>,
         external_user_id: &str,
         user_meta: Option<serde_json::Value>,
     ) -> Result<(Chat, Account)> {
+        let channel = self
+            .ensure_platform_channel(
+                location.channel_key,
+                location.platform,
+                location.address.origin.as_ref(),
+            )
+            .await?;
         let chat = self
-            .get_or_create_chat(platform, external_chat_id, chat_type, chat_name, None)
+            .get_or_create_chat_in(location, &channel, chat_type, chat_name)
             .await?;
         let account = self
-            .get_or_create_account(platform, external_user_id, user_meta)
+            .get_or_create_account(channel.id, external_user_id, user_meta)
             .await?;
         Ok((chat, account))
     }
 
     async fn get_or_create_account(
         &self,
-        platform: Platform,
+        channel_id: PlatformChannelId,
         external_id: &str,
         meta: Option<serde_json::Value>,
     ) -> Result<Account> {
         if let Some(account) = self
             .repos
             .account
-            .by_platform_external_id(platform, external_id)
+            .by_channel_external_id(channel_id, external_id)
             .await?
         {
-            // Best-effort: a failed refresh must not fail the message path.
             if let Err(e) = self
                 .repos
                 .account
@@ -66,22 +129,38 @@ impl PlatformService {
         let now = jiff::Timestamp::now();
         self.repos
             .account
-            .create(platform, external_id, meta, now, now, now)
+            .create(channel_id, external_id, meta, now, now, now)
             .await
     }
 
     pub async fn get_or_create_chat(
         &self,
-        platform: Platform,
-        external_id: &str,
+        location: ChatLocation<'_>,
         chat_type: ChatType,
         name: Option<&str>,
-        meta: Option<serde_json::Value>,
+    ) -> Result<Chat> {
+        let channel = self
+            .ensure_platform_channel(
+                location.channel_key,
+                location.platform,
+                location.address.origin.as_ref(),
+            )
+            .await?;
+        self.get_or_create_chat_in(location, &channel, chat_type, name)
+            .await
+    }
+
+    async fn get_or_create_chat_in(
+        &self,
+        location: ChatLocation<'_>,
+        channel: &PlatformChannel,
+        chat_type: ChatType,
+        name: Option<&str>,
     ) -> Result<Chat> {
         if let Some(chat) = self
             .repos
             .chat
-            .by_platform_external_id(platform, external_id)
+            .by_external_id(channel.id, &location.address.external_id)
             .await?
         {
             return Ok(chat);
@@ -89,15 +168,17 @@ impl PlatformService {
         let now = jiff::Timestamp::now();
         self.repos
             .chat
-            .create(NewChat {
-                platform,
-                external_id: external_id.to_owned(),
-                chat_type,
-                name: name.map(str::to_owned),
-                meta,
-                created_at: now,
-                updated_at: now,
-            })
+            .create(
+                NewChat {
+                    channel_id: channel.id,
+                    external_id: location.address.external_id.clone(),
+                    chat_type,
+                    name: name.map(str::to_owned),
+                    created_at: now,
+                    updated_at: now,
+                },
+                location.scope,
+            )
             .await
     }
 
@@ -105,35 +186,38 @@ impl PlatformService {
         self.repos.chat.by_id(id).await
     }
 
+    /// The remote address of one Chat: its channel's origin plus its own external id.
+    pub async fn chat_address(&self, chat: &Chat) -> Result<ChatAddress> {
+        let channel = self.platform_channel(chat.channel_id).await?;
+        Ok(chat_address(
+            channel.origin.as_ref(),
+            chat.external_id.clone(),
+        ))
+    }
+
+    pub async fn chats_in_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Vec<Chat>> {
+        self.repos.chat.by_conversation(conversation_id).await
+    }
+
+    pub async fn chats_by_ids(&self, ids: &[ChatId]) -> Result<Vec<Chat>> {
+        self.repos.chat.by_ids(ids).await
+    }
+
     pub async fn get_account_by_id(&self, id: AccountId) -> Result<Option<Account>> {
         self.repos.account.by_id(id).await
     }
 
-    pub async fn get_identity_accounts(&self, identity_id: IdentityId) -> Result<Vec<Account>> {
-        self.repos.account.by_identity_id(identity_id).await
-    }
-
+    /// The account a channel speaks through. It lives on the configured channel, named `bot`; the
+    /// channel key is already the unique column, so no prefix is needed here.
     pub async fn ensure_bot_account(
         &self,
         platform: Platform,
         key: &ChannelKey,
     ) -> Result<Account> {
-        // The account a channel speaks through, keyed `bot:<channel key>`: the prefix keeps a second
-        // bot on the same platform from colliding with the first, and the spelling is what the
-        // deploy's account rows must carry.
-        let external_id = format!("bot:{key}");
-        // A database written before the bot account carried its key holds one shared `(system, bot)`
-        // row; adopting it keeps the history that references its id (the `own` marking in the
-        // render) pointing at the account this build sends through.
-        if let Some(account) = self
-            .repos
-            .account
-            .adopt_legacy_bot_account(platform, &external_id)
-            .await?
-        {
-            return Ok(account);
-        }
-        self.get_or_create_account(platform, &external_id, None)
-            .await
+        let channel = self.ensure_platform_channel(key, platform, None).await?;
+        self.get_or_create_account(channel.id, "bot", None).await
     }
 }

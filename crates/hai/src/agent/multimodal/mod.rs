@@ -4,8 +4,9 @@ use base64::{Engine as _, encoded_len, prelude::BASE64_STANDARD};
 use serde_json::{Value, json};
 
 use crate::{
+    agent::model::ModelRoles,
     agentcore::{ApiClient, ModelKind, ModelTarget},
-    config::{AppConfig, ConfigIssue, model_role::ModelRoles, schema::SpeechConfig},
+    config::{AppConfig, ConfigIssue, schema::SpeechConfig},
     domain::vo::{AttachmentParser, ImageFormat, MediaCodec},
     error::{AppError, Result, bail},
 };
@@ -318,7 +319,7 @@ fn unavailable(name: &str) -> crate::error::AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, ProviderRegistry};
+    use crate::{agent::model::ProviderRegistry, config::AppConfig};
 
     #[test]
     fn image_bytes_carry_their_own_format_into_the_data_url() {
@@ -337,8 +338,8 @@ mod tests {
     #[test]
     fn the_vision_analysis_defaults_on() {
         let vision: crate::config::schema::VisionConfig =
-            toml::from_str("model = \"gpt-4o\"").unwrap();
-        assert_eq!(vision.model.as_deref(), Some("gpt-4o"));
+            toml::from_str("model = \"openai/gpt-4o\"").unwrap();
+        assert_eq!(vision.model.as_deref(), Some("openai/gpt-4o"));
 
         let analysis = crate::config::schema::VisionAnalysisConfig::default();
         assert!(analysis.enabled);
@@ -353,7 +354,7 @@ mod tests {
 
     /// The service one config builds: the roles resolved, then interpreted.
     fn service(cfg: &AppConfig) -> Result<MultimodalService> {
-        let roles = crate::config::model_role::resolve(cfg, &registry(cfg))?;
+        let roles = crate::agent::model::resolve(cfg, &registry(cfg))?;
         MultimodalService::from_config(cfg, &roles)
     }
 
@@ -361,14 +362,11 @@ mod tests {
     /// embedding role the service insists on.
     fn config(provider: &str, model: &str) -> AppConfig {
         let mut cfg = AppConfig::default();
-        cfg.model_roles.default.provider = provider.into();
-        cfg.model_roles.default.model = model.into();
+        cfg.model_roles.default.model = format!("{provider}/{model}");
         cfg.providers.insert(provider.into(), Default::default());
         cfg.model_roles.embedding = crate::config::schema::EmbeddingConfig {
-            provider: Some("openai".into()),
-            model: Some("text-embedding-3-small".into()),
+            model: "openai/text-embedding-3-small".into(),
             dimension: None,
-            base_url: None,
         };
         cfg.providers.insert("openai".into(), Default::default());
         cfg
@@ -393,7 +391,13 @@ mod tests {
     #[test]
     fn an_absent_understanding_block_inherits_the_default_endpoint() {
         let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.default.base_url = Some("https://gateway.internal/v1".into());
+        cfg.providers.insert(
+            "openai".into(),
+            crate::config::schema::ProviderConfig {
+                base_url: Some("https://gateway.internal/v1".into()),
+                ..Default::default()
+            },
+        );
 
         let svc = service(&cfg).unwrap();
         assert!(svc.vision_enabled());
@@ -409,9 +413,7 @@ mod tests {
     fn a_declared_understanding_block_is_checked() {
         let mut cfg = config("openai", "gpt-4o");
         cfg.model_roles.vision = Some(crate::config::schema::VisionConfig {
-            provider: Some("anthropic".into()),
-            model: Some("claude-sonnet-4-5".into()),
-            base_url: None,
+            model: Some("anthropic/claude-sonnet-4-5".into()),
         });
         cfg.providers.insert("anthropic".into(), Default::default());
 
@@ -424,9 +426,7 @@ mod tests {
     fn image_from_config() {
         let mut cfg = config("openai", "gpt-4o");
         cfg.model_roles.image = Some(crate::config::schema::ImageConfig {
-            provider: Some("openrouter".into()),
-            model: Some("google/gemini-2.5-flash-image".into()),
-            base_url: None,
+            model: Some("openrouter/google/gemini-2.5-flash-image".into()),
         });
         cfg.providers
             .insert("openrouter".into(), Default::default());
@@ -446,11 +446,7 @@ mod tests {
     #[test]
     fn image_disabled_when_model_empty() {
         let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.image = Some(crate::config::schema::ImageConfig {
-            provider: Some("openai".into()),
-            model: None,
-            base_url: None,
-        });
+        cfg.model_roles.image = Some(crate::config::schema::ImageConfig { model: None });
         let svc = service(&cfg).unwrap();
         assert!(!svc.image_enabled());
     }
@@ -461,9 +457,7 @@ mod tests {
     fn image_provider_falls_back_to_agent() {
         let mut cfg = config("openrouter", "gpt-4o");
         cfg.model_roles.image = Some(crate::config::schema::ImageConfig {
-            provider: None, // omitted → model_roles.default.provider
-            model: Some("google/gemini-2.5-flash-image".into()),
-            base_url: None,
+            model: Some("openrouter/google/gemini-2.5-flash-image".into()),
         });
         let svc = service(&cfg).unwrap();
         assert!(svc.image_enabled());
@@ -472,11 +466,9 @@ mod tests {
     fn speech_config(voice: &str, model: Option<&str>) -> AppConfig {
         let mut cfg = config("openai", "gpt-4o");
         cfg.model_roles.speech = Some(crate::config::schema::SpeechConfig {
-            provider: None,
-            model: model.map(str::to_owned),
+            model: model.map(|model| format!("openai/{model}")),
             voice: voice.into(),
             speed: 1.0,
-            base_url: None,
         });
         cfg
     }

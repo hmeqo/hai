@@ -18,7 +18,7 @@ use crate::{
     error::Result,
     platform::{
         adapter::ChannelAdapter,
-        host::{ChannelContext, ChannelRuntime},
+        host::{ChannelContext, ChannelRuntime, ChannelWiring},
         task::TaskGuard,
     },
 };
@@ -34,8 +34,12 @@ impl TelegramChannel {
         ctx: &AppContext,
         runtime: &AgentRuntime,
         shutdown: CancellationToken,
+        wiring: ChannelWiring,
     ) -> Result<ChannelRuntime> {
-        let cfg = TelegramConfig::parse(key, &section.settings)?;
+        let cfg = TelegramConfig::parse(key, &section.platform_settings())?;
+        let scope = section
+            .conversation_scope()?
+            .unwrap_or_else(|| super::super::host::platform_conversation_scope(Platform::Telegram));
         let client = TgBot::new(&cfg.bot_token);
         let channel_key = ChannelKey::new(Platform::Telegram.as_str(), key);
         let account = ctx
@@ -45,10 +49,11 @@ impl TelegramChannel {
             .await?;
         let adapter: Arc<dyn ChannelAdapter> =
             Arc::new(TelegramAdapter::new(client.clone(), channel_key, cfg, account.id).await?);
-        let context = ChannelRuntime::assemble(ctx, runtime, adapter, shutdown);
+        let context =
+            ChannelRuntime::assemble(ctx, runtime, adapter, shutdown, scope, wiring).await;
         // Once per channel, not per generation: the menu is the command table's, and it does not change
         // while the process runs.
-        menu::install(&client).await;
+        menu::install(&client, ctx.settings.command_gates()).await;
         let supervisor = tokio::spawn(supervise(
             Arc::clone(&context),
             client,
@@ -121,6 +126,8 @@ async fn run_generation(
     services: &Services,
 ) -> GenerationExit {
     let label = context.adapter.key();
+    let mut start = context.start.clone();
+    let _ = start.wait_for(|ready| *ready).await;
     let dispatcher = TelegramDispatcher::new(client.clone(), Arc::clone(&context.intake)).await;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let mut d_task = TaskGuard::spawn(dispatcher.run(shutdown_tx));
@@ -132,7 +139,11 @@ async fn run_generation(
         context.shutdown.clone(),
     ));
     // One shot per generation: refeeding only rings doorbells, so there is nothing to await or stop.
-    spawn_startup_refeed(services.clone(), context.agents.clone());
+    spawn_startup_refeed(
+        services.clone(),
+        context.agents.clone(),
+        context.adapter.key().clone(),
+    );
     let shutdown = shutdown_rx.await.ok();
 
     tokio::select! {

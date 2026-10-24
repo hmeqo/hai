@@ -3,14 +3,14 @@
 [![English](https://img.shields.io/badge/English-424242?style=for-the-badge&logo=readme)](../README.md)
 [![中文](https://img.shields.io/badge/中文-EE4C2C?style=for-the-badge)](README.zh-CN.md)
 
-一个能够记住你的对话、理解你的媒体、并随时间整理所讨论话题的 Telegram 聊天机器人。
+一个面向 Telegram 与 TeamSpeak 3 文字聊天的伴侣聊天机器人：记住你的对话、理解你的媒体，并随时间整理所讨论话题。
 
 ## 功能
 
 - **记住重要的事** — 跨对话保留个人事实、笔记和偏好
-- **理解你的媒体** — 读取你发送的图片、视频和语音消息
+- **理解你的媒体** — 读取你在 Telegram 发送的图片、视频和语音消息
 - **整理对话** — 跟踪话题并在其演变过程中进行总结
-- **用文字或语音回应** — 以贴合你的个性来回复
+- **用文字或语音回应** — 以贴合你的个性来回复；Telegram 与 TeamSpeak 用文字，Telegram 另可语音
 - **掌握最新知识** — 在你需要时获取外部信息
 - **为你做事** — 按请求执行命令、生成图片
 - **自我扩展** — 按需连接外部工具、遵循专门的技能
@@ -20,7 +20,7 @@
 ### 前置条件
 
 - 带 [pgvector](https://github.com/pgvector/pgvector) 扩展的 PostgreSQL
-- 一个 Telegram 机器人令牌（来自 [@BotFather](https://t.me/BotFather)）
+- 一个 Telegram 机器人令牌（来自 [@BotFather](https://t.me/BotFather)），或一台用于文字聊天的 TeamSpeak 3 服务器
 - 一个 LLM API 密钥（OpenAI、Anthropic、OpenRouter 或本地 Ollama）
 
 ### 从源码构建
@@ -47,16 +47,34 @@ url = "postgres://user:password@localhost:5432/hai"
 bot-token = "your-bot-token"
 allowed-chat-ids = [123456789]
 
+# TeamSpeak 3 文字聊天；不写 allowed-chat-ids 表示允许所有聊天。
+# [channel.ts3]
+# type = "teamspeak"
+# address = "127.0.0.1:9987"
+# name = "hai"
+# channel = "Lobby"
+# allowed-chat-ids = ["channel:1"]
+# default-conversation-scope = "shared"   # shared | isolated；默认 isolated
+
 # 凭据来自环境变量 OPENROUTER_API_KEY，或写在块里：
 # [providers.openrouter]
 # api-key = "sk-or-v1-..."
 
 [model-roles.default]
-provider = "openrouter"
-model = "anthropic/claude-3.5-sonnet"
+model = "openrouter/anthropic/claude-3.5-sonnet"
 
-[agent]
+[models]
+# fast = "openrouter/deepseek/deepseek-chat"
+
+[conversation]
 language = "zh"
+# model = "fast"
+# allow-persona-change = false
+# allow-content-policy-change = false
+
+[conversation.content-policy]
+maturity = "safe"
+politics = "restricted"
 
 [agent.personality]
 name = "hai"
@@ -65,8 +83,7 @@ name = "hai"
 soul = "一个温暖、机智的助手，回答简洁清晰。"
 
 [model-roles.embedding]
-provider = "openrouter"
-model = "openai/text-embedding-3-small"
+model = "openrouter/openai/text-embedding-3-small"
 dimension = 1536
 ```
 
@@ -92,7 +109,12 @@ hai kb list                  # 列出文档（可按 collection 过滤）
 hai kb search <query>        # 在知识库中进行语义搜索
 hai kb delete <id>           # 删除文档（级联删除 chunk）
 hai kb reindex               # 重新分块/嵌入过期的文档
+hai conversation list        # 列出 Conversation 及其成员 Chat
+hai conversation attach --chat 7 --conversation 3   # 移动 Chat 并携带 pending
+hai conversation detach --chat 7                    # 把 Chat 移到新 Conversation
 ```
+
+Attach 是切点语义：Chat 和未消费的 pending 会移动；历史消息仍留在写入时的 Conversation。要让两个 Chat 从开始时共享上下文，就在产生消息前 attach。
 
 ### 配置参考
 
@@ -117,42 +139,39 @@ base-url = "http://gw.internal/v1"
 base-url = "http://127.0.0.1:8080/v1/rerank"
 ```
 
-`ollama` 完全不需要块：只要服务在 `http://localhost:11434/v1` 上应答，`provider = "ollama"` 就直接生效（换地址用块里的 `base-url`）。
+`ollama` 完全不需要块：只要服务在 `http://localhost:11434/v1` 上应答，`model = "ollama/qwen2.5"` 这样的模型就直接生效（换地址用 provider 块里的 `base-url`）。
 
 #### 模型角色
 
-`[model-roles.<role>]` 只声明模型与调用方式；行为配置在 `[agent.*]`。
+`[model-roles.<role>]` 用 `provider/model` model；provider 拥有 endpoint，role 只保留非 endpoint 选项。`[models]` 用同样语法映射别名，chat 选项继承 `[model-roles.default]`。
 
 ```toml
 [model-roles.embedding]           # 必填；缺失时出错（记忆/检索依赖它）
-provider = "openrouter"
-model = "openai/text-embedding-3-small"
-dimension = 1536               # 必填；该模型的输出宽度（pgvector 列宽）
+model = "openrouter/openai/text-embedding-3-small"
+dimension = 1536                 # 必填；该模型的输出宽度（pgvector 列宽）
 
 [model-roles.vision]              # 图像/视频理解（默认使用主模型）
-model = "gpt-4o"
+model = "openai/gpt-4o"
 
 [model-roles.transcription]       # 音频→文本（默认使用主模型）
-model = "gemini-3.1-flash-lite"
+model = "google/gemini-3.1-flash-lite"
 
 [model-roles.speech]            # 语音合成（设置 model 后 send_message 的 voice 种类可用）
-provider = "openrouter"
-model = "google/gemini-3.1-flash-tts-preview"
+model = "openrouter/google/gemini-3.1-flash-tts-preview"
 voice = "Zephyr"                # 必填；音色名随模型而异（alloy 属 OpenAI，Gemini 用 Zephyr/Kore/Aoede…），填错会被提供商拒绝（HTTP 400）
 # speed = 1.0                   # 可选（0.25 ~ 4.0，默认 1.0）
 
 [model-roles.image]             # 图像生成（设置 model 时挂载 generate_image）
-provider = "openrouter"
-model = "google/gemini-2.5-flash-image"
+model = "openrouter/google/gemini-2.5-flash-image"
 
 # [model-roles.rerank]           # 检索打分；缺省时保持融合顺序
-# provider = "openrouter"     # 走该 provider 自带的 rerank 端点
-# model = "cohere/rerank-4-fast"
+# model = "openrouter/cohere/rerank-4-fast"
 
-# [model-roles.rerank]           # 自建 cross-encoder：base-url 就是完整端点
-# provider = "local-rerank"
-# model = "bge-reranker-v2-m3"
+# 独立 endpoint 用 provider，而不是 role 覆盖：
+# [providers.local-rerank]
 # base-url = "http://127.0.0.1:8080/v1/rerank"
+# [model-roles.rerank]
+# model = "local-rerank/bge-reranker-v2-m3"
 ```
 
 #### 行为配置

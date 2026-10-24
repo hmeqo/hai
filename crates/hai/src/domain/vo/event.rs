@@ -5,7 +5,7 @@ use super::{
     ChatEntry, ChatId, EntryAudience, PurgeCounts, PurgeSpec, SessionRef, StepNumber, Stretch,
     TurnNumber,
 };
-use crate::agentcore::Language;
+use crate::config::conversation::Language;
 
 /// Output of one LLM call; a runtime record, the audit trail lives in the `event` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +91,8 @@ impl BatchComposition {
                 match entry.audience {
                     EntryAudience::Agent => counts.addressed += 1,
                     EntryAudience::Bystanders => counts.bystanders += 1,
+                    // Context composed the prompt without being a reason the turn was spent.
+                    EntryAudience::Context => {}
                 }
                 counts
             },

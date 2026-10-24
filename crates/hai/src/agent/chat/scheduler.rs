@@ -15,7 +15,7 @@ pub enum Decision {
     /// Not yet: the debounce is still running, heat did not win the draw, or the idle
     /// timeout has not expired.
     Defer,
-    /// The ChatAgent has had no run past its timeout: idle_tick wraps the chapter up, or
+    /// The ConversationAgent has had no run past its timeout: idle_tick wraps the chapter up, or
     /// exits when it is empty.
     Done,
 }
@@ -42,13 +42,17 @@ impl EventScheduler {
         self.heat.decay(self.window.closes_at());
     }
 
-    /// One change arrived, read as who it was aimed at.
+    /// One change arrived, read as who it was aimed at. A host action is context for the next Turn,
+    /// never a reason to spend one: it moves no clock at all.
     pub fn on_event(&mut self, audience: EntryAudience) {
-        self.refresh_heat();
-
         match audience {
-            EntryAudience::Agent => self.on_addressed(),
+            EntryAudience::Context => {}
+            EntryAudience::Agent => {
+                self.refresh_heat();
+                self.on_addressed();
+            }
             EntryAudience::Bystanders => {
+                self.refresh_heat();
                 self.debounce_until = Some(Instant::now() + DEBOUNCE_DURATION);
             }
         }
@@ -69,9 +73,16 @@ impl EventScheduler {
         self.heat.reset();
     }
 
-    pub fn next_deadline(&self, idle_timeout: Duration) -> Instant {
+    pub fn window_active(&self) -> bool {
+        self.window.is_active()
+    }
+
+    pub fn next_deadline(&self, idle_timeout: Duration, has_pending: bool) -> Instant {
         if let Some(d) = self.debounce_until {
             return d;
+        }
+        if has_pending && self.window.is_active() {
+            return Instant::now();
         }
 
         self.last_run_end + idle_timeout
@@ -108,7 +119,7 @@ impl EventScheduler {
         Decision::Defer
     }
 
-    /// The ChatAgent returned to Idle; the chapter's idle expiry restarts here.
+    /// The ConversationAgent returned to Idle; the chapter's idle expiry restarts here.
     pub fn mark_run_end(&mut self) {
         self.last_run_end = Instant::now();
     }
@@ -151,9 +162,36 @@ mod tests {
         let mut s = EventScheduler::new(&cfg(0.0, 30.0));
         s.on_event(EntryAudience::Bystanders);
         assert_eq!(
-            s.next_deadline(Duration::from_secs(300)),
+            s.next_deadline(Duration::from_secs(300), false),
             s.debounce_until.expect("the debounce is armed"),
             "a bystander change's next deadline is the debounce, not the chapter's idle expiry"
+        );
+    }
+
+    /// An armed quiet period wins over the open window's zero deadline; otherwise `decide` would
+    /// defer while `next_deadline` kept the loop spinning on `Instant::now()`.
+    #[test]
+    fn a_quiet_period_keeps_its_deadline_inside_the_window() {
+        let mut s = EventScheduler::new(&cfg(0.0, 30.0));
+        s.on_event(EntryAudience::Bystanders);
+        s.on_spoke();
+        let debounce = s.debounce_until.expect("the quiet period is armed");
+        assert_eq!(
+            s.next_deadline(Duration::from_secs(300), true),
+            debounce,
+            "the quiet period is still the next deadline"
+        );
+    }
+
+    /// The agent must settle a pending batch instead of sleeping through an open window.
+    #[test]
+    fn pending_with_an_active_window_has_no_delay() {
+        let mut s = EventScheduler::new(&cfg(0.0, 30.0));
+        s.on_event(EntryAudience::Agent);
+        assert!(s.window.is_active());
+        assert!(
+            s.next_deadline(Duration::from_secs(300), true) <= Instant::now(),
+            "a pending batch inside the window settles now, not at the idle expiry"
         );
     }
 
@@ -172,7 +210,7 @@ mod tests {
         );
         assert_eq!(s.last_run_end, base, "an event must not move the idle base");
         assert_eq!(
-            s.next_deadline(Duration::from_secs(600)),
+            s.next_deadline(Duration::from_secs(600), false),
             base + Duration::from_secs(600),
             "the attention window must not stretch the idle expiry"
         );
@@ -255,6 +293,22 @@ mod tests {
             s.debounce_until.is_none(),
             "an addressed change clears the quiet period"
         );
+    }
+
+    /// A host action is context for the next Turn, not a reason to spend one: it opens no window,
+    /// arms no quiet period and moves no deadline.
+    #[test]
+    fn a_host_action_moves_no_clock() {
+        let mut s = EventScheduler::new(&cfg(0.0, 30.0));
+        let base = s.last_run_end;
+        let before = s.next_deadline(Duration::from_secs(300), false);
+
+        s.on_event(EntryAudience::Context);
+
+        assert!(!s.window.is_active(), "a host action opens no window");
+        assert!(s.debounce_until.is_none(), "it arms no quiet period");
+        assert_eq!(s.last_run_end, base, "it moves no idle base");
+        assert_eq!(s.next_deadline(Duration::from_secs(300), false), before);
     }
 
     /// Which path let a dispatch through is what the turn record carries.

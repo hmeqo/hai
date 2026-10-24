@@ -12,7 +12,7 @@ use crate::{
     platform::host::ChannelHost,
 };
 
-pub async fn serve(cfg: Arc<AppConfig>) -> Result<()> {
+pub(crate) async fn serve(cfg: Arc<AppConfig>) -> Result<()> {
     let level = cfg.logging.level()?;
     let filter = EnvFilter::new(format!("{},rmcp=warn,html5ever=error", level));
     tracing_subscriber::FmtSubscriber::builder()

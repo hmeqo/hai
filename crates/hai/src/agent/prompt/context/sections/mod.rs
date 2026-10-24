@@ -3,6 +3,7 @@ pub mod attachment;
 pub mod chat;
 pub mod context;
 pub mod fmt;
+pub mod host_action;
 pub mod knowledge;
 pub mod memory;
 pub mod message;

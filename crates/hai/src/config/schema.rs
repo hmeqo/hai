@@ -4,11 +4,12 @@ use genai::chat::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, IntoStaticStr};
 
+use super::{AGENT_NAME, PROJECT_NAME};
 use crate::{
-    agentcore::{Language, ModelKind, ProviderKind},
+    agentcore::{ModelKind, ProviderKind},
     config::{
         ConfigIssue, Paths,
-        meta::{AGENT_NAME, PROJECT_NAME},
+        conversation::{ContentPolicy, ConversationScope, Language},
     },
     error::{AppError, Result},
 };
@@ -30,9 +31,6 @@ impl Default for PersonalityConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct AgentConfig {
-    /// Default for chats that never set their own (`docs/topics/prompting.md`).
-    pub language: Language,
-
     pub context: ContextConfig,
     pub personality: PersonalityConfig,
     pub attention: AttentionConfig,
@@ -50,7 +48,6 @@ pub(crate) const DEFAULT_MAX_STEPS: usize = 40;
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            language: Language::default(),
             context: ContextConfig::default(),
             personality: PersonalityConfig::default(),
             attention: AttentionConfig::default(),
@@ -59,6 +56,20 @@ impl Default for AgentConfig {
             max_steps: DEFAULT_MAX_STEPS,
         }
     }
+}
+
+/// Conversation defaults and the gates around them. A Conversation preference overrides these;
+/// an absent preference falls back here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ConversationConfig {
+    pub language: Language,
+    /// An alias from `[models]`; absent means `[model-roles.default]`.
+    pub model: Option<String>,
+    pub persona: Option<String>,
+    pub allow_persona_change: bool,
+    pub allow_content_policy_change: bool,
+    pub content_policy: ContentPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -213,14 +224,12 @@ pub struct ModelRolesConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ChatConfig {
-    pub provider: String,
+    /// `provider/model`; the provider owns the endpoint.
     pub model: String,
     pub max_tokens: Option<u32>,
     pub reasoning: bool,
     pub reasoning_effort: String,
     pub temperature: f32,
-    /// The endpoint to reach this model at, when it is not the provider's own.
-    pub base_url: Option<String>,
 }
 
 impl ChatConfig {
@@ -233,15 +242,12 @@ impl ChatConfig {
     }
 }
 
-/// The `rerank` ModelRole: the cross-encoder that scores retrieval candidates. The provider answers
-/// that kind unless the block states its own `base-url`.
+/// The `rerank` ModelRole: the cross-encoder that scores retrieval candidates. `model` is
+/// `provider/model`; the provider owns the endpoint.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RerankConfig {
-    /// Which provider serves the rerank kind; an empty name is the `default` block's provider.
-    pub provider: String,
-    pub model: String,
-    pub base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Ceiling on the characters one rerank request carries. A cross-encoder answers within its own
@@ -252,38 +258,30 @@ pub const RERANK_REQUEST_CHARS: usize = 24_000;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VisionConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
-    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TranscriptionConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
-    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct SpeechConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
     pub voice: String,
     /// Speech rate; the API client clamps it to 0.25..4.0.
     pub speed: f32,
-    pub base_url: Option<String>,
 }
 
 impl Default for SpeechConfig {
     fn default() -> Self {
         Self {
-            provider: None,
             model: None,
             voice: String::new(),
             speed: 1.0,
-            base_url: None,
         }
     }
 }
@@ -293,10 +291,8 @@ impl Default for SpeechConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct EmbeddingConfig {
-    pub provider: Option<String>,
-    pub model: Option<String>,
+    pub model: String,
     pub dimension: Option<i32>,
-    pub base_url: Option<String>,
 }
 
 /// The width the embedding vectors are stored at. The block states it: a guess would size every
@@ -314,9 +310,7 @@ pub fn resolve_embedding_dimension(block: &EmbeddingConfig) -> Result<i32> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ImageConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
-    pub base_url: Option<String>,
 }
 
 /// Networking: the body-extraction chain behind `read` and the retrieval chain behind `web_search`.
@@ -673,6 +667,33 @@ pub struct ChannelSection {
     pub settings: HashMap<String, serde_json::Value>,
 }
 
+impl ChannelSection {
+    pub const SCOPE_KEY: &'static str = "default-conversation-scope";
+
+    /// The platform's own keys, with the shared scope key removed: a platform parser denies
+    /// unknown keys, and this one belongs to the shared layer.
+    pub fn platform_settings(&self) -> HashMap<String, serde_json::Value> {
+        let mut settings = self.settings.clone();
+        settings.remove(Self::SCOPE_KEY);
+        settings
+    }
+
+    /// The scope new Chats on this channel join; `None` means the platform's own default.
+    pub fn conversation_scope(&self) -> Result<Option<ConversationScope>> {
+        let Some(value) = self.settings.get(Self::SCOPE_KEY) else {
+            return Ok(None);
+        };
+        let raw = value.as_str().ok_or_else(|| {
+            AppError::message("default-conversation-scope must be shared or isolated")
+        })?;
+        raw.parse::<ConversationScope>().map(Some).map_err(|_| {
+            AppError::message(format!(
+                "unknown default-conversation-scope {raw:?}; expected shared or isolated"
+            ))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use strum::IntoEnumIterator;
@@ -714,6 +735,28 @@ mod tests {
         let printed = toml::to_string_pretty(&cfg).expect("a printable config");
         assert!(printed.contains("bot-token"), "{printed}");
         assert!(printed.contains("rich-message"), "{printed}");
+    }
+
+    #[test]
+    fn a_channel_scope_is_shared_isolated_or_the_platform_default() {
+        use crate::config::AppConfig;
+
+        let cfg: AppConfig = toml::from_str(
+            "[channel.ts]\ndefault-conversation-scope = \"shared\"\n\
+             [channel.tg]\ndefault-conversation-scope = \"isolated\"\n\
+             [channel.plain]\n",
+        )
+        .expect("a readable config");
+
+        assert_eq!(
+            cfg.channel["ts"].conversation_scope().unwrap(),
+            Some(ConversationScope::Shared)
+        );
+        assert_eq!(
+            cfg.channel["tg"].conversation_scope().unwrap(),
+            Some(ConversationScope::Isolated)
+        );
+        assert_eq!(cfg.channel["plain"].conversation_scope().unwrap(), None);
     }
 
     #[test]

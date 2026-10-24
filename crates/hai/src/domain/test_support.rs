@@ -7,8 +7,8 @@ use crate::domain::{
         Topic, TopicStatus,
     },
     vo::{
-        AttachmentId, AttachmentKind, AttachmentMeta, AttachmentParser, ChatId, MemoryId,
-        MessageId, PerceptionId, SubjectKind, TopicId,
+        AttachmentId, AttachmentKind, AttachmentMeta, AttachmentParser, ChatId, ConversationId,
+        MemoryId, MessageId, PerceptionId, SubjectKind, TopicId,
     },
 };
 
@@ -32,6 +32,7 @@ pub(crate) fn message(text: &str) -> Message {
     Message {
         id: MessageId(1),
         chat_id: ChatId(1),
+        conversation_id: ConversationId(1),
         account_id: None,
         role: MessageRole::User,
         text: text.to_owned(),
@@ -49,6 +50,7 @@ pub(crate) fn message(text: &str) -> Message {
 pub(crate) fn perception(subject: &str, parser: AttachmentParser, content: &str) -> Perception {
     Perception {
         id: PerceptionId(uuid::Uuid::from_u128(1)),
+        conversation_id: ConversationId(1),
         subject_kind: SubjectKind::Handle,
         subject: subject.to_owned(),
         parser,
@@ -62,7 +64,7 @@ pub(crate) fn memory(id: u128, content: &str) -> Memory {
     Memory {
         id: MemoryId(uuid::Uuid::from_u128(id)),
         account_id: None,
-        chat_id: ChatId(1),
+        conversation_id: ConversationId(1),
         kind: MemoryKind::Note,
         content: content.to_owned(),
         source_message_ids: Vec::new(),
@@ -76,7 +78,7 @@ pub(crate) fn memory(id: u128, content: &str) -> Memory {
 pub(crate) fn topic(id: u128, title: &str) -> Topic {
     Topic {
         id: TopicId(uuid::Uuid::from_u128(id)),
-        chat_id: ChatId(1),
+        conversation_id: ConversationId(1),
         title: Some(title.to_owned()),
         summary: Some("Summary".to_owned()),
         status: TopicStatus::Closed,

@@ -1,18 +1,19 @@
 //! The platform layer's own contract: one adapter per platform. Only this layer names it — the agent
-//! speaks `agent::channel::{Channel, ChannelAccess}` and never sees a vendor type.
+//! speaks `agent::channel::{Channel, ChannelAccess}`, and an adapter that shows pages hands its
+//! `ChannelChoices` surface over through `choice_surface`; no vendor type crosses the boundary.
 
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 
 use crate::{
     agent::channel::{
-        ChannelAccess, ChannelCapabilities, ChannelProfile, DeleteReport, OutboundPayload,
-        TypingGuard,
+        ChannelAccess, ChannelCapabilities, ChannelChoices, ChannelProfile, DeleteReport,
+        OutboundPayload, TypingGuard,
     },
     domain::{
         model::Platform,
-        vo::{AttachmentKind, AttachmentMeta, ChannelKey, PlatformMessageMeta},
+        vo::{AttachmentKind, AttachmentMeta, ChannelKey, ChatAddress, PlatformMessageMeta},
     },
     error::Result,
 };
@@ -28,6 +29,10 @@ pub(crate) trait ChannelAdapter: ChannelAccess + Debug + Send + Sync + 'static {
     fn key(&self) -> &ChannelKey;
     fn profile(&self) -> &ChannelProfile;
     fn capabilities(&self) -> ChannelCapabilities;
+    /// The page surface this platform offers, if it shows buttons.
+    fn choice_surface(self: Arc<Self>) -> Option<Arc<dyn ChannelChoices>> {
+        None
+    }
     /// Sends one message the agent produced; the receipt is what the store records.
     async fn send(&self, msg: WireMessage) -> Result<SentMessage>;
     /// Deletes these platform messages of one chat. Best effort by contract: an id the platform
@@ -73,7 +78,7 @@ pub(crate) struct SentAttachment {
 /// platform's id, and the payload the agent built.
 #[derive(Debug)]
 pub(crate) struct WireMessage {
-    pub chat_external_id: String,
+    pub chat: ChatAddress,
     pub reference: Option<WireReference>,
     pub payload: OutboundPayload,
 }

@@ -11,7 +11,7 @@ use url::Url;
 use crate::{
     agentcore::{Credential, ModelKind, ModelTarget, provider::ProviderKind},
     config::{AppConfig, ConfigIssue, env::read_env_key, schema::ProviderConfig},
-    error::{Result, bail},
+    error::Result,
 };
 
 /// How long a keyless provider's endpoint has to answer before it counts as unavailable.
@@ -153,9 +153,10 @@ impl ProviderRegistry {
             .is_some()
     }
 
-    /// One endpoint resolved for a caller: the block's own `base-url` wins over the provider's
-    /// answer for that kind, which is the kind's preset or its base URL. A kind the provider cannot
-    /// speak fails here rather than at every request.
+    /// One endpoint resolved for a caller: an explicit `base_url` wins, then the kind's own preset,
+    /// then the block's `base-url`, then the provider kind's default root. A kind the provider
+    /// cannot speak fails here rather than at every request; a kind-less block uses its own
+    /// `base-url` for the one non-chat kind it serves.
     pub fn endpoint(
         &self,
         kind: ModelKind,
@@ -170,7 +171,22 @@ impl ProviderRegistry {
 
         let base_url = if let Some(url) = base_url {
             url.to_owned()
-        } else if let Some(preset) = preset {
+        } else if entry.kind.is_none() {
+            // A block with no transport is a self-hosted endpoint for one non-chat kind.
+            entry.config.base_url.clone().ok_or_else(|| {
+                ConfigIssue::model_role(
+                    kind,
+                    format!("provider '{provider}' serves no {kind} API: set `base-url` here"),
+                )
+            })?
+        } else {
+            let Some(preset) = preset else {
+                return Err(ConfigIssue::model_role(
+                    kind,
+                    format!("provider '{provider}' serves no {kind} API: set `base-url` here"),
+                )
+                .into());
+            };
             preset
                 .url
                 .map(str::to_owned)
@@ -189,11 +205,6 @@ impl ProviderRegistry {
                         ),
                     )
                 })?
-        } else {
-            bail!(ConfigIssue::model_role(
-                kind,
-                format!("provider '{provider}' serves no {kind} API: set `base-url` here"),
-            ));
         };
 
         Ok(ModelTarget {
@@ -222,7 +233,7 @@ impl ProviderRegistry {
 fn candidates(config: &AppConfig) -> Vec<String> {
     let mut names: Vec<String> = config.providers.keys().cloned().collect();
     names.extend(
-        crate::config::model_role::providers_named(config)
+        super::role::providers_named(config)
             .into_iter()
             .map(str::to_owned),
     );
@@ -371,7 +382,7 @@ mod tests {
     #[test]
     fn an_env_key_alone_makes_a_provider_usable() {
         let mut config = AppConfig::default();
-        config.model_roles.default.provider = "openrouter".to_owned();
+        config.model_roles.default.model = "openrouter/a-model".to_owned();
         let env = |name: &str| (name == "OPENROUTER_API_KEY").then(|| "env-key".to_owned());
 
         let registry = ProviderRegistry::from_sources(&config, &env, &|_| false);
@@ -404,7 +415,7 @@ mod tests {
     #[test]
     fn a_blank_env_value_is_unset() {
         let mut config = AppConfig::default();
-        config.model_roles.default.provider = "openai".to_owned();
+        config.model_roles.default.model = "openai/a-model".to_owned();
 
         let registry =
             ProviderRegistry::from_sources(&config, &|_| Some("  ".to_owned()), &|_| true);
@@ -418,7 +429,7 @@ mod tests {
     #[test]
     fn a_declared_endpoint_needs_no_probe() {
         let mut config = AppConfig::default();
-        config.model_roles.default.provider = "my-gateway".to_owned();
+        config.model_roles.default.model = "my-gateway/a-model".to_owned();
         config.providers.insert(
             "my-gateway".to_owned(),
             ProviderConfig {
@@ -436,7 +447,7 @@ mod tests {
     #[test]
     fn a_keyless_kind_is_probed_at_its_default_endpoint() {
         let mut config = AppConfig::default();
-        config.model_roles.default.provider = "ollama".to_owned();
+        config.model_roles.default.model = "ollama/a-model".to_owned();
 
         let registry = ProviderRegistry::from_sources(&config, &no_env, &|_| true);
         let chat = chat(&registry, "ollama");
@@ -459,7 +470,7 @@ mod tests {
     #[test]
     fn the_name_is_explained_when_nothing_supplies_it() {
         let mut config = AppConfig::default();
-        config.model_roles.default.provider = "nope".to_owned();
+        config.model_roles.default.model = "nope/a-model".to_owned();
         let unknown = ProviderRegistry::from_sources(&config, &no_env, &|_| true);
         let err = unknown
             .endpoint(ModelKind::Chat, "nope", "a-model", None)
@@ -473,6 +484,25 @@ mod tests {
             .endpoint(ModelKind::Rerank, "local-rerank", "a-model", None)
             .unwrap_err();
         assert!(err.to_string().contains("has no endpoint"), "{err}");
+    }
+
+    /// A kind-less provider is how a self-hosted reranker states its one endpoint.
+    #[test]
+    fn a_kindless_provider_uses_its_base_url_for_rerank() {
+        let mut config = AppConfig::default();
+        config.providers.insert(
+            "local-rerank".to_string(),
+            ProviderConfig {
+                base_url: Some("http://127.0.0.1:8080/v1/rerank".to_owned()),
+                ..ProviderConfig::default()
+            },
+        );
+        let registry = ProviderRegistry::from_sources(&config, &|_| None, &|_| true);
+        let target = registry
+            .endpoint(ModelKind::Rerank, "local-rerank", "bge-reranker", None)
+            .unwrap();
+        assert_eq!(target.base_url, "http://127.0.0.1:8080/v1/rerank");
+        assert!(!registry.serves(ModelKind::Rerank, "local-rerank"));
     }
 
     /// A kind that shares no root (azure) is unusable without an endpoint, credential or not.

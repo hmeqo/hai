@@ -11,13 +11,17 @@ use std::{
 use uuid::Uuid;
 
 use super::{
+    content_policy::ContentPolicyAction,
     digest::{DigestAction, DigestDialog},
     purge::{PurgeAction, PurgeDialog},
 };
 use crate::{
-    agent::channel::{CallbackAnswer, ChannelAccess, ChoiceOption},
-    agentcore::Language,
-    domain::{model::ChatType, vo::ChatId},
+    agent::channel::{CallbackAnswer, ChannelChoices, ChoiceOption},
+    config::conversation::Language,
+    domain::{
+        model::ChatType,
+        vo::{ChatAddress, ChatId},
+    },
     error::Result,
 };
 
@@ -32,6 +36,9 @@ pub(crate) enum DialogPage {
     Digest {
         state: DigestDialog,
         action: DigestAction,
+    },
+    ContentPolicy {
+        action: ContentPolicyAction,
     },
 }
 
@@ -49,7 +56,7 @@ pub(crate) enum Miss {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PageSite<'a> {
     pub chat_id: ChatId,
-    pub chat_external_id: &'a str,
+    pub chat: &'a ChatAddress,
     pub chat_type: ChatType,
     pub language: Language,
 }
@@ -171,17 +178,17 @@ impl Pages {
 /// effort — a platform that refuses it gets the same page as a fresh message — and the press is
 /// answered either way: a button that does nothing leaves the client waiting.
 pub(crate) async fn settle(
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     site: &PageSite<'_>,
     message_external_id: &str,
     text: &str,
     options: &[ChoiceOption],
     query_id: &str,
 ) -> Result<()> {
-    if let Err(e) = rewrite_or_ask(access, site, message_external_id, text, options).await {
+    if let Err(e) = rewrite_or_ask(choices, site, message_external_id, text, options).await {
         tracing::warn!(chat_id = %site.chat_id, error = %e, "a dialog page could not be delivered");
     }
-    access
+    choices
         .answer_callback(query_id, CallbackAnswer::Quiet)
         .await
 }
@@ -189,20 +196,20 @@ pub(crate) async fn settle(
 /// Rewrites the page where it is; when the platform refuses, the same text and buttons go out as a
 /// fresh message — a page nobody can press again is worse than a second message.
 pub(crate) async fn rewrite_or_ask(
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     site: &PageSite<'_>,
     message_external_id: &str,
     text: &str,
     options: &[ChoiceOption],
 ) -> Result<()> {
-    match access
-        .edit_choice(site.chat_external_id, message_external_id, text, options)
+    match choices
+        .edit_choice(site.chat, message_external_id, text, options)
         .await
     {
         Ok(()) => Ok(()),
         Err(e) => {
             tracing::warn!(error = %e, "a dialog page could not be rewritten; a fresh one goes out");
-            access.ask(site.chat_external_id, text, options).await
+            choices.ask(site.chat, text, options).await
         }
     }
 }
@@ -215,11 +222,16 @@ mod tests {
     const CHAT: ChatId = ChatId(7);
     const SENDER: Option<&str> = Some("42");
 
+    fn address() -> &'static ChatAddress {
+        static ADDRESS: std::sync::OnceLock<ChatAddress> = std::sync::OnceLock::new();
+        ADDRESS.get_or_init(|| ChatAddress::new(None, "7"))
+    }
+
     /// The chat every test page speaks to.
     fn site() -> PageSite<'static> {
         PageSite {
             chat_id: CHAT,
-            chat_external_id: "7",
+            chat: address(),
             chat_type: ChatType::Private,
             language: Language::Zh,
         }

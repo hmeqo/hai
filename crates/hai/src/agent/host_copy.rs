@@ -1,12 +1,15 @@
 use crate::{
-    agent::command::ArgError,
-    agentcore::{Language, LanguageName, PerCatalog},
+    agent::{
+        command::ArgError,
+        prompt::text::{LanguageName, LanguageText, PerCatalog},
+    },
+    config::conversation::{ContentPolicy, Language},
     domain::vo::{Stretch, TimeUnit, whole_units},
 };
 
-/// How a stretch reads in a chat's language: everything, a relative span in the largest whole unit
-/// that divides it, or an absolute one as the two local times it covers. Every command that names a
-/// stretch reads it here — a range button and the page it leads to are the same words.
+/// How a stretch reads in a Conversation's language: everything, a relative span in the largest
+/// whole unit that divides it, or an absolute one as the two local times it covers. Every command
+/// that names a stretch reads it here — a range button and the page it leads to are the same words.
 pub(crate) fn stretch_text(language: Language, stretch: &Stretch) -> String {
     match *stretch {
         Stretch::All => STRETCH_ALL.get(language.text_catalog()).into(),
@@ -71,6 +74,21 @@ pub(crate) enum HostCopy {
     LanguageSet,
     LanguageReset,
     LanguageUnsupported,
+    ModelCurrent {
+        effective: String,
+        aliases: Vec<String>,
+    },
+    ModelSet(String),
+    ModelReset(String),
+    ModelUnknown(String),
+    ContentPolicyCurrent(ContentPolicy),
+    ContentPolicySet(ContentPolicy),
+    ContentPolicyReset(ContentPolicy),
+    PersonaCurrent(Option<String>),
+    PersonaSet,
+    PersonaReset,
+    PersonaEmpty,
+    PersonaTooLong,
     /// The agent's own status block, which is absent when the agent is not running.
     Status(Option<String>),
     BadArgs {
@@ -100,6 +118,94 @@ impl HostCopy {
             Self::LanguageSet => (LANGUAGE_SET.get(catalog))(name),
             Self::LanguageReset => (LANGUAGE_RESET.get(catalog))(name),
             Self::LanguageUnsupported => LANGUAGE_UNSUPPORTED.get(catalog).into(),
+            Self::ModelCurrent { effective, aliases } => {
+                let list = if aliases.is_empty() {
+                    MATCH_NONE.get(catalog).to_owned()
+                } else {
+                    aliases.join(", ")
+                };
+                match catalog {
+                    crate::agent::prompt::text::TextCatalog::Zh => {
+                        format!("当前模型：{effective}\n可用：{list}")
+                    }
+                    crate::agent::prompt::text::TextCatalog::En => {
+                        format!("Current model: {effective}\nAvailable: {list}")
+                    }
+                }
+            }
+            Self::ModelSet(alias) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => format!("模型已设为 {alias}。"),
+                crate::agent::prompt::text::TextCatalog::En => format!("Model set to {alias}."),
+            },
+            Self::ModelReset(alias) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => format!("已恢复默认模型：{alias}。"),
+                crate::agent::prompt::text::TextCatalog::En => {
+                    format!("Back to the default model: {alias}.")
+                }
+            },
+            Self::ModelUnknown(alias) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => {
+                    format!("没有配置模型 `{alias}`。")
+                }
+                crate::agent::prompt::text::TextCatalog::En => {
+                    format!("no model named `{alias}` is configured.")
+                }
+            },
+            Self::ContentPolicyCurrent(policy) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => format!(
+                    "内容尺度：成熟度 {}，政治 {}。\n预设：{}",
+                    policy.maturity.as_str(),
+                    policy.politics.as_str(),
+                    ContentPolicy::PRESETS.join(", ")
+                ),
+                crate::agent::prompt::text::TextCatalog::En => format!(
+                    "Content policy: maturity {}, politics {}.\nPresets: {}",
+                    policy.maturity.as_str(),
+                    policy.politics.as_str(),
+                    ContentPolicy::PRESETS.join(", ")
+                ),
+            },
+            Self::ContentPolicySet(policy) | Self::ContentPolicyReset(policy) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => format!(
+                    "内容尺度已设为：成熟度 {}，政治 {}。",
+                    policy.maturity.as_str(),
+                    policy.politics.as_str()
+                ),
+                crate::agent::prompt::text::TextCatalog::En => format!(
+                    "Content policy set to maturity {}, politics {}.",
+                    policy.maturity.as_str(),
+                    policy.politics.as_str()
+                ),
+            },
+            Self::PersonaCurrent(Some(text)) => text,
+            Self::PersonaCurrent(None) => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => "当前没有设置人设。".to_owned(),
+                crate::agent::prompt::text::TextCatalog::En => "No persona is set.".to_owned(),
+            },
+            Self::PersonaSet => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => "人设已更新。".to_owned(),
+                crate::agent::prompt::text::TextCatalog::En => "Persona updated.".to_owned(),
+            },
+            Self::PersonaReset => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => "已恢复默认人设。".to_owned(),
+                crate::agent::prompt::text::TextCatalog::En => {
+                    "Back to the default persona.".to_owned()
+                }
+            },
+            Self::PersonaEmpty => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => "人设不能为空。".to_owned(),
+                crate::agent::prompt::text::TextCatalog::En => {
+                    "Persona cannot be empty.".to_owned()
+                }
+            },
+            Self::PersonaTooLong => match catalog {
+                crate::agent::prompt::text::TextCatalog::Zh => {
+                    "人设不能超过 4096 个字符。".to_owned()
+                }
+                crate::agent::prompt::text::TextCatalog::En => {
+                    "Persona cannot exceed 4096 characters.".to_owned()
+                }
+            },
             Self::Status(None) => STATUS_EMPTY.get(catalog).into(),
             Self::Status(Some(body)) => body,
             Self::BadArgs { error, usage } => {
@@ -138,6 +244,11 @@ const UNAUTHORIZED: PerCatalog<&'static str> = PerCatalog {
 const GREETING: PerCatalog<&'static str> = PerCatalog {
     zh: "你好！在的，有事就说。",
     en: "Hello! I am here — talk to me whenever.",
+};
+
+const MATCH_NONE: PerCatalog<&'static str> = PerCatalog {
+    zh: "无",
+    en: "none",
 };
 
 const STATUS_EMPTY: PerCatalog<&'static str> = PerCatalog {
@@ -328,7 +439,8 @@ mod tests {
         assert!(en.ends_with(usage), "{en}");
     }
 
-    /// A command's help carries its complete forms under the synopsis, in the chat's language.
+    /// A command's help carries its complete forms under the synopsis, in the Conversation's
+    /// language.
     #[test]
     fn usage_lists_examples() {
         const ABOUT: PerCatalog<&'static str> = PerCatalog {

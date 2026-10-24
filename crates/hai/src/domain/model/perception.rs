@@ -1,8 +1,9 @@
-use crate::domain::vo::{AttachmentParser, PerceptionId, SubjectKind};
+use crate::domain::vo::{AttachmentParser, ConversationId, PerceptionId, SubjectKind};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Perception {
     pub id: PerceptionId,
+    pub conversation_id: ConversationId,
 
     /// Which kind of subject this row is cached against; the column value is `SubjectKind`'s name.
     pub subject_kind: SubjectKind,

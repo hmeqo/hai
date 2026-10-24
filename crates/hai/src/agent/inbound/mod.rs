@@ -14,22 +14,23 @@ pub(crate) use arrival::{Arrival, ArrivalAttachment, ArrivalChat, ArrivalSender,
 
 use crate::{
     agent::{
-        channel::{CallbackAnswer, ChannelAccess, ChannelCapabilities},
+        channel::{CallbackAnswer, ChannelAccess, ChannelChoices},
         command::{
-            ArgError, CommandContext, DialogArg, Invocation, Reply, Started,
+            ArgError, CommandContext, DialogArg, DialogFallback, Invocation, Reply, Started,
+            content_policy,
             dialog::{DialogPage, Miss, PageSite, Pages, Press},
             digest, execute, find, purge,
         },
         host_copy::HostCopy,
         process::registry::AgentRegistry,
-        settings::Settings,
+        settings::ConversationSettings,
     },
-    agentcore::Language,
+    config::conversation::{ConversationScope, Language},
     domain::{
-        model::{Chat, NewAttachment, Platform},
+        model::{Chat, ChatLocation, NewAttachment, Platform},
         repo::PlatformChange,
         service::Services,
-        vo::ChatId,
+        vo::{ChannelKey, ChatId},
     },
     error::{AppError, Result},
 };
@@ -70,50 +71,76 @@ impl UnauthorizedReplies {
 }
 
 pub(crate) struct Intake {
+    channel_key: ChannelKey,
+    scope: ConversationScope,
     access: Arc<dyn ChannelAccess>,
-    capabilities: ChannelCapabilities,
+    /// The button surface and its pending pages; absent on a channel that cannot show a page.
+    choices: Option<ChoiceSurface>,
     services: Services,
-    settings: Settings,
+    settings: ConversationSettings,
     /// What host copy goes out in for a chat that has no row and no preference to read.
     default_language: Language,
     registry: AgentRegistry,
     unauthorized: UnauthorizedReplies,
-    /// The dialog pages this channel's commands are waiting on, shared because a started digest
-    /// outlives the press that started it.
+}
+
+/// What a channel with a button surface owns: the platform's page calls and the pages waiting for a
+/// press. A channel without the surface never allocates either.
+struct ChoiceSurface {
+    choices: Arc<dyn ChannelChoices>,
     pages: Arc<Pages>,
 }
 
+/// Everything one channel hands its inbound tail at assembly time.
+pub(crate) struct IntakeParts {
+    pub channel_key: ChannelKey,
+    pub scope: ConversationScope,
+    pub access: Arc<dyn ChannelAccess>,
+    pub choices: Option<Arc<dyn ChannelChoices>>,
+    pub services: Services,
+    pub settings: ConversationSettings,
+    pub default_language: Language,
+    pub registry: AgentRegistry,
+}
+
 impl Intake {
-    pub(crate) fn new(
-        access: Arc<dyn ChannelAccess>,
-        capabilities: ChannelCapabilities,
-        services: Services,
-        settings: Settings,
-        default_language: Language,
-        registry: AgentRegistry,
-    ) -> Self {
-        Self {
+    pub(crate) fn new(parts: IntakeParts) -> Self {
+        let IntakeParts {
+            channel_key,
+            scope,
             access,
-            capabilities,
+            choices,
+            services,
+            settings,
+            default_language,
+            registry,
+        } = parts;
+        Self {
+            channel_key,
+            scope,
+            access,
+            choices: choices.map(|choices| ChoiceSurface {
+                choices,
+                pages: Arc::new(Pages::new()),
+            }),
             services,
             settings,
             default_language,
             registry,
             unauthorized: UnauthorizedReplies::new(),
-            pages: Arc::new(Pages::new()),
         }
     }
 
     pub(crate) async fn accept(&self, arrival: Arrival) -> Result<()> {
-        if !self.access.admits(&arrival.chat.external_id) {
+        if !self.access.admits(&arrival.chat.address) {
             tracing::warn!(
                 "Unauthorized message attempt from chat_id: {}, user: {:?}",
-                arrival.chat.external_id,
+                arrival.chat.address,
                 arrival.sender.as_ref().map(|sender| &sender.external_id)
             );
             // The claim is spent on every unauthorized arrival, answered or not: one reply per chat
             // per hour is the whole budget.
-            let answered_recently = !self.unauthorized.claim(&arrival.chat.external_id);
+            let answered_recently = !self.unauthorized.claim(&arrival.chat.address.to_string());
             if answers_unauthorized(&arrival.text_kind, answered_recently) {
                 self.notice(&arrival, HostCopy::Unauthorized, self.default_language)
                     .await?;
@@ -124,7 +151,7 @@ impl Intake {
         match &arrival.text_kind {
             ArrivalText::Greeting => {
                 let chat = self.ensure_chat(&arrival).await?;
-                let language = self.settings.language(chat.id).await?;
+                let language = self.settings.language(chat.conversation_id).await?;
                 self.notice(&arrival, HostCopy::Greeting, language).await
             }
             ArrivalText::Command { name, payload } => {
@@ -135,10 +162,15 @@ impl Intake {
                 token,
                 query_id,
                 message_external_id,
-            } => {
-                self.resolve_choice(&arrival, token, query_id, message_external_id)
-                    .await
-            }
+            } => match &self.choices {
+                Some(surface) => {
+                    self.resolve_choice(surface, &arrival, token, query_id, message_external_id)
+                        .await
+                }
+                None => unreachable!(
+                    "a choice arrival is produced only by a platform that supplies ChannelChoices"
+                ),
+            },
         }
     }
 
@@ -146,7 +178,7 @@ impl Intake {
     /// with it, not the notices around it.
     async fn notice(&self, arrival: &Arrival, copy: HostCopy, language: Language) -> Result<()> {
         self.access
-            .notice(&arrival.chat.external_id, &copy.render(language))
+            .notice(&arrival.chat.address, &copy.render(language))
             .await
     }
 
@@ -155,41 +187,44 @@ impl Intake {
         self.services
             .platform
             .get_or_create_chat(
-                arrival.platform,
-                &arrival.chat.external_id,
+                ChatLocation {
+                    channel_key: &self.channel_key,
+                    platform: arrival.platform,
+                    address: &arrival.chat.address,
+                    scope: self.scope,
+                },
                 arrival.chat.kind,
                 arrival.chat.title.as_deref(),
-                None,
             )
             .await
     }
 
     async fn run_command(&self, arrival: &Arrival, name: &str, payload: &str) -> Result<()> {
         // A slash message we own but do not know is ordinary conversation.
-        let Some(declared) = find(name) else {
+        let Some(declared) = find(name, self.settings.command_gates()) else {
             return self.store(arrival).await;
         };
         let chat = self.ensure_chat(arrival).await?;
-        // Every platform spells the same form; only the prefix is its own.
+        // The prefix is the platform's; the command spelling is the one the person used.
         let prefix = self.access.command_prefix();
-        let usage = || format!("{prefix}{}", declared.synopsis());
+        let usage = || format!("{prefix}{}", declared.synopsis_as(name));
         let command = match (declared.parse)(payload) {
             Invocation::Help => {
-                let language = self.settings.language(chat.id).await?;
+                let language = self.settings.language(chat.conversation_id).await?;
                 return self
                     .notice(
                         arrival,
                         HostCopy::Usage {
                             about: &declared.copy,
                             usage: usage(),
-                            examples: declared.example_lines(prefix),
+                            examples: declared.example_lines_as(prefix, name),
                         },
                         language,
                     )
                     .await;
             }
             Invocation::Unreadable(error) => {
-                let language = self.settings.language(chat.id).await?;
+                let language = self.settings.language(chat.conversation_id).await?;
                 return self
                     .notice(
                         arrival,
@@ -205,40 +240,49 @@ impl Intake {
         };
         let ctx = CommandContext {
             chat_id: chat.id,
+            conversation_id: chat.conversation_id,
             settings: self.settings.clone(),
             agents: self.registry.clone(),
             services: self.services.clone(),
         };
-        match execute(&ctx, command).await? {
+        let outcome = execute(&ctx, command).await?;
+        match outcome.reply {
             Reply::Said(said) => {
                 self.access
-                    .notice(&arrival.chat.external_id, &said.copy.render(said.language))
+                    .notice(&arrival.chat.address, &said.copy.render(said.language))
                     .await?;
             }
             // A command that stopped before its last decision: a page finishes it where the platform
-            // has one, and the complete command line is the answer everywhere else.
+            // has one, and the dialog's own fallback answers everywhere else.
             Reply::Dialog(dialog) => {
-                if !self.capabilities.choices {
-                    // No page to finish the line: the missing argument is the answer, exactly as a
-                    // command line reports it.
-                    let language = self.settings.language(chat.id).await?;
-                    let error = ArgError::MissingArgument(dialog.missing);
-                    return self
-                        .notice(
-                            arrival,
-                            HostCopy::BadArgs {
-                                error,
-                                usage: usage(),
-                            },
-                            language,
-                        )
-                        .await;
-                }
+                let Some(surface) = &self.choices else {
+                    return match dialog.fallback {
+                        // No page to finish the line: the missing argument is the answer, exactly as
+                        // a command line reports it.
+                        DialogFallback::Missing(missing) => {
+                            let language = self.settings.language(chat.conversation_id).await?;
+                            let error = ArgError::MissingArgument(missing);
+                            self.notice(
+                                arrival,
+                                HostCopy::BadArgs {
+                                    error,
+                                    usage: usage(),
+                                },
+                                language,
+                            )
+                            .await
+                        }
+                        // The line already had its answer; only the buttons are missing.
+                        DialogFallback::Answer(said) => {
+                            self.notice(arrival, said.copy, said.language).await
+                        }
+                    };
+                };
                 match dialog.arg {
                     DialogArg::Purge(arg) => {
                         purge::open(
-                            &self.pages,
-                            &*self.access,
+                            &surface.pages,
+                            &*surface.choices,
                             chat.id,
                             arrival,
                             arg,
@@ -248,11 +292,22 @@ impl Intake {
                     }
                     DialogArg::Digest(arg) => {
                         digest::open(
-                            &self.pages,
-                            &*self.access,
+                            &surface.pages,
+                            &*surface.choices,
                             chat.id,
                             arrival,
                             arg,
+                            dialog.language,
+                        )
+                        .await?;
+                    }
+                    DialogArg::ContentPolicy(current) => {
+                        content_policy::open(
+                            &surface.pages,
+                            &*surface.choices,
+                            chat.id,
+                            arrival,
+                            current,
                             dialog.language,
                         )
                         .await?;
@@ -268,23 +323,26 @@ impl Intake {
     /// Submits the work a complete command line named. A page reaches these same functions with the
     /// same request; the difference is only that the page also repaints itself.
     async fn start(&self, ctx: &CommandContext, arrival: &Arrival, started: Started) -> Result<()> {
-        let language = self.settings.language(ctx.chat_id).await?;
+        let language = self.settings.language(ctx.conversation_id).await?;
         match started {
             Started::Purge(spec) => {
                 purge::queue(ctx, spec).await?;
                 self.access
                     .notice(
-                        &arrival.chat.external_id,
+                        &arrival.chat.address,
                         &purge::copy::started(language, &spec),
                     )
                     .await
             }
             Started::Digest(start) => {
-                let origin = arrival.chat.external_id.clone();
-                let target = match start.delivery {
+                let origin = arrival.chat.address.clone();
+                let delivery = start.delivery.for_chat(arrival.chat.kind);
+                let target = match delivery {
                     digest::Delivery::Chat => origin.clone(),
                     digest::Delivery::Person => match arrival.sender.as_ref() {
-                        Some(sender) => sender.external_id.clone(),
+                        Some(sender) => {
+                            self.access.private_chat_external_id(&sender.external_id)?
+                        }
                         None => {
                             return self
                                 .access
@@ -299,7 +357,7 @@ impl Intake {
                     digest::Request {
                         stretch: start.stretch,
                         report_language: start.language,
-                        delivery: start.delivery,
+                        delivery,
                         origin,
                         target,
                         ui_language: language,
@@ -315,13 +373,14 @@ impl Intake {
     /// the presser's platform id is only what the page's audience is checked against.
     async fn resolve_choice(
         &self,
+        surface: &ChoiceSurface,
         arrival: &Arrival,
         token: &str,
         query_id: &str,
         message_external_id: &str,
     ) -> Result<()> {
         let chat = self.ensure_chat(arrival).await?;
-        let language = self.settings.language(chat.id).await?;
+        let language = self.settings.language(chat.conversation_id).await?;
         let sender_id = arrival
             .sender
             .as_ref()
@@ -329,7 +388,7 @@ impl Intake {
         let press = Press {
             site: PageSite {
                 chat_id: chat.id,
-                chat_external_id: &arrival.chat.external_id,
+                chat: &arrival.chat.address,
                 chat_type: arrival.chat.kind,
                 language,
             },
@@ -338,39 +397,54 @@ impl Intake {
             query_id,
             sender_id,
         };
-        let page = match self.pages.take(&press) {
+        let page = match surface.pages.take(&press) {
             Ok(page) => page,
             Err(miss) => {
                 let copy = match miss {
                     Miss::Stale => HostCopy::DialogStale,
                     Miss::Foreign => HostCopy::DialogForeign,
                 };
-                return self
-                    .access
+                return surface
+                    .choices
                     .answer_callback(query_id, CallbackAnswer::Toast(&copy.render(language)))
                     .await;
             }
         };
         let ctx = CommandContext {
             chat_id: chat.id,
+            conversation_id: chat.conversation_id,
             settings: self.settings.clone(),
             agents: self.registry.clone(),
             services: self.services.clone(),
         };
         match page {
             DialogPage::Purge { state, action } => {
-                purge::apply(&ctx, &self.pages, &*self.access, state, action, &press).await
+                purge::apply(
+                    &ctx,
+                    &surface.pages,
+                    &*surface.choices,
+                    state,
+                    action,
+                    &press,
+                )
+                .await
             }
             DialogPage::Digest { state, action } => {
                 digest::apply(
-                    self.pages.clone(),
-                    self.access.clone(),
+                    digest::DialogSurface {
+                        pages: surface.pages.clone(),
+                        access: self.access.clone(),
+                        choices: surface.choices.clone(),
+                    },
                     &ctx,
                     state,
                     action,
                     &press,
                 )
                 .await
+            }
+            DialogPage::ContentPolicy { action } => {
+                content_policy::apply(&ctx, &*surface.choices, action, &press).await
             }
         }
     }
@@ -388,8 +462,12 @@ impl Intake {
             .services
             .platform
             .ensure_chat_and_account(
-                arrival.platform,
-                &arrival.chat.external_id,
+                ChatLocation {
+                    channel_key: &self.channel_key,
+                    platform: arrival.platform,
+                    address: &arrival.chat.address,
+                    scope: self.scope,
+                },
                 arrival.chat.kind,
                 arrival.chat.title.as_deref(),
                 &sender.external_id,
@@ -406,6 +484,7 @@ impl Intake {
             .platform
             .apply_platform_change(PlatformChange {
                 chat_id: chat.id,
+                conversation_id: chat.conversation_id,
                 account_id: account.id,
                 text: arrival.text.clone(),
                 attachments,
@@ -417,7 +496,10 @@ impl Intake {
                 audience: arrival.audience,
             })
             .await?;
-        self.registry.get_or_create(chat.id).await.notify();
+        self.registry
+            .get_or_create(chat.conversation_id)
+            .await
+            .notify_chat(chat.id);
         Ok(())
     }
 }

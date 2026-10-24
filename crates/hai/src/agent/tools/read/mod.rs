@@ -33,7 +33,7 @@ use crate::{
         skills::{SkillManager, SkillName},
         tool::{AgentTool, ToolError, schema_of, tool_data},
     },
-    domain::vo::{AttachmentId, AttachmentParser, ChatId, MemoryId, TopicId},
+    domain::vo::{AttachmentId, AttachmentParser, ConversationId, MemoryId, TopicId},
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -54,7 +54,7 @@ pub struct ReadArgs {
 
 pub struct Read {
     description: String,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     web: WebService,
     analyzer: MediaAnalyzer,
     sandbox: Arc<Sandbox>,
@@ -133,14 +133,16 @@ impl Read {
             Target::Topic(id) => {
                 record::topic(
                     self.analyzer.services(),
-                    self.chat_id,
+                    self.conversation_id,
                     id,
                     args.offset,
                     args.limit,
                 )
                 .await
             }
-            Target::Memory(id) => record::memory(self.analyzer.services(), self.chat_id, id).await,
+            Target::Memory(id) => {
+                record::memory(self.analyzer.services(), self.conversation_id, id).await
+            }
             Target::Url(url) => self.read_url(url, args).await,
             Target::Local(path) => self.read_local(&path, args).await,
         }
@@ -152,11 +154,12 @@ pub fn tools(runtime: &AgentRuntime, ctx: &ToolContext) -> Vec<Arc<dyn AgentTool
     let inline_limit = InlineLimit::new(runtime.cfg().agent.multimodal.inline_max_bytes);
     vec![Arc::new(Read {
         description: describe(&parsers, !ctx.skill_manager.is_empty()),
-        chat_id: ctx.chat.chat_id(),
+        conversation_id: ctx.conversation_id,
         web: runtime.web.clone(),
         analyzer: MediaAnalyzer::new(
             ctx.multimodal.clone(),
             ctx.services.clone(),
+            ctx.conversation_id,
             ctx.chat.clone(),
             inline_limit,
         ),
@@ -224,7 +227,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::{agent::environment::workspace::Workspace, domain::vo::ChatId};
+    use crate::{agent::environment::workspace::Workspace, domain::vo::ConversationId};
 
     /// The local path or the kind a `path` argument resolves to, as text so the borrow stays inside.
     fn resolved(path: &str, sandbox: &Sandbox) -> String {
@@ -241,7 +244,7 @@ mod tests {
 
     #[test]
     fn a_target_resolves_local_addresses_against_the_workspace() {
-        let workspace = Workspace::for_chat(ChatId(4242));
+        let workspace = Workspace::for_conversation(ConversationId(4242));
         let root = workspace.dir().display().to_string();
         let sandbox = Sandbox::host(workspace, 30);
         assert_eq!(resolved("a.md", &sandbox), format!("{root}/a.md"));

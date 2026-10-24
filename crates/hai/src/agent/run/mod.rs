@@ -10,7 +10,7 @@ pub(crate) mod turn;
 use std::sync::Arc;
 
 use genai::chat::ChatMessage;
-pub(crate) use turn::{ToolContext, TurnContext};
+pub(crate) use turn::{SelectedModel, ToolContext, TurnContext};
 
 use crate::{agentcore::tool::AgentTool, domain::vo::Step};
 
@@ -40,6 +40,12 @@ impl Messages {
         (*self.0).clone()
     }
 
+    /// Takes the messages out without copying when this is the only handle; a snapshot is the
+    /// owner at the end of a Turn.
+    pub fn into_vec(self) -> Vec<ChatMessage> {
+        Arc::unwrap_or_clone(self.0)
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -57,7 +63,7 @@ pub(crate) fn has_spoken(steps: &[Step], tools: &[Arc<dyn AgentTool>]) -> bool {
     steps
         .iter()
         .flat_map(|s| &s.tool_calls)
-        .any(|tc| tools.iter().any(|t| t.name() == tc.tool_name && t.speaks()))
+        .any(|tc| tc.success && tools.iter().any(|t| t.name() == tc.tool_name && t.speaks()))
 }
 
 #[cfg(test)]

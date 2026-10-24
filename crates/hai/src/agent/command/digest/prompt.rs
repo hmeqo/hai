@@ -1,9 +1,9 @@
 //! The instruction the digest pass reads: what its report covers, over which window, and what it
 //! holds.
-
 use super::copy::covered_days;
 use crate::{
-    agentcore::{Language, PerCatalog},
+    agent::prompt::text::{LanguageText, PerCatalog},
+    config::conversation::Language,
     domain::vo::Stretch,
 };
 

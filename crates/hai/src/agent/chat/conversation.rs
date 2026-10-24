@@ -40,9 +40,25 @@ impl Conversation {
         }
     }
 
-    pub fn update(&mut self, messages: Messages, step_count: usize, last_prompt_tokens: u32) {
-        self.context_messages = messages;
-        self.chapter.advance(step_count, last_prompt_tokens);
+    /// The snapshot a completed Turn would persist, without changing this value.
+    pub fn next_snapshot(
+        &self,
+        messages: Messages,
+        step_count: usize,
+        last_prompt_tokens: u32,
+    ) -> ConversationSnapshot {
+        let mut chapter = self.chapter;
+        chapter.advance(step_count, last_prompt_tokens);
+        ConversationSnapshot {
+            context_messages: messages.into_vec(),
+            context_meta: chapter,
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, snap: ConversationSnapshot) {
+        self.context_messages = Messages::new(snap.context_messages);
+        self.chapter = snap.context_meta;
+        self.restored_last_active = None;
     }
 
     pub fn build_full_messages(&self, chunk: Vec<genai::chat::ChatMessage>) -> Messages {
@@ -96,5 +112,15 @@ impl Conversation {
             None => Messages::new(Vec::new()),
         };
         self.chapter = ContextMeta::new();
+    }
+
+    pub fn next_chapter_snapshot(&self, summary: Option<String>) -> ConversationSnapshot {
+        ConversationSnapshot {
+            context_messages: match summary {
+                Some(s) => vec![genai::chat::ChatMessage::user(s)],
+                None => Vec::new(),
+            },
+            context_meta: ContextMeta::new(),
+        }
     }
 }

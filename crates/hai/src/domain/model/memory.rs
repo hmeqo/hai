@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 
-use crate::domain::vo::{AccountId, ChatId, MemoryId, MessageId, enum_column};
+use crate::domain::vo::{AccountId, ConversationId, MemoryId, MessageId, enum_column};
 
 #[derive(Debug, Clone)]
 pub struct NewMemory {
     pub id: MemoryId,
     pub kind: MemoryKind,
     pub status: MemoryStatus,
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub account_id: Option<AccountId>,
     pub content: String,
     pub source_message_ids: Vec<MessageId>,
@@ -22,7 +22,7 @@ pub struct Memory {
 
     pub account_id: Option<AccountId>,
 
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
 
     pub kind: MemoryKind,
     pub content: String,

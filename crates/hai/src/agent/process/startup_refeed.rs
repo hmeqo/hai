@@ -1,24 +1,35 @@
-use crate::{agent::process::registry::AgentRegistry, domain::service::Services, error::Result};
+use crate::{
+    agent::process::registry::AgentRegistry,
+    domain::{service::Services, vo::ChannelKey},
+    error::Result,
+};
 
-/// Rings every chat whose accumulation is still unconsumed, once, at generation start. It stops on
-/// its own, so it hands back nothing to hold.
-pub fn spawn_startup_refeed(services: Services, registry: AgentRegistry) {
+/// Rings every Conversation under one channel whose accumulation is still unconsumed, once, at
+/// generation start. It stops on its own, so it hands back nothing to hold.
+pub fn spawn_startup_refeed(services: Services, registry: AgentRegistry, channel: ChannelKey) {
     tokio::spawn(async move {
-        if let Err(e) = refeed(&services, &registry).await {
-            tracing::error!("startup re-feed failed: {e}");
+        if let Err(e) = refeed(&services, &registry, &channel).await {
+            tracing::error!(channel = %channel, "startup re-feed failed: {e}");
         }
     });
 }
 
-async fn refeed(services: &Services, registry: &AgentRegistry) -> Result<()> {
-    let chats = services.conversation.chats_with_pending().await?;
-    if chats.is_empty() {
+async fn refeed(services: &Services, registry: &AgentRegistry, channel: &ChannelKey) -> Result<()> {
+    let conversations = services
+        .conversation
+        .conversations_with_pending(channel)
+        .await?;
+    if conversations.is_empty() {
         return Ok(());
     }
 
-    tracing::info!(chats = chats.len(), "re-feeding unconsumed changes");
-    for chat_id in chats {
-        registry.get_or_create(chat_id).await.notify();
+    tracing::info!(
+        conversations = conversations.len(),
+        channel = %channel,
+        "re-feeding unconsumed changes"
+    );
+    for conversation_id in conversations {
+        registry.get_or_create(conversation_id).await.wake();
     }
     Ok(())
 }

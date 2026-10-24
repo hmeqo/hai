@@ -15,9 +15,5 @@ pub fn account_element(account: &Account) -> Node {
         b = b.attr("name", display_name(Some(account), account.id));
     }
 
-    if let Some(iid) = account.identity_id {
-        b = b.attr("identity_id", iid.0);
-    }
-
     b
 }

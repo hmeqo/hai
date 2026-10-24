@@ -1,6 +1,7 @@
 //! Command semantics: what each command is, what a payload denotes, and what the host says back.
 
 mod args;
+pub(crate) mod content_policy;
 mod context;
 pub(crate) mod dialog;
 pub(crate) mod digest;
@@ -14,12 +15,12 @@ pub(crate) use args::{ArgError, ArgName, Grammar, OptionSpec, Parsed, Positional
 pub(crate) use context::CommandContext;
 pub(crate) use handle::execute;
 pub(crate) use parse::{MAX_DIGEST_DAYS, MIN_DIGEST_DAYS};
-pub(crate) use spec::{DECLARATIONS, find};
+pub(crate) use spec::{CommandGates, Declaration, declarations, find};
 
 use crate::{
     agent::{command::digest::Delivery, host_copy::HostCopy},
-    agentcore::Language,
-    domain::vo::{AgentCommand, PurgeSpec, PurgeSurfaces, Stretch},
+    config::conversation::{ContentPolicy, ContentPolicyPreset, Language},
+    domain::vo::{AgentCommand, HostAction, PurgeSpec, PurgeSurfaces, Stretch},
 };
 
 /// A payload the table has judged: a command it could read, one it could not with the reason the
@@ -36,8 +37,35 @@ pub(crate) enum Invocation {
 pub(crate) enum SystemCommand {
     Status,
     Lang(LanguageArg),
+    Model(ModelArg),
+    ContentPolicy(ContentPolicyArg),
+    Persona(PersonaArg),
     Purge(PurgeArg),
     Digest(DigestArg),
+}
+
+/// What `/model` was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelArg {
+    Current,
+    Reset,
+    Set(String),
+}
+
+/// What `/content-policy` was asked to do; the preset is the typed spelling the parser accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContentPolicyArg {
+    Current,
+    Reset,
+    Set(ContentPolicyPreset),
+}
+
+/// What `/persona` was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PersonaArg {
+    Current,
+    Reset,
+    Set(String),
 }
 
 /// What `/digest` was asked for: the stretch a person named (absent while they have not chosen one),
@@ -91,6 +119,48 @@ pub(crate) enum Reply {
     Started(Started),
 }
 
+/// What one command produced: the reply the host owes and, when the command changed a setting, the
+/// change the next Turn has to see. `execute` appends it after the handler; the setting write has
+/// already committed, so an append failure is logged and does not turn the command into an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandOutcome {
+    pub(crate) reply: Reply,
+    pub(crate) action: Option<HostAction>,
+}
+
+impl CommandOutcome {
+    pub(crate) fn silent() -> Self {
+        Reply::Silent.into()
+    }
+
+    pub(crate) fn said(said: Said) -> Self {
+        Reply::Said(said).into()
+    }
+
+    pub(crate) fn dialog(dialog: Dialog) -> Self {
+        Reply::Dialog(dialog).into()
+    }
+
+    pub(crate) fn started(started: Started) -> Self {
+        Reply::Started(started).into()
+    }
+
+    /// The setting the command changed, for the next Turn to read.
+    pub(crate) fn with_action(mut self, action: HostAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+}
+
+impl From<Reply> for CommandOutcome {
+    fn from(reply: Reply) -> Self {
+        Self {
+            reply,
+            action: None,
+        }
+    }
+}
+
 /// The work a complete command line submits. A dialog resolves to the same value, so a page is only
 /// how the same request was collected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,13 +178,22 @@ pub(crate) struct DigestStart {
 }
 
 /// A confirmation to hold with the platform before the command's work is enqueued.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Dialog {
     pub(crate) language: Language,
     pub(crate) arg: DialogArg,
-    /// The argument the line stopped at, so a channel without pages can report the same refusal a
-    /// command line would instead of inventing UI copy.
-    pub(crate) missing: ArgName,
+    /// What a channel without pages answers: the argument the line stopped at, or the reply the
+    /// command already composed for a bare line.
+    pub(crate) fallback: DialogFallback,
+}
+
+/// The answer a page would have given, on a channel that cannot show one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DialogFallback {
+    /// The line stopped at an argument; the command line reports the same missing argument.
+    Missing(ArgName),
+    /// The line already had its answer; a page only adds the buttons.
+    Answer(Said),
 }
 
 /// What the dialog is a question about: how far the command got before it needed a person to decide.
@@ -122,6 +201,8 @@ pub(crate) struct Dialog {
 pub(crate) enum DialogArg {
     Purge(PurgeArg),
     Digest(DigestArg),
+    /// The bare content-policy line: the picker reports this policy and offers the presets.
+    ContentPolicy(ContentPolicy),
 }
 
 /// One reply the host speaks, in the language it has to be spoken in.

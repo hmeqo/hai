@@ -8,7 +8,7 @@ use crate::{
     domain::{
         model::{Memory, MemoryKind, MemoryStatus, NewMemory},
         repo::Repos,
-        vo::{AccountId, ChatId, MemoryId, MessageId, TimeRange},
+        vo::{AccountId, ConversationId, MemoryId, MessageId, TimeRange},
     },
     error::{AppError, Result},
 };
@@ -44,7 +44,7 @@ impl MemoryService {
     pub async fn record(
         &self,
         kind: MemoryKind,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         content: String,
         account_id: Option<AccountId>,
         source_message_ids: &[MessageId],
@@ -52,7 +52,7 @@ impl MemoryService {
         if let Some(existing) = self
             .repos
             .memory
-            .find_duplicate(kind, chat_id, &content, account_id)
+            .find_duplicate(kind, conversation_id, &content, account_id)
             .await?
         {
             return Ok(RecordOutcome {
@@ -64,7 +64,7 @@ impl MemoryService {
 
         let embedding = self.embedding.generate_embedding(&content).await?;
         let similar = self
-            .nearest(chat_id, &embedding, 3)
+            .nearest(conversation_id, &embedding, 3)
             .await?
             .into_iter()
             .filter(|(_, distance)| *distance <= SIMILAR_DISTANCE)
@@ -80,7 +80,7 @@ impl MemoryService {
                     id: MemoryId(Uuid::now_v7()),
                     kind,
                     status: MemoryStatus::Active,
-                    chat_id,
+                    conversation_id,
                     account_id,
                     content,
                     source_message_ids: source_message_ids.to_vec(),
@@ -98,59 +98,73 @@ impl MemoryService {
         })
     }
 
-    pub async fn revise(&self, chat_id: ChatId, id: MemoryId, content: String) -> Result<Memory> {
+    pub async fn revise(
+        &self,
+        conversation_id: ConversationId,
+        id: MemoryId,
+        content: String,
+    ) -> Result<Memory> {
         let embedding = self.embedding.generate_embedding(&content).await?;
         self.repos
             .memory
-            .revise(chat_id, id, &content, &embedding)
+            .revise(conversation_id, id, &content, &embedding)
             .await?
             .ok_or_else(|| missing(id))
     }
 
-    pub async fn invalidate(&self, chat_id: ChatId, id: MemoryId) -> Result<Memory> {
+    pub async fn invalidate(
+        &self,
+        conversation_id: ConversationId,
+        id: MemoryId,
+    ) -> Result<Memory> {
         self.repos
             .memory
-            .set_status(chat_id, id, MemoryStatus::Invalidated)
+            .set_status(conversation_id, id, MemoryStatus::Invalidated)
             .await?
             .ok_or_else(|| missing(id))
     }
 
-    pub async fn forget(&self, chat_id: ChatId, id: MemoryId) -> Result<()> {
-        if self.repos.memory.delete(chat_id, id).await? {
+    pub async fn forget(&self, conversation_id: ConversationId, id: MemoryId) -> Result<()> {
+        if self.repos.memory.delete(conversation_id, id).await? {
             Ok(())
         } else {
             Err(missing(id))
         }
     }
 
-    pub async fn pin(&self, chat_id: ChatId, id: MemoryId, pinned: bool) -> Result<Memory> {
+    pub async fn pin(
+        &self,
+        conversation_id: ConversationId,
+        id: MemoryId,
+        pinned: bool,
+    ) -> Result<Memory> {
         self.repos
             .memory
-            .set_pinned(chat_id, id, pinned)
+            .set_pinned(conversation_id, id, pinned)
             .await?
             .ok_or_else(|| missing(id))
     }
 
-    pub async fn get(&self, chat_id: ChatId, id: MemoryId) -> Result<Memory> {
+    pub async fn get(&self, conversation_id: ConversationId, id: MemoryId) -> Result<Memory> {
         self.repos
             .memory
-            .find_by_id(chat_id, id)
+            .find_by_id(conversation_id, id)
             .await?
             .ok_or_else(|| missing(id))
     }
 
-    pub async fn pinned(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Memory>> {
-        self.repos.memory.pinned(chat_id, limit).await
+    pub async fn pinned(&self, conversation_id: ConversationId, limit: i64) -> Result<Vec<Memory>> {
+        self.repos.memory.pinned(conversation_id, limit).await
     }
 
     pub async fn search_related(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<Memory>> {
         Ok(self
-            .nearest(chat_id, query, limit)
+            .nearest(conversation_id, query, limit)
             .await?
             .into_iter()
             .map(|(memory, _)| memory)
@@ -159,14 +173,14 @@ impl MemoryService {
 
     async fn nearest(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<(Memory, f64)>> {
         let rows = self
             .repos
             .memory
-            .search_by_embedding(chat_id, query, limit)
+            .search_by_embedding(conversation_id, query, limit)
             .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -184,23 +198,26 @@ impl MemoryService {
 
     pub async fn search_keywords(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         keywords: &[String],
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Memory>> {
         self.repos
             .memory
-            .search_by_keywords(chat_id, keywords, range, limit)
+            .search_by_keywords(conversation_id, keywords, range, limit)
             .await
     }
 
     pub async fn list_by_time(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Memory>> {
-        self.repos.memory.by_chat_time(chat_id, range, limit).await
+        self.repos
+            .memory
+            .by_conversation_time(conversation_id, range, limit)
+            .await
     }
 }

@@ -7,11 +7,11 @@ use serde_json::Value;
 
 use crate::{
     agent::{
-        channel::{CallbackAnswer, ChannelAccess, ChoiceOption},
+        channel::{CallbackAnswer, ChannelAccess, ChannelChoices, ChoiceOption},
         environment::workspace::Workspace,
     },
     agentcore::tool::{AgentTool, ToolError},
-    domain::vo::ChatId,
+    domain::vo::{ChatAddress, ConversationId},
     error::{AppError, Result},
     test_support::TempDir,
 };
@@ -56,29 +56,50 @@ impl std::fmt::Debug for RecordingAccess {
 
 #[async_trait]
 impl ChannelAccess for RecordingAccess {
-    fn admits(&self, _chat_external_id: &str) -> bool {
+    fn admits(&self, _chat: &ChatAddress) -> bool {
         true
+    }
+
+    fn private_chat_external_id(&self, sender_external_id: &str) -> Result<ChatAddress> {
+        Ok(ChatAddress::new(None, sender_external_id))
     }
 
     fn command_prefix(&self) -> &'static str {
         "/"
     }
 
-    async fn notice(&self, _chat_external_id: &str, _text: &str) -> Result<()> {
+    async fn notice(&self, _chat: &ChatAddress, _text: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn ask(
+    async fn notice_document(
         &self,
-        chat_external_id: &str,
-        prompt: &str,
-        options: &[ChoiceOption],
+        chat: &ChatAddress,
+        filename: &str,
+        bytes: Vec<u8>,
+        caption: &str,
     ) -> Result<()> {
+        if self.document_fails {
+            return Err(AppError::message("nowhere to deliver it"));
+        }
+        self.documents.lock().expect("test channel lock").push((
+            chat.to_string(),
+            filename.to_owned(),
+            bytes,
+            caption.to_owned(),
+        ));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ChannelChoices for RecordingAccess {
+    async fn ask(&self, chat: &ChatAddress, prompt: &str, options: &[ChoiceOption]) -> Result<()> {
         self.asked
             .lock()
             .expect("test channel lock")
             .push(AskedPage {
-                chat_external_id: chat_external_id.to_owned(),
+                chat_external_id: chat.to_string(),
                 prompt: prompt.to_owned(),
                 options: options.to_vec(),
             });
@@ -87,7 +108,7 @@ impl ChannelAccess for RecordingAccess {
 
     async fn edit_choice(
         &self,
-        _chat_external_id: &str,
+        _chat: &ChatAddress,
         _message_external_id: &str,
         prompt: &str,
         options: &[ChoiceOption],
@@ -118,30 +139,11 @@ impl ChannelAccess for RecordingAccess {
         Ok(())
     }
 
-    async fn delete_notice(&self, chat_external_id: &str, message_external_id: &str) -> Result<()> {
+    async fn delete_notice(&self, chat: &ChatAddress, message_external_id: &str) -> Result<()> {
         self.deleted
             .lock()
             .expect("test channel lock")
-            .push((chat_external_id.to_owned(), message_external_id.to_owned()));
-        Ok(())
-    }
-
-    async fn notice_document(
-        &self,
-        chat_external_id: &str,
-        filename: &str,
-        bytes: Vec<u8>,
-        caption: &str,
-    ) -> Result<()> {
-        if self.document_fails {
-            return Err(AppError::message("nowhere to deliver it"));
-        }
-        self.documents.lock().expect("test channel lock").push((
-            chat_external_id.to_owned(),
-            filename.to_owned(),
-            bytes,
-            caption.to_owned(),
-        ));
+            .push((chat.to_string(), message_external_id.to_owned()));
         Ok(())
     }
 }
@@ -230,7 +232,7 @@ impl AgentTool for StubTool {
 /// A workspace belonging to a chat that does not exist, plus the guard that removes its directory: a
 /// test needs a real directory only when it writes into one.
 pub(crate) async fn created_workspace() -> (Workspace, TempDir) {
-    let workspace = Workspace::create(ChatId(uuid::Uuid::new_v4().as_u128() as i64))
+    let workspace = Workspace::create(ConversationId(uuid::Uuid::new_v4().as_u128() as i64))
         .await
         .expect("workspace directory");
     let dir = TempDir::adopt(workspace.dir().to_path_buf());

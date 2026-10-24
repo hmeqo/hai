@@ -30,16 +30,19 @@ macro_rules! enum_column {
 
 pub(crate) use enum_column;
 
+pub mod chat_address;
 pub mod collection;
 pub mod command;
 pub mod content;
 pub mod context_meta;
+pub mod conversation_preferences;
 pub mod conversation_snapshot;
 pub mod entry;
 pub mod event;
+pub mod host_action;
 pub mod id;
 pub mod meta;
-pub mod preference;
+pub mod model_alias;
 pub mod purge;
 pub mod session;
 pub mod step;
@@ -48,26 +51,29 @@ pub mod subject;
 pub mod time;
 pub mod tool_call_result;
 
+pub use chat_address::{ChatAddress, ChatOrigin};
 pub use collection::{Collection, CollectionName};
 pub use command::AgentCommand;
 pub use content::{AttachmentKind, AttachmentMeta, AttachmentParser, ImageFormat, MediaCodec};
 pub use context_meta::ContextMeta;
+pub use conversation_preferences::{ConversationPreferences, PreferenceKey};
 pub use conversation_snapshot::{ChapterWrite, ConversationSnapshot};
 pub use entry::{ChatEntry, EntryAudience, EntryKind};
 pub use event::{
     AgentEvent, AgentEventPayload, BatchComposition, EventKind, ModelRetryReason, StartedBy,
     StepOutput, TurnEndReason, WakeReasonKind,
 };
+pub use host_action::HostAction;
 pub use id::{
-    AccountId, AttachmentId, ChannelKey, ChatId, IdentityId, KnowledgeChunkId, KnowledgeDocumentId,
-    MemoryId, MessageId, PerceptionId, ScheduledTaskId, SessionId, StepNumber, TopicId, TurnNumber,
-    attachment_id,
+    AccountId, AttachmentId, ChannelKey, ChatId, ConversationId, KnowledgeChunkId,
+    KnowledgeDocumentId, MemoryId, MessageId, PerceptionId, PlatformChannelId, ScheduledTaskId,
+    SessionId, StepNumber, TopicId, TurnNumber, attachment_id,
 };
 pub use meta::{
-    LlmMessageMeta, MessageMeta, PlatformAccountMeta, PlatformMessageMeta, TelegramAccountMeta,
-    TelegramMessageMeta, TelegramQuote,
+    LlmMessageMeta, MessageMeta, PlatformAccountMeta, PlatformMessageMeta, TeamspeakAccountMeta,
+    TelegramAccountMeta, TelegramMessageMeta, TelegramQuote,
 };
-pub use preference::ChatPreferences;
+pub use model_alias::ModelAlias;
 pub use purge::{PurgeCounts, PurgeSpec, PurgeSurface, PurgeSurfaces};
 pub use session::{SessionKind, SessionRef};
 pub use step::Step;

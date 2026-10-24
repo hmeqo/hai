@@ -122,7 +122,7 @@ impl TelegramDispatcher {
                 .map_err(telegram_err)?;
             return Ok(());
         };
-        tracing::debug!(chat_id = %arrival.chat.external_id, from = %query.from.id, "Button pressed");
+        tracing::debug!(chat_id = %arrival.chat.address, from = %query.from.id, "Button pressed");
         self.intake.accept(arrival).await
     }
 }

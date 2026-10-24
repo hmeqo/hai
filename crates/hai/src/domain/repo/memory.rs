@@ -4,7 +4,7 @@ use crate::{
     domain::{
         model::{Memory, MemoryKind, MemoryStatus, NewMemory},
         repo::{lexical, vector, window},
-        vo::{AccountId, ChatId, MemoryId, MessageId, TimeRange},
+        vo::{AccountId, ConversationId, MemoryId, MessageId, TimeRange},
     },
     error::Result,
 };
@@ -22,12 +22,12 @@ impl MemoryRepo {
     pub async fn find_duplicate(
         &self,
         kind: MemoryKind,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         content: &str,
         account_id: Option<AccountId>,
     ) -> Result<Option<Memory>> {
         let mut sql = String::from(
-            "SELECT * FROM memory WHERE kind = $1 AND chat_id = $2 AND content = $3 \
+            "SELECT * FROM memory WHERE kind = $1 AND conversation_id = $2 AND content = $3 \
              AND hashtextextended(content, 0) = hashtextextended($3, 0)",
         );
         if account_id.is_some() {
@@ -36,7 +36,7 @@ impl MemoryRepo {
         sql.push_str(" LIMIT 1");
         let mut q = sqlx::query_as::<_, Memory>(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(kind.as_str())
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .bind(content);
         if let Some(aid) = account_id {
             q = q.bind(aid.0);
@@ -47,13 +47,13 @@ impl MemoryRepo {
     /// Writes the row and the vector it is found by in one statement.
     pub async fn create(&self, new: NewMemory, embedding: &[f32]) -> Result<Memory> {
         sqlx::query_as::<_, Memory>(
-            "INSERT INTO memory (id, account_id, chat_id, kind, content, source_message_ids, \
+            "INSERT INTO memory (id, account_id, conversation_id, kind, content, source_message_ids, \
              status, created_at, updated_at, embedding) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector) RETURNING *",
         )
         .bind(new.id.0)
         .bind(new.account_id.map(|a| a.0))
-        .bind(new.chat_id.0)
+        .bind(new.conversation_id.0)
         .bind(new.kind.as_str())
         .bind(new.content)
         .bind(new.source_message_ids)
@@ -66,10 +66,14 @@ impl MemoryRepo {
         .map_err(Into::into)
     }
 
-    pub async fn find_by_id(&self, chat_id: ChatId, id: MemoryId) -> Result<Option<Memory>> {
-        sqlx::query_as::<_, Memory>("SELECT * FROM memory WHERE id = $1 AND chat_id = $2")
+    pub async fn find_by_id(
+        &self,
+        conversation_id: ConversationId,
+        id: MemoryId,
+    ) -> Result<Option<Memory>> {
+        sqlx::query_as::<_, Memory>("SELECT * FROM memory WHERE id = $1 AND conversation_id = $2")
             .bind(id.0)
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .fetch_optional(&self.pool)
             .await
             .map_err(Into::into)
@@ -89,17 +93,17 @@ impl MemoryRepo {
     /// Rewrites the content and the vector together, inside the chat's own rows.
     pub async fn revise(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         id: MemoryId,
         content: &str,
         embedding: &[f32],
     ) -> Result<Option<Memory>> {
         sqlx::query_as::<_, Memory>(
             "UPDATE memory SET content = $3, embedding = $4::vector, updated_at = now() \
-             WHERE id = $1 AND chat_id = $2 RETURNING *",
+             WHERE id = $1 AND conversation_id = $2 RETURNING *",
         )
         .bind(id.0)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(content)
         .bind(vector::vec_to_pgstring(embedding))
         .fetch_optional(&self.pool)
@@ -109,16 +113,16 @@ impl MemoryRepo {
 
     pub async fn set_status(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         id: MemoryId,
         status: MemoryStatus,
     ) -> Result<Option<Memory>> {
         sqlx::query_as::<_, Memory>(
             "UPDATE memory SET status = $3, updated_at = now() \
-             WHERE id = $1 AND chat_id = $2 RETURNING *",
+             WHERE id = $1 AND conversation_id = $2 RETURNING *",
         )
         .bind(id.0)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(status.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -127,28 +131,28 @@ impl MemoryRepo {
 
     pub async fn set_pinned(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         id: MemoryId,
         pinned: bool,
     ) -> Result<Option<Memory>> {
         sqlx::query_as::<_, Memory>(
             "UPDATE memory SET pinned = $3, updated_at = now() \
-             WHERE id = $1 AND chat_id = $2 RETURNING *",
+             WHERE id = $1 AND conversation_id = $2 RETURNING *",
         )
         .bind(id.0)
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(pinned)
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
     }
 
-    pub async fn pinned(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Memory>> {
+    pub async fn pinned(&self, conversation_id: ConversationId, limit: i64) -> Result<Vec<Memory>> {
         sqlx::query_as::<_, Memory>(
-            "SELECT * FROM memory WHERE chat_id = $1 AND pinned AND status = $2 \
+            "SELECT * FROM memory WHERE conversation_id = $1 AND pinned AND status = $2 \
              ORDER BY created_at DESC LIMIT $3",
         )
-        .bind(chat_id.0)
+        .bind(conversation_id.0)
         .bind(MemoryStatus::Active.as_str())
         .bind(limit)
         .fetch_all(&self.pool)
@@ -159,7 +163,7 @@ impl MemoryRepo {
     /// Nearest memories by meaning; a memory that is no longer active is invisible to retrieval.
     pub async fn search_by_embedding(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<(MemoryId, f64)>> {
@@ -167,11 +171,11 @@ impl MemoryRepo {
             column: "status",
             value: MemoryStatus::Active.as_str(),
         };
-        let rows = vector::search_chat_embedding_vec(
+        let rows = vector::search_conversation_embedding_vec(
             &self.pool,
-            vector::ChatTable::Memory,
+            vector::ConversationTable::Memory,
             query,
-            chat_id,
+            conversation_id,
             Some(filter),
             limit,
         )
@@ -184,14 +188,14 @@ impl MemoryRepo {
 
     pub async fn search_by_keywords(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         keywords: &[String],
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Memory>> {
         let patterns = lexical::patterns(keywords);
         let query = sqlx::query_as::<_, Memory>(sqlx::AssertSqlSafe(keyword_search_sql().as_str()))
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .bind(MemoryStatus::Active.as_str());
         range
             .bind(query)
@@ -202,19 +206,19 @@ impl MemoryRepo {
             .map_err(Into::into)
     }
 
-    pub async fn by_chat_time(
+    pub async fn by_conversation_time(
         &self,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         range: TimeRange,
         limit: i64,
     ) -> Result<Vec<Memory>> {
         let sql = format!(
-            "SELECT * FROM memory WHERE chat_id = $1 AND status = $2 {} \
+            "SELECT * FROM memory WHERE conversation_id = $1 AND status = $2 {} \
              ORDER BY created_at DESC LIMIT $5",
             window::time_window("created_at", 3)
         );
         let query = sqlx::query_as::<_, Memory>(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .bind(MemoryStatus::Active.as_str());
         range
             .bind(query)
@@ -226,10 +230,10 @@ impl MemoryRepo {
 
     /// Removes the row only when it belongs to this chat; `false` means there was nothing to remove,
     /// which the caller reports as a missing memory rather than a silent success.
-    pub async fn delete(&self, chat_id: ChatId, id: MemoryId) -> Result<bool> {
-        let deleted = sqlx::query("DELETE FROM memory WHERE id = $1 AND chat_id = $2")
+    pub async fn delete(&self, conversation_id: ConversationId, id: MemoryId) -> Result<bool> {
+        let deleted = sqlx::query("DELETE FROM memory WHERE id = $1 AND conversation_id = $2")
             .bind(id.0)
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .execute(&self.pool)
             .await?;
         Ok(deleted.rows_affected() > 0)
@@ -240,17 +244,17 @@ impl MemoryRepo {
     /// without messages leaves.
     pub(crate) async fn delete_in_range_in_tx(
         tx: &mut sqlx::PgConnection,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         message_ids: &[MessageId],
         range: TimeRange,
     ) -> Result<u64> {
         let sql = format!(
-            "DELETE FROM memory WHERE chat_id = $1 \
+            "DELETE FROM memory WHERE conversation_id = $1 \
              AND (source_message_ids && $2::bigint[] OR {})",
             window::predicate("created_at", 3),
         );
         let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(chat_id.0)
+            .bind(conversation_id.0)
             .bind(message_ids);
         let deleted = range.bind_execute(query).execute(&mut *tx).await?;
         Ok(deleted.rows_affected())
@@ -260,7 +264,7 @@ impl MemoryRepo {
 /// The lexical leg's statement: the keyword patterns are bound at `$5`.
 fn keyword_search_sql() -> String {
     format!(
-        "SELECT * FROM memory WHERE chat_id = $1 AND status = $2 {} \
+        "SELECT * FROM memory WHERE conversation_id = $1 AND status = $2 {} \
          AND {} \
          ORDER BY {}, \
                   created_at DESC LIMIT $6",

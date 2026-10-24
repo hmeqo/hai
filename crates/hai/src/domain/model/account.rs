@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 
-use crate::domain::vo::{AccountId, IdentityId, PlatformAccountMeta, enum_column};
+use crate::domain::vo::{AccountId, PlatformAccountMeta, PlatformChannelId, enum_column};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Account {
     pub id: AccountId,
-    pub identity_id: Option<IdentityId>,
 
-    pub platform: Platform,
+    pub channel_id: PlatformChannelId,
     pub external_id: String,
     pub meta: Option<serde_json::Value>,
 
@@ -44,6 +43,7 @@ impl Account {
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     Telegram,
+    Teamspeak,
 }
 
 impl Platform {

@@ -4,18 +4,18 @@ use crate::{
     agentcore::{render::render_xml, tool::ToolError},
     domain::{
         service::Services,
-        vo::{ChatId, MemoryId, TopicId},
+        vo::{ConversationId, MemoryId, TopicId},
     },
 };
 
 pub(super) async fn topic(
     services: &Services,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     topic_id: TopicId,
     offset: Option<u64>,
     limit: Option<u64>,
 ) -> Result<ReadOutput, ToolError> {
-    let topic = services.topic.get(chat_id, topic_id).await?;
+    let topic = services.topic.get(conversation_id, topic_id).await?;
 
     let start = offset.unwrap_or(1).max(1) as usize - 1;
     let total = services.topic.notes_count(topic_id).await? as usize;
@@ -39,10 +39,10 @@ pub(super) async fn topic(
 
 pub(super) async fn memory(
     services: &Services,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     memory_id: MemoryId,
 ) -> Result<ReadOutput, ToolError> {
-    let memory = services.memory.get(chat_id, memory_id).await?;
+    let memory = services.memory.get(conversation_id, memory_id).await?;
     Ok(ReadOutput::Text {
         content: render_xml(&memory_record(&memory)),
     })

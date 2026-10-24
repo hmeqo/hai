@@ -2,7 +2,7 @@ use crate::{
     domain::{
         model::ScheduledTask,
         repo::Repos,
-        vo::{ChannelKey, ChatEntry, ChatId, RepeatInterval, ScheduledTaskId},
+        vo::{ChannelKey, ChatEntry, ChatId, ConversationId, RepeatInterval, ScheduledTaskId},
     },
     error::{AppError, Result},
 };
@@ -85,7 +85,7 @@ impl ScheduledTaskService {
         task: &ScheduledTask,
         entry: &ChatEntry,
         now: jiff::Timestamp,
-    ) -> Result<()> {
+    ) -> Result<ConversationId> {
         self.repos.scheduled_task.fire(task, entry, now).await
     }
 }

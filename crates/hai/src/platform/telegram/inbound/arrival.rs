@@ -15,7 +15,7 @@ use crate::{
         model::{ChatType, Platform},
         repo::ChangeKind,
         vo::{
-            AttachmentKind, AttachmentMeta, EntryAudience, MediaCodec, MessageMeta,
+            AttachmentKind, AttachmentMeta, ChatAddress, EntryAudience, MediaCodec, MessageMeta,
             PlatformAccountMeta, PlatformMessageMeta, TelegramAccountMeta, TelegramMessageMeta,
             TelegramQuote,
         },
@@ -78,7 +78,7 @@ pub(in crate::platform::telegram) fn arrival(
     Ok(Some(Arrival {
         platform: Platform::Telegram,
         chat: ArrivalChat {
-            external_id: msg.chat.id.to_string(),
+            address: ChatAddress::new(None, msg.chat.id.to_string()),
             kind: chat_type,
             title: msg.chat.title().map(str::to_owned),
         },
@@ -105,7 +105,7 @@ pub(in crate::platform::telegram) fn callback_arrival(query: &CallbackQuery) -> 
     Some(Arrival {
         platform: Platform::Telegram,
         chat: ArrivalChat {
-            external_id: message.chat.id.to_string(),
+            address: ChatAddress::new(None, message.chat.id.to_string()),
             kind: chat_type,
             title: message.chat.title().map(str::to_owned),
         },

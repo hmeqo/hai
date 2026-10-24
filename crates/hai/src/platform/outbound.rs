@@ -14,7 +14,7 @@ use crate::{
     domain::{
         model::{Chat, ChatType, NewAttachment, Platform},
         service::{NewAgentMessage, Services},
-        vo::{AccountId, ChannelKey, ChatId, MessageId, attachment_id},
+        vo::{AccountId, ChannelKey, ChatId, ConversationId, MessageId, attachment_id},
     },
     error::{AppError, Result},
     platform::adapter::{ChannelAdapter, SentAttachment, SentMessage, WireMessage, WireReference},
@@ -42,11 +42,27 @@ impl OutboundRecorder {
 
     /// The chat row behind one internal id; an id without a row is a bug the caller must see.
     async fn resolve_chat(&self, chat_id: ChatId) -> Result<Chat> {
-        self.services
+        let chat = self
+            .services
             .platform
             .get_chat_by_id(chat_id)
             .await?
-            .ok_or_else(|| AppError::message(format!("Chat not found for internal id: {chat_id}")))
+            .ok_or_else(|| {
+                AppError::message(format!("Chat not found for internal id: {chat_id}"))
+            })?;
+        let channel = self
+            .services
+            .platform
+            .platform_channel(chat.channel_id)
+            .await?;
+        if &channel.channel_key != self.adapter.key() {
+            return Err(AppError::message(format!(
+                "Chat {chat_id} belongs to channel {}, not {}",
+                channel.channel_key,
+                self.adapter.key()
+            )));
+        }
+        Ok(chat)
     }
 
     /// The reference as the platform needs it: the target message's own id and, when the sender
@@ -102,16 +118,19 @@ impl OutboundRecorder {
     /// The row that records what left: one message, and one attachment row per file it carried.
     async fn record(
         &self,
-        chat_id: ChatId,
+        chat: &Chat,
         reply: &ReplyTo,
         text: String,
         sent: SentMessage,
     ) -> Result<()> {
         let row = sent_row(
-            self.adapter.platform(),
-            self.bot_account_id,
-            &self.model,
-            chat_id,
+            SentRowIdentity {
+                platform: self.adapter.platform(),
+                account_id: self.bot_account_id,
+                model: &self.model,
+                chat_id: chat.id,
+                conversation_id: chat.conversation_id,
+            },
             reply,
             text,
             sent,
@@ -122,15 +141,27 @@ impl OutboundRecorder {
 }
 
 /// The message row one accepted send becomes.
-fn sent_row(
+struct SentRowIdentity<'a> {
     platform: Platform,
     account_id: AccountId,
-    model: &str,
+    model: &'a str,
     chat_id: ChatId,
+    conversation_id: ConversationId,
+}
+
+fn sent_row(
+    identity: SentRowIdentity<'_>,
     reply: &ReplyTo,
     text: String,
     sent: SentMessage,
 ) -> NewAgentMessage {
+    let SentRowIdentity {
+        platform,
+        account_id,
+        model,
+        chat_id,
+        conversation_id,
+    } = identity;
     let SentMessage {
         external_id,
         sent_at,
@@ -149,6 +180,7 @@ fn sent_row(
 
     NewAgentMessage {
         chat_id,
+        conversation_id,
         account_id: Some(account_id),
         text,
         attachments,
@@ -233,15 +265,18 @@ impl Channel for OutboundRecorder {
             .resolve_reference(&chat, reply.reference, reply.quote.as_deref())
             .await?;
         if let Some(topic_id) = reply.topic_id {
-            // A topic belongs to one chat; linking another chat's topic would file this message
-            // under a record it is not part of.
-            self.services.topic.get(chat_id, topic_id).await?;
+            // A topic belongs to one Conversation; linking another Conversation's topic would file
+            // this message under a record it is not part of.
+            self.services
+                .topic
+                .get(chat.conversation_id, topic_id)
+                .await?;
         }
         let payload_text = text_of(&payload);
         let sent = self
             .adapter
             .send(WireMessage {
-                chat_external_id: chat.external_id,
+                chat: self.services.platform.chat_address(&chat).await?,
                 reference,
                 payload,
             })
@@ -252,14 +287,15 @@ impl Channel for OutboundRecorder {
             .first()
             .and_then(|attachment| attachment.caption.clone())
             .unwrap_or(payload_text);
-        self.record(chat_id, &reply, text, sent).await
+        self.record(&chat, &reply, text, sent).await
     }
 
     /// The handle's chat is resolved so the platform gets its own id; the copy then goes out the way
     /// the inbound contract delivers host copy, and nothing is recorded.
     async fn notice(&self, chat_id: ChatId, text: &str) -> Result<()> {
         let chat = self.resolve_chat(chat_id).await?;
-        self.adapter.notice(&chat.external_id, text).await
+        let address = self.services.platform.chat_address(&chat).await?;
+        self.adapter.notice(&address, text).await
     }
 
     async fn delete_messages(&self, chat_id: ChatId, ids: &[String]) -> Result<DeleteReport> {
@@ -318,10 +354,13 @@ mod tests {
     fn a_dropped_reference_is_not_recorded() {
         let reply_to = reply(None, Some(MessageId(3)));
         let row = sent_row(
-            Platform::Telegram,
-            AccountId(1),
-            "a-model",
-            ChatId(9),
+            SentRowIdentity {
+                platform: Platform::Telegram,
+                account_id: AccountId(1),
+                model: "a-model",
+                chat_id: ChatId(9),
+                conversation_id: ConversationId(1),
+            },
             &reply_to,
             String::new(),
             sent(false, Vec::new()),
@@ -335,10 +374,13 @@ mod tests {
     fn an_attachment_without_a_handle_falls_back_to_its_occurrence_id() {
         let reply_to = reply(None, None);
         let row = sent_row(
-            Platform::Telegram,
-            AccountId(1),
-            "a-model",
-            ChatId(9),
+            SentRowIdentity {
+                platform: Platform::Telegram,
+                account_id: AccountId(1),
+                model: "a-model",
+                chat_id: ChatId(9),
+                conversation_id: ConversationId(1),
+            },
             &reply_to,
             String::new(),
             sent(
@@ -373,10 +415,13 @@ mod tests {
     #[test]
     fn an_attachment_with_a_handle_keeps_it() {
         let row = sent_row(
-            Platform::Telegram,
-            AccountId(1),
-            "a-model",
-            ChatId(9),
+            SentRowIdentity {
+                platform: Platform::Telegram,
+                account_id: AccountId(1),
+                model: "a-model",
+                chat_id: ChatId(9),
+                conversation_id: ConversationId(1),
+            },
             &reply(None, None),
             String::new(),
             sent(

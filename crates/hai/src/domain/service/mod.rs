@@ -1,5 +1,5 @@
+pub mod conversation;
 pub mod conversation_record;
-pub mod identity;
 pub mod knowledge;
 pub mod memory;
 pub mod message;
@@ -13,9 +13,9 @@ pub mod topic;
 
 use std::sync::Arc;
 
+pub use conversation::{ChatSummary, ConversationService, ConversationSummary};
 pub use conversation_record::ConversationRecordService;
 use derive_more::Deref;
-pub use identity::IdentityService;
 pub use knowledge::{KnowledgeService, RelatedChunk};
 pub use memory::{MemoryService, RecordOutcome};
 pub use message::{MessageService, NewAgentMessage};
@@ -39,7 +39,6 @@ pub struct Services(Arc<ServicesInner>);
 #[derive(Debug)]
 pub struct ServicesInner {
     pub platform: PlatformService,
-    pub identity: IdentityService,
     pub topic: TopicService,
     pub message: MessageService,
     pub memory: MemoryService,
@@ -57,7 +56,6 @@ pub struct ServicesInner {
 impl Services {
     pub fn new(repos: Repos, embedding: Arc<dyn EmbeddingService>, scorer: Option<Scorer>) -> Self {
         let platform = PlatformService::new(repos.clone());
-        let identity = IdentityService::new(repos.clone());
         let message = MessageService::new(repos.clone());
         let conversation = ConversationRecordService::new(repos.clone());
         let scheduled_task = ScheduledTaskService::new(repos.clone());
@@ -71,7 +69,6 @@ impl Services {
 
         Self(Arc::new(ServicesInner {
             platform,
-            identity,
             topic,
             message,
             memory,

@@ -2,11 +2,12 @@
 //! invocation built.
 
 use super::{
-    ArgError, ArgName, Command, DigestArg, Grammar, Invocation, LanguageArg, OptionSpec, Parsed,
-    Positional, PurgeArg, SystemCommand, args::parse, digest::Delivery,
+    ArgError, ArgName, Command, ContentPolicyArg, DigestArg, Grammar, Invocation, LanguageArg,
+    ModelArg, OptionSpec, Parsed, PersonaArg, Positional, PurgeArg, SystemCommand, args::parse,
+    digest::Delivery,
 };
 use crate::{
-    agentcore::Language,
+    config::conversation::{ContentPolicyPreset, Language},
     domain::vo::{AgentCommand, PurgeSurface, PurgeSurfaces, Stretch},
 };
 
@@ -27,6 +28,35 @@ pub(super) const LANG_GRAMMAR: Grammar = Grammar {
     }],
     raw_tail: false,
 };
+
+pub(super) const MODEL_GRAMMAR: Grammar = Grammar {
+    positionals: &[Positional {
+        name: "ALIAS",
+        required: false,
+    }],
+    options: &[OptionSpec {
+        name: "reset",
+        value: None,
+    }],
+    raw_tail: false,
+};
+
+/// The named preset `/content-policy` takes.
+pub(super) const PRESET: &str = "PRESET";
+
+pub(super) const CONTENT_POLICY_GRAMMAR: Grammar = Grammar {
+    positionals: &[Positional {
+        name: PRESET,
+        required: false,
+    }],
+    options: &[OptionSpec {
+        name: "reset",
+        value: None,
+    }],
+    raw_tail: false,
+};
+
+pub(super) const PERSONA_GRAMMAR: Grammar = Grammar::RAW;
 
 /// The range spelling shared by `/purge` and `/digest`.
 pub(super) const RANGE: &str = "RANGE";
@@ -98,14 +128,6 @@ pub(super) fn status(payload: &str) -> Invocation {
     )
 }
 
-pub(super) fn organize_memory(payload: &str) -> Invocation {
-    unit(
-        payload,
-        &Grammar::NONE,
-        Command::Agent(AgentCommand::OrganizeMemory),
-    )
-}
-
 pub(super) fn lang(payload: &str) -> Invocation {
     let parsed = match read_args(payload, &LANG_GRAMMAR) {
         Ok(parsed) => parsed,
@@ -131,6 +153,79 @@ pub(super) fn lang(payload: &str) -> Invocation {
         None => LanguageArg::Current,
     };
     Invocation::Ready(Command::System(SystemCommand::Lang(arg)))
+}
+
+pub(super) fn model(payload: &str) -> Invocation {
+    let parsed = match read_args(payload, &MODEL_GRAMMAR) {
+        Ok(parsed) => parsed,
+        Err(invocation) => return invocation,
+    };
+    if parsed.given("reset") {
+        if parsed.positional(0).is_some() {
+            return Invocation::Unreadable(ArgError::Conflict(
+                ArgName::Positional("ALIAS"),
+                ArgName::Option("reset"),
+            ));
+        }
+        return Invocation::Ready(Command::System(SystemCommand::Model(ModelArg::Reset)));
+    }
+    let arg = match parsed.positional(0) {
+        Some("reset") => ModelArg::Reset,
+        Some(alias) => ModelArg::Set(alias.to_owned()),
+        None => ModelArg::Current,
+    };
+    Invocation::Ready(Command::System(SystemCommand::Model(arg)))
+}
+
+pub(super) fn content_policy(payload: &str) -> Invocation {
+    let parsed = match read_args(payload, &CONTENT_POLICY_GRAMMAR) {
+        Ok(parsed) => parsed,
+        Err(invocation) => return invocation,
+    };
+    if parsed.given("reset") {
+        if parsed.positional(0).is_some() {
+            return Invocation::Unreadable(ArgError::Conflict(
+                ArgName::Positional(PRESET),
+                ArgName::Option("reset"),
+            ));
+        }
+        return Invocation::Ready(Command::System(SystemCommand::ContentPolicy(
+            ContentPolicyArg::Reset,
+        )));
+    }
+    let arg = match parsed.positional(0) {
+        Some(preset) => match preset.parse::<ContentPolicyPreset>() {
+            Ok(preset) => ContentPolicyArg::Set(preset),
+            Err(_) => {
+                return Invocation::Unreadable(ArgError::BadValue {
+                    arg: ArgName::Positional(PRESET),
+                    value: preset.to_owned(),
+                });
+            }
+        },
+        None => ContentPolicyArg::Current,
+    };
+    Invocation::Ready(Command::System(SystemCommand::ContentPolicy(arg)))
+}
+
+pub(super) fn persona(payload: &str) -> Invocation {
+    let text = payload.trim();
+    if text == "--help" || text == "-h" {
+        return Invocation::Help;
+    }
+    // `--` escapes the whole tail: `persona -- --reset` sets the literal text, not the flag.
+    let escaped = text.strip_prefix("-- ");
+    let text = escaped.unwrap_or(text);
+    if escaped.is_none() && (text == "--reset" || text.ends_with(" --reset")) {
+        return Invocation::Ready(Command::System(SystemCommand::Persona(PersonaArg::Reset)));
+    }
+    let text = text.trim();
+    let arg = if text.is_empty() || text == "--" {
+        PersonaArg::Current
+    } else {
+        PersonaArg::Set(text.to_owned())
+    };
+    Invocation::Ready(Command::System(SystemCommand::Persona(arg)))
 }
 
 pub(super) fn purge(payload: &str) -> Invocation {
@@ -318,7 +413,8 @@ mod tests {
 
     /// The invocation a payload denotes for the command declared under `name`.
     fn parsed(name: &str, payload: &str) -> Invocation {
-        let declared = crate::agent::command::find(name).expect("a declared command");
+        let declared = crate::agent::command::find(name, crate::agent::command::CommandGates::ALL)
+            .expect("a declared command");
         (declared.parse)(payload)
     }
 
@@ -326,21 +422,15 @@ mod tests {
     fn parse_reads_each_payload() {
         use Command::{Agent, System};
         use LanguageArg::{Current, Reset, Set, Unsupported};
-        use SystemCommand::Lang;
+        use ModelArg::Reset as ModelReset;
+        use PersonaArg::{Reset as PersonaReset, Set as PersonaSet};
+        use SystemCommand::{Lang, Model, Persona};
 
         let ready = Invocation::Ready;
 
         assert_eq!(
             parsed("status", "x"),
             Invocation::Unreadable(ArgError::ExtraPositional("x".into()))
-        );
-        assert_eq!(
-            parsed("organizememory", "x"),
-            Invocation::Unreadable(ArgError::ExtraPositional("x".into()))
-        );
-        assert_eq!(
-            parsed("organizememory", ""),
-            ready(Agent(AgentCommand::OrganizeMemory))
         );
         assert_eq!(parsed("status", ""), ready(System(SystemCommand::Status)));
         assert_eq!(parsed("lang", "  "), ready(System(Lang(Current))));
@@ -366,6 +456,51 @@ mod tests {
                 ArgName::Positional("CODE"),
                 ArgName::Option("reset")
             ))
+        );
+
+        assert_eq!(parsed("model", "reset"), ready(System(Model(ModelReset))));
+        assert_eq!(parsed("model", "--reset"), ready(System(Model(ModelReset))));
+
+        let policy = |arg| System(SystemCommand::ContentPolicy(arg));
+        assert_eq!(
+            parsed("content-policy", ""),
+            ready(policy(ContentPolicyArg::Current))
+        );
+        for preset in ContentPolicyPreset::ALL {
+            assert_eq!(
+                parsed("content-policy", preset.as_str()),
+                ready(policy(ContentPolicyArg::Set(preset))),
+                "{}",
+                preset.as_str()
+            );
+        }
+        assert_eq!(
+            parsed("content-policy", "--reset"),
+            ready(policy(ContentPolicyArg::Reset))
+        );
+        assert_eq!(
+            parsed("content-policy", "anything"),
+            Invocation::Unreadable(ArgError::BadValue {
+                arg: ArgName::Positional(PRESET),
+                value: "anything".into(),
+            }),
+            "an unknown preset is a parse refusal, not a handler case"
+        );
+        assert_eq!(
+            parsed("content-policy", "safe --reset"),
+            Invocation::Unreadable(ArgError::Conflict(
+                ArgName::Positional(PRESET),
+                ArgName::Option("reset")
+            ))
+        );
+
+        assert_eq!(
+            parsed("persona", "--reset"),
+            ready(System(Persona(PersonaReset)))
+        );
+        assert_eq!(
+            parsed("persona", "-- --reset"),
+            ready(System(Persona(PersonaSet("--reset".into()))))
         );
 
         assert_eq!(
@@ -617,8 +752,10 @@ mod tests {
         for name in [
             "status",
             "lang",
+            "model",
+            "content-policy",
+            "persona",
             "purge",
-            "organizememory",
             "explain",
             "digest",
         ] {

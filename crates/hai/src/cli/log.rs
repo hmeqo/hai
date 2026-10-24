@@ -3,8 +3,8 @@ use strum::IntoEnumIterator;
 use crate::{
     config::AppConfig,
     domain::{
-        db,
         repo::Repos,
+        storage,
         vo::{ChatId, EventKind},
     },
     error::AppError,
@@ -15,7 +15,7 @@ pub async fn execute(args: super::LogArgs, cfg: &AppConfig) -> crate::error::Res
     if args.chat == Some(0) {
         return Err(AppError::message("chat 0 is not a chat id".to_owned()));
     }
-    let pool = db::init_db(&cfg.database).await?;
+    let pool = storage::init_db(&cfg.database).await?;
     let repos = Repos::new(pool);
 
     if let Some(seq) = args.id {

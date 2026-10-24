@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::{Attachment, Perception},
         service::Services,
-        vo::{AttachmentId, PerceptionId, Subject},
+        vo::{AttachmentId, ConversationId, PerceptionId, Subject},
     },
     error::Result,
 };
@@ -23,12 +23,16 @@ pub struct LoadedPerceptions {
 /// the URLs the messages name.
 pub async fn load_perceptions(
     services: &Services,
+    conversation_id: ConversationId,
     attachments: &[Attachment],
     texts: &[String],
     first_turn: bool,
 ) -> Result<LoadedPerceptions> {
     let subjects: Vec<Subject> = attachments.iter().map(Attachment::subject).collect();
-    let rows = services.perception.find_by_subjects(&subjects).await?;
+    let rows = services
+        .perception
+        .find_by_subjects(conversation_id, &subjects)
+        .await?;
 
     let mut by_subject: HashMap<Subject, Vec<Perception>> = HashMap::new();
     for row in rows {
@@ -62,14 +66,18 @@ pub async fn load_perceptions(
         by_attachment,
         same_resource_as,
         url_items: if first_turn {
-            load_urls(services, texts).await?
+            load_urls(services, conversation_id, texts).await?
         } else {
             Vec::new()
         },
     })
 }
 
-async fn load_urls(services: &Services, texts: &[String]) -> Result<Vec<Perception>> {
+async fn load_urls(
+    services: &Services,
+    conversation_id: ConversationId,
+    texts: &[String],
+) -> Result<Vec<Perception>> {
     // Canonicalize through `WebUrl` so the lookup key matches the one the `read` tool stored.
     let subjects: Vec<Subject> = texts
         .iter()
@@ -77,7 +85,10 @@ async fn load_urls(services: &Services, texts: &[String]) -> Result<Vec<Percepti
         .filter_map(|raw| WebUrl::parse(&raw).ok())
         .map(|url| Subject::url(url.as_str()))
         .collect();
-    let rows = services.perception.find_by_subjects(&subjects).await?;
+    let rows = services
+        .perception
+        .find_by_subjects(conversation_id, &subjects)
+        .await?;
 
     let mut seen: HashSet<PerceptionId> = HashSet::new();
     Ok(rows.into_iter().filter(|row| seen.insert(row.id)).collect())

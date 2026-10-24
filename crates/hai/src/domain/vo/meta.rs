@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case", tag = "platform")]
 pub enum PlatformAccountMeta {
     Telegram(TelegramAccountMeta),
+    Teamspeak(TeamspeakAccountMeta),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamspeakAccountMeta {
+    pub nickname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -22,12 +28,14 @@ impl PlatformAccountMeta {
                 Some(last) => format!("{} {}", v.first_name, last),
                 None => v.first_name.clone(),
             },
+            PlatformAccountMeta::Teamspeak(v) => v.nickname.clone(),
         }
     }
 
     pub fn username(&self) -> Option<String> {
         match self {
             PlatformAccountMeta::Telegram(v) => v.username.clone(),
+            PlatformAccountMeta::Teamspeak(_) => None,
         }
     }
 }
@@ -83,4 +91,18 @@ pub struct TelegramQuote {
     /// Position of the quoted part in the original message, in UTF-16 code units.
     pub position: u32,
     pub is_manual: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_teamspeak_account_is_named_by_its_nickname() {
+        let meta = PlatformAccountMeta::Teamspeak(TeamspeakAccountMeta {
+            nickname: "Hai".to_owned(),
+        });
+        assert_eq!(meta.full_name(), "Hai");
+        assert_eq!(meta.username(), None);
+    }
 }

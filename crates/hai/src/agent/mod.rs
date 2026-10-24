@@ -5,6 +5,7 @@ pub(crate) mod environment;
 pub(crate) mod events;
 pub(crate) mod host_copy;
 pub(crate) mod inbound;
+pub(crate) mod model;
 pub(crate) mod multimodal;
 pub(crate) mod process;
 pub(crate) mod prompt;

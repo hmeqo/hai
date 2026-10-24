@@ -2,13 +2,15 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-use super::{AgentCommand, MessageId, PurgeSpec, ScheduledTaskId};
+use super::{AgentCommand, ChatId, HostAction, MessageId, PurgeSpec, ScheduledTaskId};
 
 /// One change to a chat, in the order it happened. The content is not copied here: the message row
 /// holds the current value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatEntry {
     pub id: Uuid,
+    /// The Chat this change arrived through. A Conversation may hold several; a Turn selects one.
+    pub chat_id: ChatId,
     /// When the change happened: a created message carries the platform's send time, an edited one
     /// its edit time, a command or a scheduled task the moment it was enqueued.
     pub at: jiff::Timestamp,
@@ -34,6 +36,8 @@ pub struct ChatEntry {
 pub enum EntryAudience {
     Agent,
     Bystanders,
+    /// A change the host made on its own: context for the next Turn, never a reason to start one.
+    Context,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +51,11 @@ pub enum EntryKind {
         edited_at: jiff::Timestamp,
     },
     Command(AgentCommand),
+    /// The content policy became stricter; the chapter reopens through the existing wrap-up.
+    PolicyChanged,
+    /// A host command changed a Conversation setting. The agent reads it with the next Turn: it is
+    /// context, not an instruction and not a reason to start one.
+    HostAction(HostAction),
     Scheduled {
         task_id: Option<ScheduledTaskId>,
         description: String,
@@ -57,9 +66,15 @@ pub enum EntryKind {
 }
 
 impl ChatEntry {
-    pub fn new(audience: EntryAudience, kind: EntryKind, at: jiff::Timestamp) -> Self {
+    pub fn new(
+        chat_id: ChatId,
+        audience: EntryAudience,
+        kind: EntryKind,
+        at: jiff::Timestamp,
+    ) -> Self {
         Self {
             id: Uuid::now_v7(),
+            chat_id,
             at,
             audience,
             kind,
@@ -70,7 +85,24 @@ impl ChatEntry {
         match &self.kind {
             EntryKind::MessageCreated { message_id }
             | EntryKind::MessageEdited { message_id, .. } => Some(*message_id),
-            EntryKind::Command(_) | EntryKind::Scheduled { .. } | EntryKind::Purge(_) => None,
+            EntryKind::Command(_)
+            | EntryKind::PolicyChanged
+            | EntryKind::HostAction(_)
+            | EntryKind::Scheduled { .. }
+            | EntryKind::Purge(_) => None,
+        }
+    }
+
+    /// The setting change this entry records, if it records one.
+    pub fn host_action(&self) -> Option<&HostAction> {
+        match &self.kind {
+            EntryKind::HostAction(action) => Some(action),
+            EntryKind::MessageCreated { .. }
+            | EntryKind::MessageEdited { .. }
+            | EntryKind::Command(_)
+            | EntryKind::PolicyChanged
+            | EntryKind::Scheduled { .. }
+            | EntryKind::Purge(_) => None,
         }
     }
 }
@@ -90,7 +122,8 @@ mod tests {
                 message_id: MessageId(7),
                 edited_at: at,
             },
-            EntryKind::Command(AgentCommand::OrganizeMemory),
+            EntryKind::Command(AgentCommand::Explain(None)),
+            EntryKind::HostAction(HostAction::PersonaChanged),
             EntryKind::Scheduled {
                 task_id: Some(ScheduledTaskId(Uuid::from_u128(9))),
                 description: "take the medication".into(),
@@ -100,9 +133,10 @@ mod tests {
                 surfaces: crate::domain::vo::PurgeSurfaces::all(),
             }),
         ] {
-            let entry = ChatEntry::new(EntryAudience::Agent, kind.clone(), at);
+            let entry = ChatEntry::new(ChatId(1), EntryAudience::Agent, kind.clone(), at);
             let wire = serde_json::to_value(&entry).expect("serializable");
             let back: ChatEntry = serde_json::from_value(wire).expect("deserializable");
+            assert_eq!(back.chat_id, ChatId(1));
             assert_eq!(back, entry);
             assert_eq!(back.kind, kind);
         }

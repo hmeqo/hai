@@ -7,10 +7,7 @@ pub mod types;
 pub(crate) use builder::build_prompt;
 pub(crate) use render_context::RenderContext;
 pub(crate) use sections::{
-    context::{
-        build_situation_section, render_context_for_digest, render_main_context,
-        render_situation_only,
-    },
+    context::{build_situation_section, render_context_for_digest, render_main_context},
     fmt,
 };
 pub use types::ContextMessages;

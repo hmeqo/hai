@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::Event,
         repo::window,
-        vo::{ChatId, EventKind, TimeRange},
+        vo::{ChatId, ConversationId, EventKind, TimeRange},
     },
     error::Result,
 };
@@ -103,14 +103,17 @@ impl EventRepo {
         Ok(q.fetch_one(&self.pool).await?)
     }
 
-    /// Deletes one chat's events inside a window: what the audit trail holds of the purge itself is
-    /// deleted after the write that recorded it left the bus, never inside the purge's transaction.
-    pub async fn delete_in_range(&self, chat_id: ChatId, range: TimeRange) -> Result<u64> {
+    pub async fn delete_in_range_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        range: TimeRange,
+    ) -> Result<u64> {
         let sql = format!(
-            "DELETE FROM event WHERE (payload->>'chat_id')::bigint = $1 {}",
+            "DELETE FROM event WHERE (payload->>'chat_id')::bigint IN \
+             (SELECT id FROM chat WHERE conversation_id = $1) {}",
             window::time_window("created_at", 2),
         );
-        let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(conversation_id.0);
         let deleted = range.bind_execute(query).execute(&self.pool).await?;
         Ok(deleted.rows_affected())
     }

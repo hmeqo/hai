@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "command", content = "args", rename_all = "snake_case")]
 pub enum AgentCommand {
-    OrganizeMemory,
     Explain(Option<String>),
 }
 
@@ -22,7 +21,6 @@ mod tests {
     #[test]
     fn a_command_round_trips_through_its_wire_form() {
         for command in [
-            AgentCommand::OrganizeMemory,
             AgentCommand::Explain(None),
             AgentCommand::Explain(Some("borrow checker".to_owned())),
         ] {
@@ -40,10 +38,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(AgentCommand::Explain(None)).expect("serialize"),
             serde_json::json!({ "command": "explain", "args": null })
-        );
-        assert_eq!(
-            serde_json::to_value(AgentCommand::OrganizeMemory).expect("serialize"),
-            serde_json::json!({ "command": "organize_memory" })
         );
     }
 

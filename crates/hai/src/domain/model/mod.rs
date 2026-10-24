@@ -1,30 +1,30 @@
 pub mod account;
 pub mod attachment;
 pub mod chat;
-pub mod chat_preference;
+pub mod conversation_preference;
 pub mod conversation_record;
 pub mod event;
-pub mod identity;
 pub mod knowledge_chunk;
 pub mod knowledge_document;
 pub mod memory;
 pub mod message;
 pub mod perception;
+pub mod platform_channel;
 pub mod scheduled_task;
 pub mod topic;
 
 pub use account::{Account, Platform};
 pub use attachment::{Attachment, AttachmentHandle, NewAttachment};
-pub use chat::{Chat, ChatType, NewChat};
-pub use chat_preference::ChatPreference;
+pub use chat::{Chat, ChatLocation, ChatRoster, ChatType, NewChat, chat_address};
+pub use conversation_preference::ConversationPreference;
 pub use conversation_record::ConversationRecord;
 pub use event::Event;
-pub use identity::Identity;
 pub use knowledge_chunk::KnowledgeChunk;
 pub use knowledge_document::{KnowledgeDocument, KnowledgeDocumentMeta};
 pub use memory::{Memory, MemoryKind, MemoryStatus, NewMemory};
 pub use message::{Message, MessageRole, NewMessage};
 pub use perception::Perception;
+pub use platform_channel::PlatformChannel;
 pub use scheduled_task::ScheduledTask;
 use sqlx::ValueRef;
 pub(crate) use topic::embed_text;
@@ -64,7 +64,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        agentcore::Language,
+        config::conversation::Language,
         domain::vo::{
             AgentEventPayload, AttachmentKind, AttachmentParser, BatchComposition, ChatEntry,
             EntryAudience, EntryKind, EventKind, MessageId, ModelRetryReason, PurgeCounts,
@@ -80,6 +80,7 @@ mod tests {
         let at = jiff::Timestamp::from_second(1_700_000_000).expect("timestamp");
         let entry = |audience| {
             ChatEntry::new(
+                crate::domain::vo::ChatId(1),
                 audience,
                 EntryKind::MessageCreated {
                     message_id: MessageId(1),

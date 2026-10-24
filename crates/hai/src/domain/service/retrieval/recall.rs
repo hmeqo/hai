@@ -9,7 +9,7 @@ use crate::{
         model::{Memory, Topic},
         repo::lexical::{MAX_LEXICAL_TERMS, lexical_terms},
         service::Services,
-        vo::{ChatId, MemoryId, TimeRange, TopicId},
+        vo::{ConversationId, MemoryId, TimeRange, TopicId},
     },
     error::Result,
 };
@@ -88,7 +88,7 @@ enum RecallKey {
 /// rank, and a configured reranker reorders the fusion.
 pub async fn recall(
     services: &Services,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     query: RecallQuery,
 ) -> Result<Vec<RecallItem>> {
     let pool = rank::pool(services.scorer.as_ref(), query.limit);
@@ -111,7 +111,7 @@ pub async fn recall(
             lists.push(
                 services
                     .memory
-                    .search_related(chat_id, &embedding, fetch)
+                    .search_related(conversation_id, &embedding, fetch)
                     .await?
                     .into_iter()
                     .map(RecallItem::Memory)
@@ -122,7 +122,7 @@ pub async fn recall(
             lists.push(
                 services
                     .topic
-                    .search_related(chat_id, &embedding, fetch)
+                    .search_related(conversation_id, &embedding, fetch)
                     .await?
                     .into_iter()
                     .map(RecallItem::Topic)
@@ -136,7 +136,7 @@ pub async fn recall(
             lists.push(
                 services
                     .memory
-                    .search_keywords(chat_id, &keywords, query.range, fetch)
+                    .search_keywords(conversation_id, &keywords, query.range, fetch)
                     .await?
                     .into_iter()
                     .map(RecallItem::Memory)
@@ -147,7 +147,7 @@ pub async fn recall(
             lists.push(
                 services
                     .topic
-                    .search_keywords(chat_id, &keywords, query.range, fetch)
+                    .search_keywords(conversation_id, &keywords, query.range, fetch)
                     .await?
                     .into_iter()
                     .map(RecallItem::Topic)
@@ -157,7 +157,7 @@ pub async fn recall(
     }
 
     if lists.is_empty() {
-        return list_by_time(services, chat_id, &query, fetch).await;
+        return list_by_time(services, conversation_id, &query, fetch).await;
     }
 
     let fusion = reciprocal_rank_fusion(lists, RecallItem::key, pool);
@@ -188,7 +188,7 @@ fn items_from(fusion: Vec<(RecallItem, f64)>, limit: i64) -> Vec<RecallItem> {
 
 async fn list_by_time(
     services: &Services,
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     query: &RecallQuery,
     fetch: i64,
 ) -> Result<Vec<RecallItem>> {
@@ -197,7 +197,7 @@ async fn list_by_time(
         items.extend(
             services
                 .memory
-                .list_by_time(chat_id, query.range, fetch)
+                .list_by_time(conversation_id, query.range, fetch)
                 .await?
                 .into_iter()
                 .map(RecallItem::Memory),
@@ -207,7 +207,7 @@ async fn list_by_time(
         items.extend(
             services
                 .topic
-                .list_by_time(chat_id, query.range, fetch)
+                .list_by_time(conversation_id, query.range, fetch)
                 .await?
                 .into_iter()
                 .map(RecallItem::Topic),

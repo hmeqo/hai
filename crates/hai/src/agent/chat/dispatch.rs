@@ -1,46 +1,74 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tokio::time::Instant;
 
-use super::{BusyPass, ChatAgent, ChatAgentState};
+use super::{BusyPass, ConversationAgent, ConversationAgentState};
 use crate::{
     agent::{
         events::{Doorbell, WakeEvent, WakeEvents, WakeReason},
         prompt::context,
-        run::{TurnContext, TurnOutput},
+        run::{TurnContext, TurnOutput, engine::TurnRun},
     },
-    agentcore::Language,
+    config::conversation::{ContentPolicy, Language},
     domain::{
         model::Message,
         vo::{
-            AgentEvent, AgentEventPayload, BatchComposition, MessageId, SessionRef, StartedBy,
-            TurnNumber,
+            AgentEvent, AgentEventPayload, BatchComposition, ChatEntry, ChatId, EntryKind,
+            HostAction, MessageId, SessionRef, StartedBy, TurnNumber,
         },
     },
     error::Result,
 };
 
-impl ChatAgent {
+impl ConversationAgent {
     /// Starts a turn over the batch as it stands: the batch is the input, so a failure before the
     /// turn starts leaves it untouched for the next attempt.
     pub async fn dispatch(&mut self, doorbell: &Doorbell, started_by: StartedBy) {
-        // The batch was read before this call; an arrival after that read belongs to the next Turn,
-        // and the doorbell keeps a permit for it.
-        doorbell.take_signal();
+        let Some(origin) = self.origin_for_batch() else {
+            tracing::debug!(%self.conversation_id, "no origin chat in this batch");
+            return;
+        };
+        self.membership.activate(origin);
 
-        let language = match self.language().await {
-            Ok(language) => language,
+        let settings = match self
+            .engine
+            .runtime
+            .app
+            .settings
+            .snapshot(self.conversation_id)
+            .await
+        {
+            Ok(settings) => settings,
             Err(e) => {
-                tracing::warn!(%self.chat_id, "language lookup failed: {e}");
+                tracing::warn!(%self.conversation_id, "settings lookup failed: {e}");
                 return self.stand_down();
             }
         };
-        let ctx = self.build_turn_context(self.batch_reasons(), language);
+        let ctx = self.build_turn_context(
+            origin,
+            self.host_actions(),
+            self.batch_reasons(origin),
+            settings.language,
+            settings.persona.clone(),
+            settings.content_policy,
+        );
+        let model = match self.selected_model(settings.model).await {
+            Ok(model) => model,
+            Err(e) => {
+                tracing::warn!(%self.conversation_id, "model selection failed: {e}");
+                return self.stand_down();
+            }
+        };
+        let tools = self
+            .chat(origin)
+            .expect("the origin came from the chat map")
+            .tools
+            .clone();
 
-        let messages = match self.gather_batch().await {
+        let messages = match self.gather_batch(origin).await {
             Ok(messages) => messages,
             Err(e) => {
-                tracing::warn!(%self.chat_id, "gather_batch failed: {e}");
+                tracing::warn!(%self.conversation_id, "gather_batch failed: {e}");
                 return self.stand_down();
             }
         };
@@ -50,12 +78,15 @@ impl ChatAgent {
         let new_message_ids: HashSet<MessageId> = self
             .batch
             .iter()
+            .filter(|entry| entry.chat_id == origin)
             .filter_map(|entry| entry.message_id())
             .collect();
-        let built = match context::build_prompt(&ctx, &messages, is_first, &new_message_ids).await {
+        let built = match context::build_prompt(&ctx, &messages, is_first, &new_message_ids, origin)
+            .await
+        {
             Ok(built) => built,
             Err(e) => {
-                tracing::warn!(%self.chat_id, "build_prompt failed: {e}");
+                tracing::warn!(%self.conversation_id, "build_prompt failed: {e}");
                 return self.stand_down();
             }
         };
@@ -67,17 +98,24 @@ impl ChatAgent {
         // a Turn reads changes, and every change a Turn reads is a reason.
         let Some(reason) = ctx.events.strongest() else {
             tracing::debug!(
-                %self.chat_id,
+                %self.conversation_id,
                 "no wake reason in this batch; the idle loop's own pass reads it",
             );
             return;
         };
 
-        let composition = BatchComposition::of(&self.batch);
+        let composition = BatchComposition::of(
+            &self
+                .batch
+                .iter()
+                .filter(|entry| entry.chat_id == origin)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         let session = SessionRef::main(self.conversation.session());
 
         self.engine.runtime.event_bus().emit(AgentEvent {
-            chat_id: self.chat_id,
+            chat_id: origin,
             session: Some(session),
             payload: AgentEventPayload::TurnStarted {
                 turn: turn_number,
@@ -91,14 +129,26 @@ impl ChatAgent {
 
         let result_rx = self.engine.spawn_turn(
             ctx,
-            self.tools.clone(),
-            messages,
-            doorbell.clone(),
-            turn_number,
-            session,
+            tools,
+            TurnRun {
+                messages,
+                doorbell: doorbell.clone(),
+                steering_since: doorbell.version(origin),
+                turn_number,
+                session,
+                model: &model,
+            },
         );
 
-        self.state = ChatAgentState::busy(result_rx, Instant::now(), BusyPass::Turn);
+        self.state = ConversationAgentState::busy(result_rx, Instant::now(), BusyPass::Turn);
+    }
+
+    /// One origin per Turn: the Chat whose ready entries carry the strongest reason. Ties go to the
+    /// oldest entry, then to the smaller Chat id, so the order is stable.
+    fn origin_for_batch(&self) -> Option<ChatId> {
+        select_origin(&self.batch, |chat_id| {
+            self.chats.get(&chat_id).map(|chat| chat.roster.chat_type)
+        })
     }
 
     /// Commits the turn: the changes it consumed leave the accumulation in the same step as the
@@ -109,53 +159,90 @@ impl ChatAgent {
         }
 
         let last_prompt_tokens = output.steps.last().map(|t| t.prompt_tokens).unwrap_or(0);
-        self.conversation
-            .update(output.messages, output.steps.len(), last_prompt_tokens);
-
-        let consumed = super::consumed_entries(&self.batch);
-        if self.persist_conversation(&consumed).await.is_ok() {
-            self.batch.clear();
+        let origin = self.origin();
+        let consumed = super::consumed_entries(&self.batch, origin);
+        let snapshot = self.conversation.next_snapshot(
+            output.messages,
+            output.steps.len(),
+            last_prompt_tokens,
+        );
+        if let Err(e) = self.persist_conversation(&snapshot, &consumed).await {
+            tracing::warn!(%self.conversation_id, "completed Turn not persisted: {e}");
+            self.pending_persist = Some((snapshot, consumed));
+            self.stand_down();
+            self.end_run();
+            return;
         }
 
+        self.conversation.apply_snapshot(snapshot);
+        self.batch.retain(|entry| !consumed.contains(&entry.id));
+        self.membership.clear_dirty();
         self.retry.reopen();
         self.end_run();
     }
 
-    fn batch_reasons(&self) -> WakeEvents {
+    fn batch_reasons(&self, chat_id: ChatId) -> WakeEvents {
+        let chat_type = self.chats.get(&chat_id).map(|chat| chat.roster.chat_type);
         WakeEvents::new(
             self.batch
                 .iter()
-                .filter_map(|entry| WakeReason::of_entry(entry, self.chat_type).map(WakeEvent::new))
+                .filter(|entry| entry.chat_id == chat_id)
+                .filter_map(|entry| WakeReason::of_entry(entry, chat_type?).map(WakeEvent::new))
                 .collect(),
         )
     }
 
-    pub fn build_turn_context(&self, events: WakeEvents, language: Language) -> TurnContext {
+    /// The host actions the Conversation accumulated: context for this Turn, read and then spent
+    /// like any other change it read.
+    fn host_actions(&self) -> Vec<HostAction> {
+        host_actions_in(&self.batch)
+    }
+
+    pub fn build_turn_context(
+        &self,
+        chat_id: ChatId,
+        host_actions: Vec<HostAction>,
+        events: WakeEvents,
+        language: Language,
+        persona: Option<String>,
+        content_policy: ContentPolicy,
+    ) -> TurnContext {
+        let chat = self
+            .chats
+            .get(&chat_id)
+            .expect("a turn context is built for a member chat");
         TurnContext {
-            tool: self.tool.clone(),
+            tool: chat.tool.clone(),
             app: self.engine.runtime.app.clone(),
-            chat_type: self.chat_type,
+            chat_type: chat.roster.chat_type,
+            origin_chat: chat_id,
+            chats: self.membership.roster(),
+            roster_dirty: self.membership.dirty(),
             language,
+            persona,
+            content_policy,
+            host_actions,
             events,
         }
     }
 
-    /// The language the chat reads its persona and replies in; a failure is the caller's to handle.
+    /// The language the Conversation reads its persona and replies in.
     pub(crate) async fn language(&self) -> Result<Language> {
         self.engine
             .runtime
             .app
             .settings
-            .language(self.chat_id)
+            .language(self.conversation_id)
             .await
     }
 
-    pub async fn gather_batch(&self) -> Result<Vec<Message>> {
+    pub async fn gather_batch(&self, chat_id: ChatId) -> Result<Vec<Message>> {
         let services = self.engine.runtime.services();
 
         let mut ids: Vec<MessageId> = self
             .batch
             .iter()
+            .filter(|entry| entry.chat_id == chat_id)
             .filter_map(|entry| entry.message_id())
             .collect();
         ids.sort_unstable();
@@ -165,11 +252,130 @@ impl ChatAgent {
 
         if self.conversation.is_first_render() {
             let cap = self.engine.runtime.cfg().agent.context.context_seed_cap;
-            messages.extend(services.message.recent_asc(self.chat_id, cap).await?);
+            messages.extend(
+                services
+                    .message
+                    .recent_for_conversation(self.conversation_id, cap)
+                    .await?,
+            );
             messages.sort_by_key(|message| message.id);
             messages.dedup_by_key(|message| message.id);
         }
 
         Ok(messages)
+    }
+}
+
+/// Every host action in the batch, in arrival order. A setting change belongs to the Conversation,
+/// not to the Chat whose command made it.
+fn host_actions_in(batch: &[ChatEntry]) -> Vec<HostAction> {
+    batch
+        .iter()
+        .filter_map(ChatEntry::host_action)
+        .copied()
+        .collect()
+}
+
+/// The Chat whose ready changes carry the strongest reason; ties go to the oldest entry, then to
+/// the smaller Chat id, so the order does not depend on map iteration.
+fn select_origin(
+    batch: &[ChatEntry],
+    chat_type: impl Fn(ChatId) -> Option<crate::domain::model::ChatType>,
+) -> Option<ChatId> {
+    let mut groups: HashMap<ChatId, Vec<&ChatEntry>> = HashMap::new();
+    for entry in batch {
+        if !matches!(entry.kind, EntryKind::Purge(_)) {
+            groups.entry(entry.chat_id).or_default().push(entry);
+        }
+    }
+    groups
+        .into_iter()
+        .filter_map(|(chat_id, entries)| {
+            let chat_type = chat_type(chat_id)?;
+            let events = WakeEvents::new(
+                entries
+                    .iter()
+                    .filter_map(|entry| WakeReason::of_entry(entry, chat_type).map(WakeEvent::new))
+                    .collect(),
+            );
+            let strongest = events.strongest()?;
+            let oldest = entries.iter().map(|entry| entry.at).min()?;
+            Some((chat_id, strongest.strength(), oldest))
+        })
+        .max_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.0.cmp(&a.0))
+        })
+        .map(|(chat_id, _, _)| chat_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        model::ChatType,
+        vo::{EntryAudience, HostAction, MessageId},
+    };
+
+    fn entry(chat_id: ChatId, audience: EntryAudience, at: i64) -> ChatEntry {
+        ChatEntry::new(
+            chat_id,
+            audience,
+            EntryKind::MessageCreated {
+                message_id: MessageId(at),
+            },
+            jiff::Timestamp::from_second(at).expect("timestamp"),
+        )
+    }
+
+    fn host_action(chat_id: ChatId, action: HostAction, at: i64) -> ChatEntry {
+        ChatEntry::new(
+            chat_id,
+            EntryAudience::Context,
+            EntryKind::HostAction(action),
+            jiff::Timestamp::from_second(at).expect("timestamp"),
+        )
+    }
+
+    #[test]
+    fn host_actions_from_every_chat_are_read_in_batch_order() {
+        let batch = vec![
+            host_action(ChatId(2), HostAction::PersonaChanged, 1),
+            host_action(ChatId(1), HostAction::ModelChanged, 2),
+        ];
+
+        assert_eq!(
+            host_actions_in(&batch),
+            vec![HostAction::PersonaChanged, HostAction::ModelChanged]
+        );
+    }
+
+    #[test]
+    fn the_strongest_reason_selects_the_origin() {
+        let batch = vec![
+            entry(ChatId(1), EntryAudience::Agent, 1),
+            entry(ChatId(2), EntryAudience::Bystanders, 0),
+            entry(ChatId(3), EntryAudience::Agent, 3),
+        ];
+        let origin = select_origin(&batch, |id| {
+            Some(if id == ChatId(2) {
+                ChatType::Private
+            } else {
+                ChatType::Group
+            })
+        });
+        assert_eq!(origin, Some(ChatId(2)), "a private chat is a direct reason");
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_oldest_entry_then_the_smaller_chat() {
+        let batch = vec![
+            entry(ChatId(9), EntryAudience::Agent, 5),
+            entry(ChatId(4), EntryAudience::Agent, 5),
+            entry(ChatId(7), EntryAudience::Agent, 6),
+        ];
+        let origin = select_origin(&batch, |_| Some(ChatType::Group));
+        assert_eq!(origin, Some(ChatId(4)));
     }
 }

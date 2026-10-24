@@ -1,10 +1,12 @@
 //! Every word the purge speaks: the confirmation pages, the receipts, and the toast for a button
 //! whose page is gone.
-
 use super::{PurgeReport, dialog::PurgeDialog};
 use crate::{
-    agent::host_copy::stretch_text,
-    agentcore::{Language, PerCatalog},
+    agent::{
+        host_copy::stretch_text,
+        prompt::text::{LanguageText, PerCatalog},
+    },
+    config::conversation::Language,
     domain::vo::{PurgeSpec, PurgeSurface, PurgeSurfaces, Stretch},
 };
 
@@ -119,7 +121,7 @@ pub(crate) fn report(language: Language, report: &PurgeReport) -> String {
 
     if report.spec.surfaces.telegram {
         let line =
-            (TELEGRAM.get(catalog))(report.telegram.deleted, report.telegram.failed.len() as u64);
+            (PLATFORM.get(catalog))(report.telegram.deleted, report.telegram.failed.len() as u64);
         text.push('\n');
         text.push_str(&line);
     }
@@ -131,7 +133,7 @@ pub(crate) fn failed(language: Language, error: &str) -> String {
     (FAILED.get(language.text_catalog()))(error)
 }
 
-/// The confirmed purge could not be stored, so the chat's agent was never rung.
+/// The confirmed purge could not be stored, so the Conversation's agent was never rung.
 pub(crate) fn not_queued(language: Language) -> String {
     NOT_QUEUED.get(language.text_catalog()).into()
 }
@@ -154,11 +156,11 @@ const LABELS: PerCatalog<PurgeLabels> = PerCatalog {
 };
 
 const SURFACE_LABELS: PerCatalog<[&'static str; 4]> = PerCatalog {
-    zh: ["agent 痕迹", "工作区文件", "Telegram 消息", "审计与转录"],
+    zh: ["agent 痕迹", "工作区文件", "平台消息", "审计与转录"],
     en: [
         "agent records",
         "workspace files",
-        "Telegram messages",
+        "platform messages",
         "audit & transcripts",
     ],
 };
@@ -271,24 +273,24 @@ const ITEM_CACHED: PerCatalog<&'static str> = PerCatalog {
     en: "cached",
 };
 
-const TELEGRAM: PerCatalog<fn(u64, u64) -> String> = PerCatalog {
-    zh: telegram_zh,
-    en: telegram_en,
+const PLATFORM: PerCatalog<fn(u64, u64) -> String> = PerCatalog {
+    zh: platform_zh,
+    en: platform_en,
 };
 
-fn telegram_zh(deleted: u64, failed: u64) -> String {
+fn platform_zh(deleted: u64, failed: u64) -> String {
     if failed == 0 {
-        format!("Telegram：删除 {deleted} 条")
+        format!("平台：删除 {deleted} 条")
     } else {
-        format!("Telegram：删除 {deleted} 条，{failed} 条未能删除")
+        format!("平台：删除 {deleted} 条，{failed} 条未能删除")
     }
 }
 
-fn telegram_en(deleted: u64, failed: u64) -> String {
+fn platform_en(deleted: u64, failed: u64) -> String {
     if failed == 0 {
-        format!("Telegram: {deleted} deleted")
+        format!("Platform: {deleted} deleted")
     } else {
-        format!("Telegram: {deleted} deleted, {failed} could not be deleted")
+        format!("Platform: {deleted} deleted, {failed} could not be deleted")
     }
 }
 
@@ -356,7 +358,7 @@ mod tests {
         assert!(text.contains("memories 1"), "{text}");
         assert!(!text.contains("topics"), "{text}");
         assert!(
-            !text.contains("Telegram"),
+            !text.contains("Platform"),
             "a surface that was not purged is not named: {text}"
         );
     }
@@ -381,7 +383,7 @@ mod tests {
 
     /// What the platform refused is reported as a count; the reasons go to the log, one line each.
     #[test]
-    fn a_telegram_line_names_what_could_not_be_deleted() {
+    fn a_platform_line_names_what_could_not_be_deleted() {
         let failed = DeleteReport {
             deleted: 4,
             failed: Vec::new(),
@@ -390,7 +392,7 @@ mod tests {
             Language::En,
             &wiped(PurgeSurfaces::all(), PurgeCounts::default(), failed),
         );
-        assert!(clean.contains("Telegram: 4 deleted"), "{clean}");
+        assert!(clean.contains("Platform: 4 deleted"), "{clean}");
         assert!(!clean.contains("could not"), "{clean}");
 
         let partial = DeleteReport {

@@ -1,9 +1,11 @@
 //! The words a digest says to a person: what its pages read and what a delivery says.
-
 use super::dialog::{Delivery, DigestDialog};
 use crate::{
-    agent::host_copy::stretch_text,
-    agentcore::{Language, PerCatalog},
+    agent::{
+        host_copy::stretch_text,
+        prompt::text::{LanguageText, PerCatalog},
+    },
+    config::conversation::Language,
     domain::vo::Stretch,
 };
 
@@ -48,10 +50,9 @@ pub(crate) fn stage_text(language: Language, dialog: &DigestDialog) -> String {
                 .map(|report| report.names().get(catalog).as_str());
             (CONFIRM_PAGE.get(catalog))(line.as_str(), report)
         }
-        DigestDialog::Running { stretch, delivery } => (RUNNING_PAGE.get(catalog))(
-            stretch_line(language, *stretch).as_str(),
-            *delivery == Delivery::Person,
-        ),
+        DigestDialog::Running { stretch, .. } => {
+            (RUNNING_PAGE.get(catalog))(stretch_line(language, *stretch).as_str())
+        }
         DigestDialog::Undelivered {
             target: Delivery::Person,
             ..
@@ -209,17 +210,9 @@ const CONFIRM_PAGE: PerCatalog<fn(&str, Option<&str>) -> String> = PerCatalog {
     },
 };
 
-const RUNNING_PAGE: PerCatalog<fn(&str, bool) -> String> = PerCatalog {
-    zh: |stretch, person| match person {
-        true => format!("正在写报告：{stretch}\n写好后私信给发起人。"),
-        false => format!("正在写报告：{stretch}"),
-    },
-    en: |stretch, person| match person {
-        true => format!(
-            "Writing the report: {stretch}\nIt will go to whoever asked, in a private message."
-        ),
-        false => format!("Writing the report: {stretch}"),
-    },
+const RUNNING_PAGE: PerCatalog<fn(&str) -> String> = PerCatalog {
+    zh: |stretch| format!("正在写报告：{stretch}"),
+    en: |stretch| format!("Writing the report: {stretch}"),
 };
 
 const UNDELIVERED_DM_PAGE: PerCatalog<&'static str> = PerCatalog {

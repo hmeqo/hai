@@ -7,7 +7,7 @@ pub(crate) mod registry;
 pub(crate) mod startup_refeed;
 pub(crate) mod task_watcher;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 pub use context::AppContext;
 pub(crate) use context::assemble;
@@ -15,10 +15,12 @@ use derive_more::Deref;
 use genai::Client;
 
 use crate::{
-    agent::{events::AgentEventBus, multimodal::MultimodalService, web::WebService},
+    agent::{
+        events::AgentEventBus, multimodal::MultimodalService, run::SelectedModel, web::WebService,
+    },
     agentcore::{mcp::McpManager, provider, skills::SkillManager},
     config::AppConfig,
-    domain::service::Services,
+    domain::{service::Services, vo::ModelAlias},
     error::Result,
 };
 
@@ -29,6 +31,7 @@ pub struct AgentRuntimeInner {
     pub app: AppContext,
     pub client: Client,
     pub model: String,
+    pub clients: HashMap<ModelAlias, Client>,
     pub mcp_manager: McpManager,
     pub skill_manager: SkillManager,
     pub prompts: crate::agent::prompt::layers::PromptLayers,
@@ -47,11 +50,19 @@ impl AgentRuntime {
         let client = provider::create_genai_client(chat.kind, &chat.target)?;
 
         let model = chat.target.model.clone();
+        let mut clients = HashMap::new();
+        for choice in app.model_catalog.aliases() {
+            clients.insert(
+                ModelAlias::new(choice.alias.clone()),
+                provider::create_genai_client(choice.transport.kind, &choice.transport.target)?,
+            );
+        }
 
         Ok(Self(Arc::new(AgentRuntimeInner {
             app,
             client,
             model,
+            clients,
             mcp_manager,
             skill_manager,
             prompts,
@@ -74,5 +85,31 @@ impl AgentRuntime {
 
     pub(crate) fn multimodal(&self) -> &MultimodalService {
         &self.app.multimodal
+    }
+
+    /// A stored alias the catalog no longer has resolves to the default; the caller clears the
+    /// stale preference.
+    pub(crate) fn model_exists(&self, alias: &ModelAlias) -> bool {
+        self.app.model_catalog.get(alias.as_str()).is_some()
+    }
+
+    pub(crate) fn resolve_model(&self, alias: Option<&ModelAlias>) -> SelectedModel {
+        if let Some(alias) = alias
+            && let Some(choice) = self.app.model_catalog.get(alias.as_str())
+            && let Some(client) = self.clients.get(alias)
+        {
+            return SelectedModel {
+                alias: Some(alias.clone()),
+                client: client.clone(),
+                model: choice.transport.target.model.clone(),
+                chat: choice.chat.clone(),
+            };
+        }
+        SelectedModel {
+            alias: None,
+            client: self.client.clone(),
+            model: self.model.clone(),
+            chat: self.cfg().model_roles.default.clone(),
+        }
     }
 }

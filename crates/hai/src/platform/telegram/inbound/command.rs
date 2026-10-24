@@ -1,7 +1,7 @@
 //! The Telegram side of commands: whose command a slash message is, and which commands this
 //! platform owns outright.
 
-use crate::agentcore::PerCatalog;
+use crate::agent::prompt::text::PerCatalog;
 
 /// The platform's own convention: Telegram shows a START button for every bot, and the menu says
 /// what it does in the client's language.
@@ -60,7 +60,7 @@ pub(in crate::platform::telegram) fn classify<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::command::find;
+    use crate::agent::command::{CommandGates, find};
 
     const BOT: &str = "example_bot";
 
@@ -108,8 +108,8 @@ mod tests {
                 payload: ""
             }
         );
-        assert!(find("foo").is_none());
-        assert!(find("Lang").is_none());
+        assert!(find("foo", CommandGates::ALL).is_none());
+        assert!(find("Lang", CommandGates::ALL).is_none());
     }
 
     #[test]

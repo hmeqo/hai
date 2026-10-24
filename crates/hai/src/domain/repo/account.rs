@@ -3,8 +3,8 @@ use sqlx::PgPool;
 
 use crate::{
     domain::{
-        model::{Account, Platform},
-        vo::{AccountId, IdentityId},
+        model::Account,
+        vo::{AccountId, PlatformChannelId},
     },
     error::Result,
 };
@@ -19,15 +19,15 @@ impl AccountRepo {
         Self { pool }
     }
 
-    pub async fn by_platform_external_id(
+    pub async fn by_channel_external_id(
         &self,
-        platform: Platform,
+        channel_id: PlatformChannelId,
         external_id: &str,
     ) -> Result<Option<Account>> {
         sqlx::query_as::<_, Account>(
-            "SELECT * FROM account WHERE platform = $1 AND external_id = $2 LIMIT 1",
+            "SELECT * FROM account WHERE channel_id = $1 AND external_id = $2 LIMIT 1",
         )
-        .bind(platform.as_str())
+        .bind(channel_id)
         .bind(external_id)
         .fetch_optional(&self.pool)
         .await
@@ -36,7 +36,7 @@ impl AccountRepo {
 
     pub async fn create(
         &self,
-        platform: Platform,
+        channel_id: PlatformChannelId,
         external_id: &str,
         meta: Option<Value>,
         last_active_at: jiff::Timestamp,
@@ -44,35 +44,16 @@ impl AccountRepo {
         updated_at: jiff::Timestamp,
     ) -> Result<Account> {
         sqlx::query_as::<_, Account>(
-            "INSERT INTO account (platform, external_id, meta, last_active_at, created_at, updated_at) \
+            "INSERT INTO account (channel_id, external_id, meta, last_active_at, created_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
         )
-        .bind(platform.as_str())
+        .bind(channel_id)
         .bind(external_id)
         .bind(meta)
         .bind(jiff_sqlx::Timestamp::from(last_active_at))
         .bind(jiff_sqlx::Timestamp::from(created_at))
         .bind(jiff_sqlx::Timestamp::from(updated_at))
         .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Adopts the bot account a database written before keyed bot accounts holds: one shared
-    /// `(system, 'bot')` row becomes this channel's `(platform, external_id)`. `None` when there is no
-    /// such row (every database this build created, and every later call).
-    pub async fn adopt_legacy_bot_account(
-        &self,
-        platform: Platform,
-        external_id: &str,
-    ) -> Result<Option<Account>> {
-        sqlx::query_as::<_, Account>(
-            "UPDATE account SET platform = $1, external_id = $2 \
-             WHERE platform = 'system' AND external_id = 'bot' RETURNING *",
-        )
-        .bind(platform.as_str())
-        .bind(external_id)
-        .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
     }
@@ -92,26 +73,5 @@ impl AccountRepo {
             .fetch_optional(&self.pool)
             .await
             .map_err(Into::into)
-    }
-
-    pub async fn by_identity_id(&self, identity_id: IdentityId) -> Result<Vec<Account>> {
-        sqlx::query_as::<_, Account>("SELECT * FROM account WHERE identity_id = $1")
-            .bind(identity_id.0)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into)
-    }
-
-    pub async fn bind_identity(
-        &self,
-        account_id: AccountId,
-        identity_id: IdentityId,
-    ) -> Result<()> {
-        sqlx::query("UPDATE account SET identity_id = $2 WHERE id = $1")
-            .bind(account_id.0)
-            .bind(identity_id.0)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 }

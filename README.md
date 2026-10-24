@@ -3,14 +3,14 @@
 [![English](https://img.shields.io/badge/English-424242?style=for-the-badge&logo=readme)](README.md)
 [![中文](https://img.shields.io/badge/中文-EE4C2C?style=for-the-badge)](docs/README.zh-CN.md)
 
-A Telegram chatbot that remembers your conversations, understands your media, and organizes the topics you discuss over time.
+A companion chatbot for Telegram and TeamSpeak 3 text chat, which remembers your conversations, understands your media, and organizes the topics you discuss over time.
 
 ## Features
 
 - **Remembers what matters** — keeps personal facts, notes, and preferences across conversations
-- **Understands your media** — reads the images, videos, and voice messages you send
+- **Understands your media** — reads the images, videos, and voice messages you send on Telegram
 - **Organizes conversations** — tracks topics and summarizes them as they evolve
-- **Talks back in text or voice** — replies in a personality shaped to you
+- **Talks back in text or voice** — replies in a personality shaped to you, in text on Telegram and TeamSpeak and in voice on Telegram
 - **Has up-to-date knowledge** — pulls in external information when you need it
 - **Does things for you** — runs commands and generates images on request
 - **Extends itself** — connects to external tools and follows specialized skills on demand
@@ -20,7 +20,7 @@ A Telegram chatbot that remembers your conversations, understands your media, an
 ### Prerequisites
 
 - PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension
-- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather)), or a TeamSpeak 3 server for text chat
 - An LLM API key (OpenAI, Anthropic, OpenRouter, or local Ollama)
 
 ### Build from source
@@ -47,16 +47,34 @@ url = "postgres://user:password@localhost:5432/hai"
 bot-token = "your-bot-token"
 allowed-chat-ids = [123456789]
 
+# TeamSpeak 3 text chat; no allowed-chat-ids admits every chat.
+# [channel.ts3]
+# type = "teamspeak"
+# address = "127.0.0.1:9987"
+# name = "hai"
+# channel = "Lobby"
+# allowed-chat-ids = ["channel:1"]
+# default-conversation-scope = "shared"   # shared | isolated; default isolated
+
 # The credential comes from OPENROUTER_API_KEY in the environment, or from a block:
 # [providers.openrouter]
 # api-key = "sk-or-v1-..."
 
 [model-roles.default]
-provider = "openrouter"
-model = "anthropic/claude-3.5-sonnet"
+model = "openrouter/anthropic/claude-3.5-sonnet"
 
-[agent]
+[models]
+# fast = "openrouter/deepseek/deepseek-chat"
+
+[conversation]
 language = "zh"
+# model = "fast"
+# allow-persona-change = false
+# allow-content-policy-change = false
+
+[conversation.content-policy]
+maturity = "safe"
+politics = "restricted"
 
 [agent.personality]
 name = "hai"
@@ -65,8 +83,7 @@ name = "hai"
 soul = "A warm, witty assistant that answers briefly and clearly."
 
 [model-roles.embedding]
-provider = "openrouter"
-model = "openai/text-embedding-3-small"
+model = "openrouter/openai/text-embedding-3-small"
 dimension = 1536
 ```
 
@@ -92,7 +109,12 @@ hai kb list                  # list documents (optionally by collection)
 hai kb search <query>        # semantic search over the knowledge base
 hai kb delete <id>           # delete a document (cascades chunks)
 hai kb reindex               # re-chunk/re-embed documents with stale chunker versions
+hai conversation list        # list Conversations and their member Chats
+hai conversation attach --chat 7 --conversation 3   # move a Chat, carrying pending entries
+hai conversation detach --chat 7                    # move a Chat to a fresh Conversation
 ```
+
+Attach is a cutover: the Chat and its unconsumed pending entries move; historical messages keep the Conversation they were written in. Use `attach` before the first messages when two Chats should share context from the start.
 
 ### Configuration reference
 
@@ -117,42 +139,39 @@ base-url = "http://gw.internal/v1"
 base-url = "http://127.0.0.1:8080/v1/rerank"
 ```
 
-`ollama` needs no block at all: `provider = "ollama"` works whenever the service answers at `http://localhost:11434/v1` (point it elsewhere with a block's `base-url`).
+`ollama` needs no block at all: a model such as `"ollama/qwen2.5"` works whenever the service answers at `http://localhost:11434/v1` (point it elsewhere with a provider block's `base-url`).
 
 #### Model roles
 
-`[model-roles.<role>]` declares a model and how to call it; behaviour lives in `[agent.*]`.
+`[model-roles.<role>]` names a `provider/model` model; the provider owns the endpoint and the role keeps only its non-endpoint options. `[models]` maps aliases to the same syntax, with chat options inherited from `[model-roles.default]`.
 
 ```toml
 [model-roles.embedding]           # required; errors when missing (memory/retrieval depend on it)
-provider = "openrouter"
-model = "openai/text-embedding-3-small"
-dimension = 1536               # required; the model's output width (the pgvector column width)
+model = "openrouter/openai/text-embedding-3-small"
+dimension = 1536                 # required; the model's output width (the pgvector column width)
 
 [model-roles.vision]              # image/video understanding (defaults to the main model)
-model = "gpt-4o"
+model = "openai/gpt-4o"
 
 [model-roles.transcription]       # audio → text (defaults to the main model)
-model = "gemini-3.1-flash-lite"
+model = "google/gemini-3.1-flash-lite"
 
 [model-roles.speech]                 # speech synthesis (send_message's voice kind when model is set)
-provider = "openrouter"
-model = "google/gemini-3.1-flash-tts-preview"
+model = "openrouter/google/gemini-3.1-flash-tts-preview"
 voice = "Zephyr"                # required; voice names are model-scoped (alloy = OpenAI, Zephyr/Kore/Aoede = Gemini, …) and a wrong one is rejected by the provider (HTTP 400)
 # speed = 1.0                   # optional (0.25 ~ 4.0, default 1.0)
 
 [model-roles.image]           # image generation (mounts generate_image when model is set)
-provider = "openrouter"
-model = "google/gemini-2.5-flash-image"
+model = "openrouter/google/gemini-2.5-flash-image"
 
 # [model-roles.rerank]             # retrieval scoring; without the block the fused order stands
-# provider = "openrouter"     # the provider's own rerank endpoint is used
-# model = "cohere/rerank-4-fast"
+# model = "openrouter/cohere/rerank-4-fast"
 
-# [model-roles.rerank]             # a self-hosted cross-encoder: base-url is the whole endpoint
-# provider = "local-rerank"
-# model = "bge-reranker-v2-m3"
+# A dedicated endpoint is a provider, not a role override:
+# [providers.local-rerank]
 # base-url = "http://127.0.0.1:8080/v1/rerank"
+# [model-roles.rerank]
+# model = "local-rerank/bge-reranker-v2-m3"
 ```
 
 #### Behaviour settings

@@ -23,9 +23,10 @@ use crate::{
             },
             role::AgentRole,
         },
-        run::{Messages, record::SessionRecord, step_loop::StepLoop},
+        run::{Messages, SelectedModel, record::SessionRecord, step_loop::StepLoop},
     },
-    agentcore::{Language, render::Node, tool::AgentTool},
+    agentcore::{render::Node, tool::AgentTool},
+    config::conversation::{ContentPolicy, Language},
     domain::{
         model::ChatType,
         vo::{AgentEvent, AgentEventPayload, ChatId, SessionId, SessionRef, Stretch, TurnNumber},
@@ -47,6 +48,8 @@ pub(crate) struct DigestPass<'a> {
     pub chat_id: ChatId,
     pub chat_type: ChatType,
     pub language: Language,
+    pub model: &'a SelectedModel,
+    pub content_policy: ContentPolicy,
     pub handle: &'a ChannelHandle,
     pub stretch: Stretch,
     pub tools: &'a [Arc<dyn AgentTool>],
@@ -93,6 +96,8 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
         chat_id,
         chat_type,
         language,
+        model,
+        content_policy,
         handle,
         stretch,
         tools,
@@ -110,13 +115,25 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
     let accounts = collect_accounts(services, &window, &HashMap::new())
         .await
         .map_err(|e| e.to_string())?;
+    let chat = load_chat(services, chat_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let conversation_id = chat.conversation_id;
+    let chats = services
+        .platform
+        .chats_in_conversation(conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let roster: Arc<[_]> = chats.iter().map(|chat| chat.roster()).collect();
     let data = RenderContextData {
         channel: handle.profile().clone(),
-        chat: Some(
-            load_chat(services, chat_id)
-                .await
-                .map_err(|e| e.to_string())?,
-        ),
+        chat: Some(chat.roster()),
+        chats: roster,
+        chat_aliases: Default::default(),
+        origin_chat: chat_id,
+        roster_dirty: false,
+        host_actions: Vec::new(),
+        language,
         current_time: jiff::Zoned::now().to_string(),
         first_turn: true,
         messages: ContextMessages::new(Vec::new(), HashMap::new()),
@@ -127,12 +144,12 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
         accounts,
         current_topics: services
             .topic
-            .active_topics(chat_id)
+            .active_topics(conversation_id)
             .await
             .map_err(|e| e.to_string())?,
         pinned_memories: services
             .memory
-            .pinned(chat_id, cfg.agent.context.pinned_memory_limit)
+            .pinned(conversation_id, cfg.agent.context.pinned_memory_limit)
             .await
             .map_err(|e| e.to_string())?,
         recalled_memories: Vec::new(),
@@ -149,10 +166,17 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
     );
     let rendered = render_context_for_digest(&render_ctx, instruction);
 
-    let spec = AgentRole::Digest.spec(runtime, chat_type, language);
+    let spec = AgentRole::Digest.spec(
+        runtime,
+        &model.chat,
+        chat_type,
+        language,
+        None,
+        content_policy,
+    );
     let step_loop = StepLoop::new(
-        runtime.client.clone(),
-        runtime.model.clone(),
+        model.client.clone(),
+        model.model.clone(),
         Messages::new(vec![ChatMessage::user(&rendered)]),
         spec,
         // The pass reads before it writes, so it spends `[agent] max-steps` like a Turn does.

@@ -25,12 +25,12 @@ use super::super::{
 };
 use crate::{
     agent::channel::{
-        CallbackAnswer, ChannelAccess, ChannelCapabilities, ChannelProfile, ChoiceOption,
-        DeleteReport, FailedDeletion, OutboundPayload, OutboundSource, TypingGuard,
+        CallbackAnswer, ChannelAccess, ChannelCapabilities, ChannelChoices, ChannelProfile,
+        ChoiceOption, DeleteReport, FailedDeletion, OutboundPayload, OutboundSource, TypingGuard,
     },
     domain::{
         model::Platform,
-        vo::{AccountId, ChannelKey},
+        vo::{AccountId, ChannelKey, ChatAddress},
     },
     error::{AppError, Result},
     platform::adapter::{ChannelAdapter, SentMessage, WireMessage},
@@ -45,14 +45,13 @@ const DELETE_PACING: Duration = Duration::from_millis(50);
 /// How many times a rate-limited batch is retried before its ids are attributed one by one.
 const DELETE_RETRIES: u8 = 3;
 
-/// What a Telegram channel can put in a chat: every form, replies that point at and quote, the
-/// platform's upload ceiling, and the buttons a page of choices needs.
+/// What a Telegram channel can put in a chat: every form, replies that point at and quote, and the
+/// platform's upload ceiling.
 pub(in crate::platform::telegram) const TELEGRAM_CAPABILITIES: ChannelCapabilities =
     ChannelCapabilities {
         forms: &TELEGRAM_FORMS,
         reference: true,
         quote: true,
-        choices: true,
         max_media_bytes: MAX_UPLOAD_BYTES,
     };
 
@@ -211,10 +210,16 @@ impl fmt::Debug for TelegramAdapter {
 
 #[async_trait::async_trait]
 impl ChannelAccess for TelegramAdapter {
-    fn admits(&self, chat_external_id: &str) -> bool {
-        chat_external_id
-            .parse::<i64>()
-            .is_ok_and(|id| self.allowed_chat_ids.contains(&id))
+    fn admits(&self, chat: &ChatAddress) -> bool {
+        chat.origin.is_none()
+            && chat
+                .external_id
+                .parse::<i64>()
+                .is_ok_and(|id| self.allowed_chat_ids.contains(&id))
+    }
+
+    fn private_chat_external_id(&self, sender_external_id: &str) -> Result<ChatAddress> {
+        Ok(ChatAddress::new(None, sender_external_id))
     }
 
     fn command_prefix(&self) -> &'static str {
@@ -222,21 +227,41 @@ impl ChannelAccess for TelegramAdapter {
     }
 
     /// One message the host composes itself: delivered, never stored, and never pointing at anything.
-    async fn notice(&self, chat_external_id: &str, text: &str) -> Result<()> {
-        let cid = Self::chat_id(chat_external_id)?;
+    async fn notice(&self, chat: &ChatAddress, text: &str) -> Result<()> {
+        let cid = Self::chat_id(&chat.external_id)?;
         service::send_markdown_with_fallback(&self.bot, cid, text, None).await?;
         Ok(())
     }
 
+    /// A file the host composed itself: it goes out as a document with a name, and nothing about it
+    /// is recorded — host copy has no row.
+    async fn notice_document(
+        &self,
+        chat: &ChatAddress,
+        filename: &str,
+        bytes: Vec<u8>,
+        caption: &str,
+    ) -> Result<()> {
+        let cid = Self::chat_id(&chat.external_id)?;
+        let caption = Self::truncate_caption(caption);
+        self.send_document(
+            cid,
+            OutboundSource::Bytes(bytes),
+            filename.to_owned(),
+            Some(&caption),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ChannelChoices for TelegramAdapter {
     /// A question with buttons under it. No parse mode: the copy carries punctuation markdown would
     /// have to escape, and a question is no place to discover that a character was special.
-    async fn ask(
-        &self,
-        chat_external_id: &str,
-        prompt: &str,
-        options: &[ChoiceOption],
-    ) -> Result<()> {
-        let cid = Self::chat_id(chat_external_id)?;
+    async fn ask(&self, chat: &ChatAddress, prompt: &str, options: &[ChoiceOption]) -> Result<()> {
+        let cid = Self::chat_id(&chat.external_id)?;
         self.bot
             .send_message(cid, prompt)
             .reply_markup(ReplyMarkup::InlineKeyboard(keyboard(options)))
@@ -249,12 +274,12 @@ impl ChannelAccess for TelegramAdapter {
     /// the chat filling up with them.
     async fn edit_choice(
         &self,
-        chat_external_id: &str,
+        chat: &ChatAddress,
         message_external_id: &str,
         prompt: &str,
         options: &[ChoiceOption],
     ) -> Result<()> {
-        let cid = Self::chat_id(chat_external_id)?;
+        let cid = Self::chat_id(&chat.external_id)?;
         self.bot
             .edit_message_text(cid, Self::message_id(message_external_id)?, prompt)
             .reply_markup(keyboard(options))
@@ -285,9 +310,9 @@ impl ChannelAccess for TelegramAdapter {
 
     /// Takes the host's own page away once its report has arrived: the chat keeps the document, not
     /// the status message that led to it.
-    async fn delete_notice(&self, chat_external_id: &str, message_external_id: &str) -> Result<()> {
+    async fn delete_notice(&self, chat: &ChatAddress, message_external_id: &str) -> Result<()> {
         let report = self
-            .delete_messages(chat_external_id, &[message_external_id.to_owned()])
+            .delete_messages(&chat.external_id, &[message_external_id.to_owned()])
             .await?;
         for failure in &report.failed {
             tracing::warn!(
@@ -296,28 +321,6 @@ impl ChannelAccess for TelegramAdapter {
                 "host page not removed",
             );
         }
-        Ok(())
-    }
-
-    /// A file the host composed itself: it goes out as a document with a name, and nothing about it
-    /// is recorded — host copy has no row.
-    async fn notice_document(
-        &self,
-        chat_external_id: &str,
-        filename: &str,
-        bytes: Vec<u8>,
-        caption: &str,
-    ) -> Result<()> {
-        let cid = Self::chat_id(chat_external_id)?;
-        let caption = Self::truncate_caption(caption);
-        self.send_document(
-            cid,
-            OutboundSource::Bytes(bytes),
-            filename.to_owned(),
-            Some(&caption),
-            None,
-        )
-        .await?;
         Ok(())
     }
 }
@@ -340,13 +343,17 @@ impl ChannelAdapter for TelegramAdapter {
         TELEGRAM_CAPABILITIES
     }
 
+    fn choice_surface(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn ChannelChoices>> {
+        Some(self)
+    }
+
     async fn send(&self, msg: WireMessage) -> Result<SentMessage> {
         let WireMessage {
-            chat_external_id,
+            chat,
             reference,
             payload,
         } = msg;
-        let cid = Self::chat_id(&chat_external_id)?;
+        let cid = Self::chat_id(&chat.external_id)?;
         let reference = reference.as_ref();
         let reply_params = match reference {
             Some(reference) => Some(reply::build_reply(

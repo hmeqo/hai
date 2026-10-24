@@ -16,6 +16,16 @@ pub(crate) fn message_element(msg: &Message, ctx: &RenderContext) -> Node {
         .attr("from", ctx.sender_name(msg))
         .attr("at", format_time_only(msg.sent_at));
 
+    let current = ctx.chats.iter().find(|chat| chat.id == msg.chat_id);
+    let alias = current
+        .map(|chat| chat.alias.as_str())
+        .or_else(|| ctx.chat_aliases.get(&msg.chat_id).map(String::as_str));
+    if let Some(alias) = alias
+        && (ctx.chats.len() > 1 || current.is_none())
+    {
+        b = b.attr("chat", alias);
+    }
+
     if let Some(account_id) = msg.account_id {
         b = b.attr("account", account_id.0);
     }
@@ -206,6 +216,20 @@ mod tests {
             created_at: jiff::Timestamp::now(),
             ..test_support::perception(subject, parser, "a cat")
         }
+    }
+
+    /// A message from a Chat detached from this Conversation still names its source.
+    #[test]
+    fn detached_history_keeps_its_alias() {
+        let mut data = render_context_data();
+        data.chat_aliases.insert(ChatId(3), "retired".into());
+        data.messages = ContextMessages::new(Vec::new(), HashMap::new());
+        let mut message = msg(MessageId(1), Some(AccountId(1)), None, "old room");
+        message.chat_id = ChatId(3);
+
+        let ctx = RenderContext::new(data);
+        let out = render_xml(&message_element(&message, &ctx));
+        assert!(out.contains("chat=\"retired\""), "{out}");
     }
 
     #[test]

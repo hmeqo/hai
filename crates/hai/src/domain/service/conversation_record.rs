@@ -4,7 +4,10 @@ use crate::{
     domain::{
         model::ConversationRecord,
         repo::Repos,
-        vo::{ChapterWrite, ChatEntry, ChatId, ContextMeta, ConversationSnapshot},
+        vo::{
+            ChannelKey, ChapterWrite, ChatEntry, ChatId, ContextMeta, ConversationId,
+            ConversationSnapshot, EntryAudience, EntryKind, HostAction,
+        },
     },
     error::{AppError, Result},
 };
@@ -19,25 +22,25 @@ impl ConversationRecordService {
         Self { repos }
     }
 
-    /// `Ok(None)` means there is no record yet (a fresh conversation); a database failure
-    /// surfaces as `Err` instead of being turned into one.
-    pub async fn get(&self, chat_id: ChatId) -> Result<Option<ConversationRecord>> {
+    /// `Ok(None)` means there is no record yet; a database failure surfaces as `Err` instead of
+    /// being turned into one.
+    pub async fn get(&self, conversation_id: ConversationId) -> Result<Option<ConversationRecord>> {
         self.repos
             .conversation_record
-            .find_by_chat_id(chat_id)
+            .find_by_id(conversation_id)
             .await
     }
 
     pub(crate) async fn save(
         &self,
         snap: &ConversationSnapshot,
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         consumed: &[Uuid],
     ) -> Result<()> {
         self.repos
             .conversation_record
             .save(
-                chat_id,
+                conversation_id,
                 snapshot_values(snap)?,
                 consumed,
                 jiff::Timestamp::now(),
@@ -45,8 +48,7 @@ impl ConversationRecordService {
             .await
     }
 
-    /// The clean chapter a purge resets a chat to: what `Conversation::start_new_chapter(None)`
-    /// holds, in the shape the conversation row stores.
+    /// The clean chapter a purge resets a conversation to.
     pub(crate) fn fresh_chapter(&self) -> Result<ChapterWrite> {
         snapshot_values(&ConversationSnapshot {
             context_messages: Vec::new(),
@@ -58,27 +60,53 @@ impl ConversationRecordService {
         restore_snapshot(record)
     }
 
-    pub async fn append_entry(&self, chat_id: ChatId, entry: &ChatEntry) -> Result<()> {
+    pub async fn append_entry(
+        &self,
+        conversation_id: ConversationId,
+        entry: &ChatEntry,
+    ) -> Result<()> {
         self.repos
             .conversation_record
-            .append_entry(chat_id, entry)
+            .append_entry(conversation_id, entry)
             .await
     }
 
-    pub async fn pending_entries(&self, chat_id: ChatId) -> Result<Vec<ChatEntry>> {
+    /// Records a setting the host changed on its own. The entry is context for the next Turn and no
+    /// reason to start one, so nothing is rung here. An append failure is returned: a change the
+    /// agent will never see is not a success.
+    pub async fn record_host_action(
+        &self,
+        conversation_id: ConversationId,
+        chat_id: ChatId,
+        action: HostAction,
+    ) -> Result<()> {
+        let entry = ChatEntry::new(
+            chat_id,
+            EntryAudience::Context,
+            EntryKind::HostAction(action),
+            jiff::Timestamp::now(),
+        );
+        self.append_entry(conversation_id, &entry).await
+    }
+
+    pub async fn pending_entries(&self, conversation_id: ConversationId) -> Result<Vec<ChatEntry>> {
         self.repos
             .conversation_record
-            .pending_entries(chat_id)
+            .pending_entries(conversation_id)
             .await
     }
 
-    pub async fn chats_with_pending(&self) -> Result<Vec<ChatId>> {
-        self.repos.conversation_record.chats_with_pending().await
+    pub async fn conversations_with_pending(
+        &self,
+        channel_key: &ChannelKey,
+    ) -> Result<Vec<ConversationId>> {
+        self.repos
+            .conversation_record
+            .conversations_with_pending(channel_key)
+            .await
     }
 }
 
-/// The conversation row's two JSON columns for one snapshot: the context messages as they render,
-/// and the chapter's counters.
 fn snapshot_values(snap: &ConversationSnapshot) -> Result<ChapterWrite> {
     Ok(ChapterWrite {
         messages: serde_json::to_value(&snap.context_messages)?,
@@ -87,15 +115,15 @@ fn snapshot_values(snap: &ConversationSnapshot) -> Result<ChapterWrite> {
 }
 
 fn restore_snapshot(record: &ConversationRecord) -> Result<ConversationSnapshot> {
-    let cid = record.chat_id;
+    let cid = record.id;
     let messages = serde_json::from_value(record.messages.clone()).map_err(|e| {
         AppError::message(format!(
-            "chat {cid}: conversation snapshot messages unreadable: {e}"
+            "conversation {cid}: snapshot messages unreadable: {e}"
         ))
     })?;
     let context_meta = serde_json::from_value(record.context_meta.clone()).map_err(|e| {
         AppError::message(format!(
-            "chat {cid}: conversation snapshot context_meta unreadable: {e}"
+            "conversation {cid}: snapshot context_meta unreadable: {e}"
         ))
     })?;
 
@@ -113,7 +141,7 @@ mod tests {
 
     fn record(messages: Value, context_meta: Value) -> ConversationRecord {
         ConversationRecord {
-            chat_id: ChatId(42),
+            id: ConversationId(42),
             messages,
             context_meta,
             updated_at: jiff::Timestamp::now(),
@@ -132,8 +160,6 @@ mod tests {
         );
     }
 
-    /// The write path serializes the whole meta, not a hand-picked subset: a field the reader
-    /// requires cannot be dropped from every row without this failing.
     #[test]
     fn a_snapshot_survives_its_own_write() {
         let snap = ConversationSnapshot {

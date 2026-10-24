@@ -3,8 +3,8 @@ use sqlx::PgPool;
 use crate::{
     domain::{
         model::Perception,
-        repo::vector,
-        vo::{AttachmentParser, PerceptionId, Subject, SubjectKind},
+        repo::{vector, window},
+        vo::{AttachmentParser, ConversationId, PerceptionId, Subject, SubjectKind, TimeRange},
     },
     error::Result,
 };
@@ -23,16 +23,18 @@ impl PerceptionRepo {
     /// `prompt IS NULL` row.
     pub async fn find(
         &self,
+        conversation_id: ConversationId,
         subject: &Subject,
         parser: AttachmentParser,
         focus: Option<&str>,
     ) -> Result<Option<Perception>> {
         sqlx::query_as::<_, Perception>(
             "SELECT * FROM perception \
-             WHERE subject_kind = $1 AND subject = $2 AND parser = $3 \
-               AND (prompt = $4 OR (prompt IS NULL AND $4 IS NULL)) \
+             WHERE conversation_id = $1 AND subject_kind = $2 AND subject = $3 \
+               AND parser = $4 AND (prompt = $5 OR (prompt IS NULL AND $5 IS NULL)) \
              LIMIT 1",
         )
+        .bind(conversation_id.0)
         .bind(subject.kind.name())
         .bind(&subject.value)
         .bind(parser.name())
@@ -45,6 +47,7 @@ impl PerceptionRepo {
     /// One round trip for many subjects of the same kind.
     pub async fn find_by_subjects(
         &self,
+        conversation_id: ConversationId,
         kind: SubjectKind,
         subjects: &[String],
     ) -> Result<Vec<Perception>> {
@@ -52,8 +55,10 @@ impl PerceptionRepo {
             return Ok(Vec::new());
         }
         sqlx::query_as::<_, Perception>(
-            "SELECT * FROM perception WHERE subject_kind = $1 AND subject = ANY($2)",
+            "SELECT * FROM perception \
+             WHERE conversation_id = $1 AND subject_kind = $2 AND subject = ANY($3)",
         )
+        .bind(conversation_id.0)
         .bind(kind.name())
         .bind(subjects)
         .fetch_all(&self.pool)
@@ -92,16 +97,18 @@ impl PerceptionRepo {
 
     pub async fn create(
         &self,
+        conversation_id: ConversationId,
         subject: &Subject,
         parser: AttachmentParser,
         focus: Option<&str>,
         content: &str,
     ) -> Result<Perception> {
         sqlx::query_as::<_, Perception>(
-            "INSERT INTO perception (id, subject_kind, subject, parser, prompt, content) \
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+            "INSERT INTO perception (id, conversation_id, subject_kind, subject, parser, prompt, content) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
         )
         .bind(uuid::Uuid::now_v7())
+        .bind(conversation_id.0)
         .bind(subject.kind.name())
         .bind(&subject.value)
         .bind(parser.name())
@@ -112,26 +119,19 @@ impl PerceptionRepo {
         .map_err(Into::into)
     }
 
-    /// Deletes the transcripts of these subjects, whatever parser or focus wrote them. The rows
-    /// carry no chat, so the subject is the only scope a purge can name; its kind travels with its
-    /// value, so a URL subject cannot be read as a handle.
-    pub async fn delete_by_subjects(&self, subjects: &[Subject]) -> Result<u64> {
-        if subjects.is_empty() {
-            return Ok(0);
-        }
-        let kinds: Vec<&str> = subjects.iter().map(|subject| subject.kind.name()).collect();
-        let values: Vec<&str> = subjects
-            .iter()
-            .map(|subject| subject.value.as_str())
-            .collect();
-        let deleted = sqlx::query(
-            "DELETE FROM perception WHERE (subject_kind, subject) \
-             IN (SELECT * FROM unnest($1::text[], $2::text[]))",
-        )
-        .bind(&kinds)
-        .bind(&values)
-        .execute(&self.pool)
-        .await?;
+    /// The analyses this Conversation's purge reaches: every subject, every parser and focus, written
+    /// inside the window. A perception carries its Conversation, so a URL cache row is in scope too.
+    pub async fn delete_in_range_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        range: TimeRange,
+    ) -> Result<u64> {
+        let sql = format!(
+            "DELETE FROM perception WHERE conversation_id = $1 {}",
+            window::time_window("created_at", 2)
+        );
+        let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(conversation_id.0);
+        let deleted = range.bind_execute(query).execute(&self.pool).await?;
         Ok(deleted.rows_affected())
     }
 }

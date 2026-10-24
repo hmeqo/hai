@@ -1,9 +1,18 @@
 use std::path::Path;
 
 use crate::{
-    config::{AppConfig, env::ENV_PREFIX, issue::ConfigIssue},
+    config::AppConfig,
     error::{AppError, Result, bail},
 };
+
+pub mod env;
+mod issue;
+mod paths;
+
+pub use issue::ConfigIssue;
+pub use paths::Paths;
+
+use self::env::ENV_PREFIX;
 
 impl AppConfig {
     /// Defaults, then the file, then `HAI__*` — one source per key. A missing file is the
@@ -215,10 +224,10 @@ mod tests {
     fn env_override_still_applies() {
         let _guard = env_lock();
         let path = temp_toml("hai_cfg_env.toml", "");
-        unsafe { std::env::set_var("HAI__MODEL_ROLES__DEFAULT__MODEL", "test-model") };
+        unsafe { std::env::set_var("HAI__MODEL_ROLES__DEFAULT__MODEL", "openai/test-model") };
         let cfg = AppConfig::load(&path).unwrap();
         unsafe { std::env::remove_var("HAI__MODEL_ROLES__DEFAULT__MODEL") };
-        assert_eq!(cfg.model_roles.default.model, "test-model");
+        assert_eq!(cfg.model_roles.default.model, "openai/test-model");
     }
 
     #[test]

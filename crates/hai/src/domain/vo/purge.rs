@@ -36,7 +36,8 @@ pub struct PurgeSurfaces {
     pub files: bool,
     /// The messages themselves, on the platform.
     pub telegram: bool,
-    /// Event rows, perception transcripts, and the cached bytes of the window's attachments.
+    /// Event rows, the Conversation's perception cache inside the window, and the cached bytes of the
+    /// window's attachments.
     pub derived: bool,
 }
 

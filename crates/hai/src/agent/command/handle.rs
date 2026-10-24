@@ -1,52 +1,64 @@
 use super::{
-    ArgName, Command, CommandContext, Dialog, DialogArg, DigestArg, DigestStart, LanguageArg,
-    PurgeArg, Reply, Said, Started, SystemCommand,
+    ArgName, Command, CommandContext, CommandOutcome, ContentPolicyArg, Dialog, DialogArg,
+    DialogFallback, DigestArg, DigestStart, LanguageArg, ModelArg, PersonaArg, PurgeArg, Reply,
+    Said, Started, SystemCommand,
     parse::{RANGE, YES},
 };
 use crate::{
     agent::{command::digest::Delivery, host_copy::HostCopy},
-    agentcore::Language,
-    domain::vo::{AgentCommand, ChatEntry, EntryAudience, EntryKind, PurgeSpec},
+    config::conversation::{ContentPolicy, Language},
+    domain::vo::{
+        AgentCommand, ChatEntry, EntryAudience, EntryKind, HostAction, ModelAlias, PurgeSpec,
+    },
     error::Result,
 };
 
 /// Answers one command the table has read. The same function serves both ways a command is
 /// collected: a command line and a page of buttons both arrive here as the same `Command`, and a
 /// complete one reaches `Started` without a page.
-pub(crate) async fn execute(ctx: &CommandContext, command: Command) -> Result<Reply> {
-    match command {
-        Command::System(command) => answer(ctx, command).await,
+pub(crate) async fn execute(ctx: &CommandContext, command: Command) -> Result<CommandOutcome> {
+    let outcome = match command {
+        Command::System(command) => answer(ctx, command).await?,
         Command::Agent(command) => {
             enqueue(ctx, command).await?;
-            Ok(Reply::Silent)
+            CommandOutcome::silent()
         }
+    };
+    if let Some(action) = outcome.action
+        && let Err(e) = ctx.record_action(action).await
+    {
+        tracing::warn!(%ctx.conversation_id, "host action was not recorded: {e}");
     }
+    Ok(outcome)
 }
 
 /// Answers a command the host handles itself.
-async fn answer(ctx: &CommandContext, command: SystemCommand) -> Result<Reply> {
+async fn answer(ctx: &CommandContext, command: SystemCommand) -> Result<CommandOutcome> {
     match command {
-        SystemCommand::Status => status(ctx).await,
+        SystemCommand::Status => Ok(status(ctx).await?.into()),
         SystemCommand::Lang(arg) => language(ctx, arg).await,
+        SystemCommand::Model(arg) => model(ctx, arg).await,
+        SystemCommand::ContentPolicy(arg) => content_policy(ctx, arg).await,
+        SystemCommand::Persona(arg) => persona(ctx, arg).await,
         SystemCommand::Purge(arg) => match submit_purge(arg) {
-            Ok(spec) => Ok(Reply::Started(Started::Purge(spec))),
+            Ok(spec) => Ok(CommandOutcome::started(Started::Purge(spec))),
             Err(missing) => {
                 let language = host_language(ctx).await?;
-                Ok(Reply::Dialog(Dialog {
+                Ok(CommandOutcome::dialog(Dialog {
                     language,
                     arg: DialogArg::Purge(arg),
-                    missing,
+                    fallback: DialogFallback::Missing(missing),
                 }))
             }
         },
         SystemCommand::Digest(arg) => match submit_digest(arg) {
-            Ok(start) => Ok(Reply::Started(Started::Digest(start))),
+            Ok(start) => Ok(CommandOutcome::started(Started::Digest(start))),
             Err(missing) => {
                 let language = host_language(ctx).await?;
-                Ok(Reply::Dialog(Dialog {
+                Ok(CommandOutcome::dialog(Dialog {
                     language,
                     arg: DialogArg::Digest(arg),
-                    missing,
+                    fallback: DialogFallback::Missing(missing),
                 }))
             }
         },
@@ -79,18 +91,18 @@ fn submit_digest(arg: DigestArg) -> Result<DigestStart, ArgName> {
     }
 }
 
-async fn said(ctx: &CommandContext, copy: HostCopy) -> Result<Reply> {
+async fn said(ctx: &CommandContext, copy: HostCopy) -> Result<Said> {
     let language = host_language(ctx).await?;
-    Ok(Reply::Said(Said { copy, language }))
+    Ok(Said { copy, language })
 }
 
 async fn host_language(ctx: &CommandContext) -> Result<Language> {
-    ctx.settings.language(ctx.chat_id).await
+    ctx.settings.language(ctx.conversation_id).await
 }
 
 async fn status(ctx: &CommandContext) -> Result<Reply> {
     let language = host_language(ctx).await?;
-    let body = match ctx.agents.get(ctx.chat_id).await {
+    let body = match ctx.agents.get(ctx.conversation_id).await {
         Some(agent) => agent.status_text(language).await,
         None => None,
     };
@@ -100,36 +112,206 @@ async fn status(ctx: &CommandContext) -> Result<Reply> {
     }))
 }
 
-/// The preference is written before the reply is spoken, so a set language is confirmed in the
-/// language it just became.
-async fn language(ctx: &CommandContext, arg: LanguageArg) -> Result<Reply> {
-    let copy = match arg {
-        LanguageArg::Current => HostCopy::LanguageCurrent,
+/// A set or reset is applied before the reply; a query and an unsupported code change nothing.
+async fn language(ctx: &CommandContext, arg: LanguageArg) -> Result<CommandOutcome> {
+    let (copy, changed) = match arg {
+        LanguageArg::Current => (HostCopy::LanguageCurrent, false),
         LanguageArg::Reset => {
-            ctx.settings.reset_language(ctx.chat_id).await?;
-            HostCopy::LanguageReset
+            ctx.settings.reset_language(ctx.conversation_id).await?;
+            (HostCopy::LanguageReset, true)
         }
         LanguageArg::Set(language) => {
-            ctx.settings.set_language(ctx.chat_id, language).await?;
-            HostCopy::LanguageSet
+            ctx.settings
+                .set_language(ctx.conversation_id, language)
+                .await?;
+            (HostCopy::LanguageSet, true)
         }
-        LanguageArg::Unsupported => HostCopy::LanguageUnsupported,
+        LanguageArg::Unsupported => (HostCopy::LanguageUnsupported, false),
     };
-    said(ctx, copy).await
+    let outcome = CommandOutcome::said(said(ctx, copy).await?);
+    Ok(if changed {
+        outcome.with_action(HostAction::LanguageChanged)
+    } else {
+        outcome
+    })
+}
+
+/// A set or reset model is a change the next Turn has to see; a query and an unknown alias change
+/// nothing and say so.
+async fn model(ctx: &CommandContext, arg: ModelArg) -> Result<CommandOutcome> {
+    let configured = ctx
+        .settings
+        .configured_model()
+        .filter(|alias| ctx.settings.model_exists(alias.as_str()));
+    let current = ctx
+        .settings
+        .model(ctx.conversation_id)
+        .await?
+        .filter(|alias| ctx.settings.model_exists(alias.as_str()))
+        .or(configured);
+    match arg {
+        ModelArg::Current => {
+            let effective = current
+                .as_ref()
+                .map(ModelAlias::to_string)
+                .unwrap_or_else(|| ctx.settings.default_model_label().to_owned());
+            let aliases = ctx.settings.model_aliases().map(str::to_owned).collect();
+            Ok(CommandOutcome::said(
+                said(ctx, HostCopy::ModelCurrent { effective, aliases }).await?,
+            ))
+        }
+        ModelArg::Reset => {
+            ctx.settings.reset_model(ctx.conversation_id).await?;
+            let effective = ctx
+                .settings
+                .model(ctx.conversation_id)
+                .await?
+                .filter(|alias| ctx.settings.model_exists(alias.as_str()))
+                .map(|alias| alias.to_string())
+                .unwrap_or_else(|| ctx.settings.default_model_label().to_owned());
+            Ok(
+                CommandOutcome::said(said(ctx, HostCopy::ModelReset(effective)).await?)
+                    .with_action(HostAction::ModelChanged),
+            )
+        }
+        ModelArg::Set(alias) => {
+            if !ctx.settings.model_exists(&alias) {
+                return Ok(CommandOutcome::said(
+                    said(ctx, HostCopy::ModelUnknown(alias)).await?,
+                ));
+            }
+            ctx.settings
+                .set_model(ctx.conversation_id, ModelAlias::new(alias.clone()))
+                .await?;
+            Ok(
+                CommandOutcome::said(said(ctx, HostCopy::ModelSet(alias)).await?)
+                    .with_action(HostAction::ModelChanged),
+            )
+        }
+    }
+}
+
+/// A set or reset content policy is a change the next Turn has to see, and a stricter one also
+/// reopens the chapter through the wrap-up. The bare line opens the picker, or reports the current
+/// axes where the channel has no page.
+async fn content_policy(ctx: &CommandContext, arg: ContentPolicyArg) -> Result<CommandOutcome> {
+    let old = ctx.settings.content_policy(ctx.conversation_id).await?;
+    match arg {
+        ContentPolicyArg::Current => {
+            let language = host_language(ctx).await?;
+            Ok(CommandOutcome::dialog(content_policy_picker(language, old)))
+        }
+        ContentPolicyArg::Reset => {
+            ctx.settings
+                .reset_content_policy(ctx.conversation_id)
+                .await?;
+            let new = ctx.settings.content_policy(ctx.conversation_id).await?;
+            if new.is_stricter_than(old) {
+                enqueue_policy_reopen(ctx).await?;
+            }
+            Ok(
+                CommandOutcome::said(said(ctx, HostCopy::ContentPolicyReset(new)).await?)
+                    .with_action(HostAction::ContentPolicyChanged),
+            )
+        }
+        ContentPolicyArg::Set(preset) => {
+            let new = preset.policy();
+            ctx.settings
+                .set_content_policy(ctx.conversation_id, new)
+                .await?;
+            if new.is_stricter_than(old) {
+                enqueue_policy_reopen(ctx).await?;
+            }
+            Ok(
+                CommandOutcome::said(said(ctx, HostCopy::ContentPolicySet(new)).await?)
+                    .with_action(HostAction::ContentPolicyChanged),
+            )
+        }
+    }
+}
+
+/// The bare `/content-policy` line: the picker where the channel has one, and the same current
+/// axes as a spoken answer where it has none.
+fn content_policy_picker(language: Language, current: ContentPolicy) -> Dialog {
+    Dialog {
+        language,
+        arg: DialogArg::ContentPolicy(current),
+        fallback: DialogFallback::Answer(Said {
+            copy: HostCopy::ContentPolicyCurrent(current),
+            language,
+        }),
+    }
+}
+
+/// A set or reset persona is a change the next Turn has to see; a query and a rejection change
+/// nothing and say so.
+async fn persona(ctx: &CommandContext, arg: PersonaArg) -> Result<CommandOutcome> {
+    match arg {
+        PersonaArg::Current => {
+            let persona = ctx.settings.persona(ctx.conversation_id).await?;
+            Ok(CommandOutcome::said(
+                said(ctx, HostCopy::PersonaCurrent(persona)).await?,
+            ))
+        }
+        PersonaArg::Reset => {
+            ctx.settings.reset_persona(ctx.conversation_id).await?;
+            Ok(
+                CommandOutcome::said(said(ctx, HostCopy::PersonaReset).await?)
+                    .with_action(HostAction::PersonaChanged),
+            )
+        }
+        PersonaArg::Set(text) => {
+            if text.trim().is_empty() {
+                return Ok(CommandOutcome::said(
+                    said(ctx, HostCopy::PersonaEmpty).await?,
+                ));
+            }
+            if text.chars().count() > 4096 {
+                return Ok(CommandOutcome::said(
+                    said(ctx, HostCopy::PersonaTooLong).await?,
+                ));
+            }
+            ctx.settings.set_persona(ctx.conversation_id, text).await?;
+            Ok(CommandOutcome::said(said(ctx, HostCopy::PersonaSet).await?)
+                .with_action(HostAction::PersonaChanged))
+        }
+    }
+}
+
+async fn enqueue_policy_reopen(ctx: &CommandContext) -> Result<()> {
+    let entry = ChatEntry::new(
+        ctx.chat_id,
+        EntryAudience::Agent,
+        EntryKind::PolicyChanged,
+        jiff::Timestamp::now(),
+    );
+    ctx.services
+        .conversation
+        .append_entry(ctx.conversation_id, &entry)
+        .await?;
+    ctx.agents
+        .get_or_create(ctx.conversation_id)
+        .await
+        .notify_chat(ctx.chat_id);
+    Ok(())
 }
 
 /// Hands the agent an instruction and stays quiet — the answer arrives in the conversation.
 async fn enqueue(ctx: &CommandContext, command: AgentCommand) -> Result<()> {
     let entry = ChatEntry::new(
+        ctx.chat_id,
         EntryAudience::Agent,
         EntryKind::Command(command),
         jiff::Timestamp::now(),
     );
     ctx.services
         .conversation
-        .append_entry(ctx.chat_id, &entry)
+        .append_entry(ctx.conversation_id, &entry)
         .await?;
-    ctx.agents.get_or_create(ctx.chat_id).await.notify();
+    ctx.agents
+        .get_or_create(ctx.conversation_id)
+        .await
+        .notify_chat(ctx.chat_id);
     Ok(())
 }
 
@@ -137,7 +319,8 @@ async fn enqueue(ctx: &CommandContext, command: AgentCommand) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{
-        agent::command::{DECLARATIONS, Invocation},
+        agent::command::Invocation,
+        config::conversation::ContentPolicy,
         domain::vo::{PurgeSurfaces, Stretch},
     };
 
@@ -153,7 +336,7 @@ mod tests {
                 range: Some(WEEK),
                 surfaces,
                 yes: true,
-            })
+            },)
             .is_ok()
         );
         assert_eq!(
@@ -161,7 +344,7 @@ mod tests {
                 range: Some(WEEK),
                 surfaces,
                 yes: false,
-            })
+            },)
             .unwrap_err(),
             ArgName::Option(YES)
         );
@@ -170,7 +353,7 @@ mod tests {
                 range: None,
                 surfaces,
                 yes: true,
-            })
+            },)
             .unwrap_err(),
             ArgName::Positional(RANGE)
         );
@@ -209,11 +392,32 @@ mod tests {
         );
     }
 
+    /// A bare `/content-policy` line answers with its current axes where the channel cannot show a
+    /// page; the picker only adds buttons to that same answer.
+    #[test]
+    fn a_bare_content_policy_line_answers_where_no_page_exists() {
+        let dialog = content_policy_picker(Language::Zh, ContentPolicy::MATURE);
+        assert_eq!(
+            dialog.arg,
+            DialogArg::ContentPolicy(ContentPolicy::MATURE),
+            "the page carries the axes it reports"
+        );
+        match dialog.fallback {
+            DialogFallback::Answer(Said { copy, language }) => {
+                assert_eq!(language, Language::Zh);
+                assert_eq!(copy, HostCopy::ContentPolicyCurrent(ContentPolicy::MATURE));
+            }
+            DialogFallback::Missing(_) => {
+                panic!("a complete line answers instead of naming an argument")
+            }
+        }
+    }
+
     /// The paged commands show at least one form that really runs, not only forms that stop at a
     /// missing argument.
     #[test]
     fn the_paged_commands_show_a_complete_example() {
-        for declared in DECLARATIONS
+        for declared in super::super::spec::DECLARATIONS
             .iter()
             .filter(|declared| matches!(declared.name, "purge" | "digest"))
         {

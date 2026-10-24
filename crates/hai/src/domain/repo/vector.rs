@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         model::{KnowledgeChunk, Memory, Perception, Topic, embed_text},
-        vo::ChatId,
+        vo::ConversationId,
     },
     error::{AppError, Result, bail},
 };
@@ -239,18 +239,18 @@ pub async fn assert_embedding_dimension(pool: &sqlx::PgPool, dimension: i32) -> 
     Ok(())
 }
 
-/// The tables a chat-scoped search can target: each carries `chat_id`.
+/// The tables a Conversation-scoped search can target: each carries `conversation_id`.
 #[derive(Debug, Clone, Copy)]
-pub enum ChatTable {
+pub enum ConversationTable {
     Memory,
     Topic,
 }
 
-impl ChatTable {
+impl ConversationTable {
     fn table(self) -> EmbeddingTable {
         match self {
-            ChatTable::Memory => EmbeddingTable::Memory,
-            ChatTable::Topic => EmbeddingTable::Topic,
+            ConversationTable::Memory => EmbeddingTable::Memory,
+            ConversationTable::Topic => EmbeddingTable::Topic,
         }
     }
 }
@@ -267,16 +267,16 @@ pub struct Filter<'a> {
 /// and `$2` the limit, so the filters take `$3` upward in field order.
 struct SearchFilters<'a> {
     clause: String,
-    chat_id: Option<ChatId>,
+    conversation_id: Option<ConversationId>,
     document_ids: Option<&'a [Uuid]>,
     filter: Option<Filter<'a>>,
 }
 
 impl<'a> SearchFilters<'a> {
-    fn chat(chat_id: ChatId, filter: Option<Filter<'a>>) -> Self {
+    fn chat(conversation_id: ConversationId, filter: Option<Filter<'a>>) -> Self {
         Self {
-            clause: clause(&["chat_id = $3".to_owned()], filter),
-            chat_id: Some(chat_id),
+            clause: clause(&["conversation_id = $3".to_owned()], filter),
+            conversation_id: Some(conversation_id),
             document_ids: None,
             filter,
         }
@@ -285,7 +285,7 @@ impl<'a> SearchFilters<'a> {
     fn documents(document_ids: &'a [Uuid]) -> Self {
         Self {
             clause: clause(&["document_id = ANY($3)".to_owned()], None),
-            chat_id: None,
+            conversation_id: None,
             document_ids: Some(document_ids),
             filter: None,
         }
@@ -294,7 +294,7 @@ impl<'a> SearchFilters<'a> {
     fn unscoped() -> Self {
         Self {
             clause: clause(&[], None),
-            chat_id: None,
+            conversation_id: None,
             document_ids: None,
             filter: None,
         }
@@ -305,8 +305,8 @@ impl<'a> SearchFilters<'a> {
     where
         'a: 'q,
     {
-        if let Some(chat_id) = self.chat_id {
-            query = query.bind(chat_id.0);
+        if let Some(conversation_id) = self.conversation_id {
+            query = query.bind(conversation_id.0);
         }
         if let Some(ids) = self.document_ids {
             query = query.bind(ids);
@@ -357,13 +357,13 @@ async fn search(
     Ok(q.fetch_all(pool).await?)
 }
 
-/// Nearest neighbours inside one chat; only the tables that carry `chat_id` are accepted. `filter`
+/// Nearest neighbours inside one chat; only the tables that carry `conversation_id` are accepted. `filter`
 /// is the caller's row predicate, which a repo builds from its own table's vocabulary.
-pub async fn search_chat_embedding_vec(
+pub async fn search_conversation_embedding_vec(
     pool: &sqlx::PgPool,
-    table: ChatTable,
+    table: ConversationTable,
     query: &[f32],
-    chat_id: ChatId,
+    conversation_id: ConversationId,
     filter: Option<Filter<'_>>,
     limit: i64,
 ) -> Result<Vec<(Uuid, f64)>> {
@@ -371,7 +371,7 @@ pub async fn search_chat_embedding_vec(
         pool,
         table.table(),
         query,
-        SearchFilters::chat(chat_id, filter),
+        SearchFilters::chat(conversation_id, filter),
         limit,
     )
     .await
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn each_scope_numbers_its_own_placeholder() {
-        let chat = ChatId(7);
+        let chat = ConversationId(7);
         let docs = [Uuid::from_u128(1), Uuid::from_u128(2)];
         let docs = docs.as_slice();
         let active = Filter {
@@ -498,26 +498,29 @@ mod tests {
         let memory = SearchFilters::chat(chat, Some(active));
         assert_eq!(
             memory.clause,
-            "chat_id = $3 AND status = $4 AND embedding IS NOT NULL"
+            "conversation_id = $3 AND status = $4 AND embedding IS NOT NULL"
         );
-        assert_eq!(memory.chat_id, Some(chat));
+        assert_eq!(memory.conversation_id, Some(chat));
         assert_eq!(memory.filter.map(|filter| filter.value), Some("active"));
         assert!(memory.document_ids.is_none());
 
         let topic = SearchFilters::chat(chat, None);
-        assert_eq!(topic.clause, "chat_id = $3 AND embedding IS NOT NULL");
+        assert_eq!(
+            topic.clause,
+            "conversation_id = $3 AND embedding IS NOT NULL"
+        );
 
         let document_scope = SearchFilters::documents(docs);
         assert_eq!(
             document_scope.clause,
             "document_id = ANY($3) AND embedding IS NOT NULL"
         );
-        assert!(document_scope.chat_id.is_none());
+        assert!(document_scope.conversation_id.is_none());
         assert_eq!(document_scope.document_ids, Some(docs));
 
         let unscoped = SearchFilters::unscoped();
         assert_eq!(unscoped.clause, "embedding IS NOT NULL");
-        assert!(unscoped.chat_id.is_none());
+        assert!(unscoped.conversation_id.is_none());
         assert!(unscoped.document_ids.is_none());
     }
 }

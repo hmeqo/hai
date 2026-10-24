@@ -4,19 +4,30 @@
 use std::{str::FromStr, sync::Arc, time::Duration};
 
 use strum::IntoEnumIterator;
-use tokio::{task::JoinHandle, time::Instant};
+use tokio::{sync::watch, task::JoinHandle, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     agent::{
-        channel::{Channel, ChannelAccess},
-        inbound::Intake,
+        channel::{Channel, ChannelAccess, ChannelRouter},
+        inbound::{Intake, IntakeParts},
         process::{AgentRuntime, AppContext, registry::AgentRegistry},
     },
+    config::conversation::ConversationScope,
     domain::model::Platform,
     error::{AppError, Result},
-    platform::{adapter::ChannelAdapter, outbound::OutboundRecorder, telegram::TelegramChannel},
+    platform::{
+        adapter::ChannelAdapter, outbound::OutboundRecorder, teamspeak::TeamspeakChannel,
+        telegram::TelegramChannel,
+    },
 };
+
+/// Both platforms place new Chats in isolated Conversations by default.
+pub(crate) fn platform_conversation_scope(platform: Platform) -> ConversationScope {
+    match platform {
+        Platform::Telegram | Platform::Teamspeak => ConversationScope::Isolated,
+    }
+}
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(40);
@@ -29,6 +40,16 @@ pub(crate) struct ChannelContext {
     pub(crate) intake: Arc<Intake>,
     pub(crate) agents: AgentRegistry,
     pub(crate) shutdown: CancellationToken,
+    /// Every channel is assembled before any intake starts.
+    pub(crate) start: watch::Receiver<bool>,
+}
+
+/// The process-wide pieces a platform's channel needs to assemble and start.
+#[derive(Clone)]
+pub(crate) struct ChannelWiring {
+    pub router: ChannelRouter,
+    pub agents: AgentRegistry,
+    pub start: watch::Receiver<bool>,
 }
 
 /// A channel the host holds: its runtime and the supervisor restarting its generations.
@@ -47,44 +68,59 @@ impl ChannelRuntime {
 
     /// Everything every platform shares about running one channel: from an adapter on, they are all
     /// the same, so a platform supplies the adapter and gets back what a supervised run needs.
-    pub(crate) fn assemble(
+    pub(crate) async fn assemble(
         ctx: &AppContext,
         runtime: &AgentRuntime,
         adapter: Arc<dyn ChannelAdapter>,
         shutdown: CancellationToken,
+        scope: ConversationScope,
+        wiring: ChannelWiring,
     ) -> Arc<ChannelContext> {
         let channel: Arc<dyn Channel> = Arc::new(OutboundRecorder::new(
             Arc::clone(&adapter),
             ctx.services.clone(),
-            runtime.cfg().model_roles.default.model.clone(),
+            runtime.model.clone(),
         ));
-        let agents = AgentRegistry::new(channel, runtime.clone(), shutdown.clone());
+        wiring.router.register(channel).await;
+        let choices = adapter.clone().choice_surface();
+        let channel_key = adapter.key().clone();
         let access: Arc<dyn ChannelAccess> = adapter.clone();
-        let intake = Arc::new(Intake::new(
+        let intake = Arc::new(Intake::new(IntakeParts {
+            channel_key,
+            scope,
             access,
-            adapter.capabilities(),
-            ctx.services.clone(),
-            ctx.settings.clone(),
-            ctx.cfg.agent.language,
-            agents.clone(),
-        ));
+            choices,
+            services: ctx.services.clone(),
+            settings: ctx.settings.clone(),
+            default_language: ctx.cfg.conversation.language,
+            registry: wiring.agents.clone(),
+        }));
         Arc::new(ChannelContext {
             adapter,
             intake,
-            agents,
+            agents: wiring.agents,
             shutdown,
+            start: wiring.start,
         })
     }
 }
 
 pub struct ChannelHost {
     channels: Vec<ChannelRuntime>,
+    registry: AgentRegistry,
+    agents_shutdown: CancellationToken,
 }
 
 impl ChannelHost {
     pub async fn spawn_all(ctx: &AppContext, runtime: &AgentRuntime) -> Result<Self> {
+        let router = ChannelRouter::new();
+        let agents_shutdown = CancellationToken::new();
+        let registry = AgentRegistry::new(router.clone(), runtime.clone(), agents_shutdown.clone());
+        let (start_tx, start_rx) = watch::channel(false);
         let mut host = ChannelHost {
             channels: Vec::new(),
+            registry,
+            agents_shutdown,
         };
         for (key, section) in &ctx.cfg.channel {
             // Without an explicit `type` the section's own name is the platform.
@@ -94,11 +130,39 @@ impl ChannelHost {
             let shutdown = CancellationToken::new();
             let channel = match platform {
                 Platform::Telegram => {
-                    TelegramChannel::spawn(key, section, ctx, runtime, shutdown).await?
+                    TelegramChannel::spawn(
+                        key,
+                        section,
+                        ctx,
+                        runtime,
+                        shutdown,
+                        ChannelWiring {
+                            router: router.clone(),
+                            agents: host.registry.clone(),
+                            start: start_rx.clone(),
+                        },
+                    )
+                    .await?
+                }
+                Platform::Teamspeak => {
+                    TeamspeakChannel::spawn(
+                        key,
+                        section,
+                        ctx,
+                        runtime,
+                        shutdown,
+                        ChannelWiring {
+                            router: router.clone(),
+                            agents: host.registry.clone(),
+                            start: start_rx.clone(),
+                        },
+                    )
+                    .await?
                 }
             };
             host.channels.push(channel);
         }
+        let _ = start_tx.send(true);
         Ok(host)
     }
 
@@ -106,6 +170,7 @@ impl ChannelHost {
         for channel in &self.channels {
             channel.context.shutdown.cancel();
         }
+        self.agents_shutdown.cancel();
 
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         for channel in std::mem::take(&mut self.channels) {
@@ -113,13 +178,16 @@ impl ChannelHost {
                 context,
                 supervisor,
             } = channel;
-            let drain = context.agents.drain(SHUTDOWN_GRACE);
-            if tokio::time::timeout_at(deadline, async { tokio::join!(supervisor, drain) })
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, supervisor).await.is_err() {
                 tracing::warn!(channel = %context.adapter.key(), "shutdown timeout, abandoning");
             }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if tokio::time::timeout_at(deadline, self.registry.drain(SHUTDOWN_GRACE.min(remaining)))
+            .await
+            .is_err()
+        {
+            tracing::warn!("agent drain timeout, abandoning");
         }
     }
 }
@@ -140,6 +208,7 @@ fn resolve_platform(key: &str, kind: &str) -> Result<Platform> {
 
 impl Drop for ChannelHost {
     fn drop(&mut self) {
+        self.agents_shutdown.cancel();
         for channel in &mut self.channels {
             channel.context.shutdown.cancel();
             channel.supervisor.abort();
@@ -161,6 +230,22 @@ mod tests {
             resolve_platform("main", "telegram").expect("a known platform"),
             Platform::Telegram
         );
+        assert_eq!(
+            resolve_platform("ts", "teamspeak").expect("a known platform"),
+            Platform::Teamspeak
+        );
+    }
+
+    #[test]
+    fn every_platform_defaults_to_isolated() {
+        assert_eq!(
+            platform_conversation_scope(Platform::Teamspeak),
+            ConversationScope::Isolated
+        );
+        assert_eq!(
+            platform_conversation_scope(Platform::Telegram),
+            ConversationScope::Isolated
+        );
     }
 
     #[test]
@@ -169,5 +254,6 @@ mod tests {
         assert!(err.contains("channel 'main'"), "{err}");
         assert!(err.contains("unknown platform 'qq'"), "{err}");
         assert!(err.contains("telegram"), "{err}");
+        assert!(err.contains("teamspeak"), "{err}");
     }
 }

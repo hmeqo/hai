@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    config::meta::PROJECT_NAME_UPPER,
+    config::PROJECT_NAME_UPPER,
     error::{AppError, Result},
 };
 

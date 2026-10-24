@@ -3,7 +3,8 @@ use std::{
     sync::OnceLock,
 };
 
-use crate::config::{env, meta::PROJECT_NAME};
+use super::env;
+use crate::config::PROJECT_NAME;
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -79,7 +80,7 @@ impl Paths {
         &self.file_cache_dir
     }
 
-    /// The per-chat workspace roots: the one writable place a sandboxed agent has.
+    /// The per-Conversation workspace roots: the one writable place a sandboxed agent has.
     pub fn workspaces_dir(&self) -> PathBuf {
         self.data_dir.join("workspaces")
     }

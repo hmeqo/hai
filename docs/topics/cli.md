@@ -1,16 +1,16 @@
 # CLI / event log TUI / rebuild
 
-> `hai`'s command surface: the management families, the destructive embedding rebuild, and the event-log TUI. Read before changing `cli/mod.rs`, `cli/`, `cli/tui/`, `domain/db.rs` or `domain/repo/vector.rs`.
+> `hai`'s command surface: the management families, the destructive embedding rebuild, and the event-log TUI. Read before changing `cli/mod.rs`, `cli/`, `cli/tui/`, `domain/storage.rs` or `domain/repo/vector.rs`.
 
 ## Overview
 
-One binary, two modes: with no subcommand it starts the bot (`app/mod.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` management command, assembled by `cli/mod.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log` and `kb` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves that role alone, so it needs no chat model; the flags are the `clap` definitions behind `--help`.
+One binary, two modes: with no subcommand it starts the bot (`bootstrap.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` / `conversation` management command, assembled by `cli/mod.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log`, `kb` and `conversation` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves that role alone, so it needs no chat model; the flags are the `clap` definitions behind `--help`.
 
 ## Design
 
 ### db
 
-`create` rewrites the configured URL onto the `postgres` database (`domain/db.rs:create_database`) and issues `CREATE DATABASE`. `migrate` is one call into `domain/db.rs:migrate`, which runs `domain/db.rs:apply_schema` — `crates/hai/migrations/schema.sql`, then `domain/db.rs:normalize_legacy_columns`, which backfills legacy NULL `memory.source_message_ids` to `'{}'` and makes the column `NOT NULL DEFAULT '{}'` while dropping the stale DDL defaults the write paths now bind (`memory.status`, `account.last_active_at`, `topic.started_at`, `topic.last_active_at`) — and then `domain/repo/vector.rs:ensure_embedding_schema`, which adds the vector extension and the `embedding` column at the configured dimension. Nothing runs automatically, so a deploy must run this.
+`create` rewrites the configured URL onto the `postgres` database (`domain/storage.rs:create_database`) and issues `CREATE DATABASE`. `migrate` is one call into `domain/storage.rs:migrate`, which runs `domain/storage.rs:apply_schema` — `crates/hai/migrations/schema.sql` creates the current tables, indexes and constraints — and then `domain/repo/vector.rs:ensure_embedding_schema`, which adds the vector extension and the `embedding` column at the configured dimension. Nothing runs automatically, so a deploy must run this. A database written before the Conversation boundary is migrated by the operator.
 
 ### rebuild embeddings (`cli/rebuild.rs:rebuild_embeddings`)
 
@@ -23,6 +23,10 @@ One binary, two modes: with no subcommand it starts the bot (`app/mod.rs:serve`)
 - A directory is an error unless `--recursive` is given, and so is a file that is not `.md`/`.txt`.
 - `search` prints `p=` (the reranker's score) when reranking is configured, `d=` (the vector leg's L2 distance) otherwise, and `-` for a chunk only the lexical leg recalled.
 - A `---` block is frontmatter only when it holds a `key: value` line, so a document opening with a horizontal rule keeps its body; the title comes from that block, otherwise the file stem, and `--title` overrides both.
+
+### conversation (`cli/mod.rs:ConversationAction`)
+
+`list` prints every Conversation with its member Chats. `attach --chat <id> --conversation <id>` moves one Chat and its pending entries into an existing Conversation; `detach --chat <id>` creates a fresh Conversation and moves it there. History is a cutover: `message.conversation_id` stays in the source Conversation; only `chat.conversation_id` and the unconsumed pending entries move. Both operations are one transaction.
 
 ### log (`cli/log.rs`)
 

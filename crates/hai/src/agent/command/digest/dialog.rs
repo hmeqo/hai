@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::copy;
 use crate::{
-    agentcore::Language,
+    config::conversation::Language,
     domain::{model::ChatType, vo::Stretch},
 };
 
@@ -13,6 +13,16 @@ use crate::{
 pub(crate) enum Delivery {
     Chat,
     Person,
+}
+
+impl Delivery {
+    /// A private chat is already the person: "me" and "here" name the same address there.
+    pub(crate) fn for_chat(self, chat_type: ChatType) -> Self {
+        match (self, chat_type) {
+            (Self::Person, ChatType::Private) => Self::Chat,
+            _ => self,
+        }
+    }
 }
 
 /// Where a digest stands. Each page carries what it needs, so the pages that name a report have one.

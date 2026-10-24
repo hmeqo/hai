@@ -8,8 +8,11 @@ use genai::chat::{ChatMessage, ChatOptions, ToolCall};
 
 use crate::{
     agent::process::AgentRuntime,
-    agentcore::{Language, tool::AgentTool},
-    config::schema::ChatConfig,
+    agentcore::tool::AgentTool,
+    config::{
+        conversation::{ContentPolicy, Language},
+        schema::ChatConfig,
+    },
     domain::{
         model::ChatType,
         vo::{ModelRetryReason, StepNumber},
@@ -32,20 +35,25 @@ pub(crate) enum StepDecision {
     },
 }
 
-pub(crate) struct StepFacts {
+pub(crate) struct StepFacts<'a> {
     pub step: StepNumber,
-    pub text_empty: bool,
+    /// The Step's own text, as written; a speaking-contract guide quotes it back.
+    pub text: &'a str,
     pub calls_empty: bool,
     pub skipped: bool,
     pub non_skip_calls: usize,
+    /// Whether a speaking tool already succeeded earlier in this run. Text after that is not an
+    /// unsent reply, so the speaking contract has nothing left to recover.
+    pub spoken: bool,
 }
 
-impl StepFacts {
+impl<'a> StepFacts<'a> {
     pub(crate) fn from_calls(
         step: StepNumber,
-        text: &str,
+        text: &'a str,
         calls: &[ToolCall],
         tools: &[Arc<dyn AgentTool>],
+        spoken: bool,
     ) -> Self {
         let meta = |name: &str| tools.iter().find(|t| t.name() == name);
         let mut skipped = false;
@@ -58,10 +66,11 @@ impl StepFacts {
         }
         Self {
             step,
-            text_empty: text.trim().is_empty(),
+            text,
             calls_empty: calls.is_empty(),
             skipped,
             non_skip_calls,
+            spoken,
         }
     }
 }
@@ -75,7 +84,7 @@ pub(crate) struct RoleSpec {
 }
 
 impl RoleSpec {
-    pub(crate) fn decide_step(&mut self, facts: StepFacts) -> StepDecision {
+    pub(crate) fn decide_step(&mut self, facts: StepFacts<'_>) -> StepDecision {
         match self.role {
             AgentRole::Default => default::decide(facts, &mut self.contract_violations),
             AgentRole::WrapUp | AgentRole::Digest => stop_when_no_calls(facts),
@@ -104,29 +113,43 @@ impl AgentRole {
     pub(crate) fn spec(
         self,
         runtime: &AgentRuntime,
+        chat: &ChatConfig,
         chat_type: ChatType,
         language: Language,
+        persona: Option<&str>,
+        content_policy: ContentPolicy,
     ) -> RoleSpec {
         let cfg = &runtime.cfg().agent;
-        let chat = &runtime.cfg().model_roles.default;
         match self {
             AgentRole::Default => RoleSpec {
                 role: self,
-                system_prompt: default::system_prompt(runtime, chat_type, language),
+                system_prompt: default::system_prompt(
+                    runtime,
+                    chat_type,
+                    language,
+                    persona,
+                    content_policy,
+                ),
                 options: build_chat_options(chat),
                 steering: cfg.context.steering,
                 contract_violations: 0,
             },
             AgentRole::WrapUp => RoleSpec {
                 role: self,
-                system_prompt: default::system_prompt(runtime, chat_type, language),
+                system_prompt: default::system_prompt(
+                    runtime,
+                    chat_type,
+                    language,
+                    None,
+                    content_policy,
+                ),
                 options: build_chat_options(chat),
                 steering: false,
                 contract_violations: 0,
             },
             AgentRole::Digest => RoleSpec {
                 role: self,
-                system_prompt: digest::system_prompt(runtime, language),
+                system_prompt: digest::system_prompt(runtime, language, content_policy),
                 options: build_chat_options(chat),
                 steering: false,
                 contract_violations: 0,
@@ -137,7 +160,7 @@ impl AgentRole {
 
 /// A pass whose work is finished when the model stops calling tools: its summary or report is
 /// already the response text.
-pub(super) fn stop_when_no_calls(facts: StepFacts) -> StepDecision {
+pub(super) fn stop_when_no_calls(facts: StepFacts<'_>) -> StepDecision {
     if facts.calls_empty {
         StepDecision::Stop
     } else {
@@ -170,10 +193,11 @@ mod tests {
     fn a_pass_stops_when_it_stops_calling_tools() {
         let facts = |calls_empty| StepFacts {
             step: StepNumber::from(1),
-            text_empty: false,
+            text: "report",
             calls_empty,
             skipped: false,
             non_skip_calls: 0,
+            spoken: false,
         };
 
         assert!(matches!(
@@ -204,19 +228,22 @@ mod tests {
             StubTool::new("mcp_skip").into_dyn(),
         ];
 
-        let skipped = StepFacts::from_calls(StepNumber::from(1), "hi", &[call("skip")], &tools);
+        let skipped =
+            StepFacts::from_calls(StepNumber::from(1), "hi", &[call("skip")], &tools, false);
         assert!(skipped.skipped);
         assert_eq!(skipped.non_skip_calls, 0);
 
         // Neither call skips the turn: each counts one non-skip call.
         for name in ["send_message", "generate_image"] {
-            let facts = StepFacts::from_calls(StepNumber::from(1), "hi", &[call(name)], &tools);
+            let facts =
+                StepFacts::from_calls(StepNumber::from(1), "hi", &[call(name)], &tools, false);
             assert_eq!(facts.non_skip_calls, 1, "{name}");
         }
 
         // `ends_turn` comes from tool metadata only: a tool whose name looks like `skip`
         // but does not declare it keeps the turn going
-        let lookalike = StepFacts::from_calls(StepNumber::from(1), "", &[call("mcp_skip")], &tools);
+        let lookalike =
+            StepFacts::from_calls(StepNumber::from(1), "", &[call("mcp_skip")], &tools, false);
         assert!(!lookalike.skipped);
         assert_eq!(lookalike.non_skip_calls, 1);
     }

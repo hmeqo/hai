@@ -3,7 +3,7 @@
 use crate::domain::{
     model::{ChatType, Platform},
     repo::ChangeKind,
-    vo::{AttachmentKind, AttachmentMeta, EntryAudience},
+    vo::{AttachmentKind, AttachmentMeta, ChatAddress, EntryAudience},
 };
 
 /// One message a platform read off its wire, in the shape the store and the agent speak.
@@ -27,7 +27,7 @@ pub(crate) struct Arrival {
 }
 
 pub(crate) struct ArrivalChat {
-    pub external_id: String,
+    pub address: ChatAddress,
     pub kind: ChatType,
     pub title: Option<String>,
 }

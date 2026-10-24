@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 
 use super::*;
-use crate::domain::vo::{ChatId, MessageId, TopicId, enum_column};
+use crate::domain::vo::{ConversationId, MessageId, TopicId, enum_column};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Topic {
     pub id: TopicId,
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
 
     pub title: Option<String>,
     pub summary: Option<String>,

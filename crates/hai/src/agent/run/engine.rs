@@ -6,10 +6,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     Messages, TurnOutput,
-    agent_loop::{LoopTurn, run_loop},
+    agent_loop::{LoopTurn, TurnIdentity, run_loop},
     has_spoken,
     step_loop::StepLoopOutput,
-    turn::{ToolContext, TurnContext},
+    turn::{SelectedModel, ToolContext, TurnContext},
 };
 use crate::{
     agent::{
@@ -25,6 +25,15 @@ use crate::{
         TurnEndReason, TurnNumber,
     },
 };
+
+pub(crate) struct TurnRun<'a> {
+    pub messages: Messages,
+    pub doorbell: Doorbell,
+    pub steering_since: u64,
+    pub turn_number: TurnNumber,
+    pub session: SessionRef,
+    pub model: &'a SelectedModel,
+}
 
 pub(crate) struct AgentEngine {
     pub(crate) runtime: AgentRuntime,
@@ -99,23 +108,39 @@ impl AgentEngine {
         &self,
         ctx: TurnContext,
         tools: Arc<[Arc<dyn AgentTool>]>,
-        messages: Messages,
-        doorbell: Doorbell,
-        turn_number: TurnNumber,
-        session: SessionRef,
+        run: TurnRun<'_>,
     ) -> tokio::sync::oneshot::Receiver<BusySignal> {
+        let TurnRun {
+            messages,
+            doorbell,
+            steering_since,
+            turn_number,
+            session,
+            model,
+        } = run;
         let chat_id = ctx.tool.chat.chat_id();
         let event_bus = self.runtime.event_bus().clone();
 
-        let spec = AgentRole::Default.spec(&self.runtime, ctx.chat_type, ctx.language);
+        let spec = AgentRole::Default.spec(
+            &self.runtime,
+            &model.chat,
+            ctx.chat_type,
+            ctx.language,
+            ctx.persona.as_deref(),
+            ctx.content_policy,
+        );
         let turn = LoopTurn::new(
             &self.runtime,
+            model,
             spec,
-            chat_id,
+            TurnIdentity {
+                chat_id,
+                turn_number,
+                session,
+            },
             messages,
             doorbell,
-            turn_number,
-            session,
+            steering_since,
         );
 
         self.spawn_busy(
@@ -211,22 +236,34 @@ impl AgentEngine {
         messages: Messages,
         doorbell: Doorbell,
         parent: SessionId,
+        model: &SelectedModel,
     ) -> tokio::sync::oneshot::Receiver<BusySignal> {
         let mut wrap_messages = messages;
         wrap_messages.push(ChatMessage::user(
             self.runtime.prompts.wrap_up(ctx.language).to_owned(),
         ));
-        let spec = AgentRole::WrapUp.spec(&self.runtime, ctx.chat_type, ctx.language);
+        let spec = AgentRole::WrapUp.spec(
+            &self.runtime,
+            &model.chat,
+            ctx.chat_type,
+            ctx.language,
+            None,
+            ctx.content_policy,
+        );
         let chat_id = ctx.tool.chat.chat_id();
         let session = SessionRef::wrap_up(SessionId::new(), parent);
         let turn = LoopTurn::new(
             &self.runtime,
+            model,
             spec,
-            chat_id,
+            TurnIdentity {
+                chat_id,
+                turn_number: TurnNumber::from(1),
+                session,
+            },
             wrap_messages,
             doorbell,
-            TurnNumber::from(1),
-            session,
+            0,
         );
 
         let event_bus = self.runtime.event_bus().clone();

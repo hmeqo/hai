@@ -19,8 +19,8 @@ pub(crate) mod host;
 pub use container::ContainerSandbox;
 pub use host::HostSandbox;
 
-/// The workspace's mount point inside a container: the path a containerised command spells the chat's
-/// workspace with, while the host spells the same directory `host_workspace()`.
+/// The workspace's mount point inside a container: the path a containerised command spells the
+/// Conversation's workspace with, while the host spells the same directory `host_workspace()`.
 const CONTAINER_WORKSPACE_ROOT: &str = "/workspace";
 const MAX_TIMEOUT_SECS: u64 = 3600;
 
@@ -68,8 +68,8 @@ impl Sandbox {
         }
     }
 
-    /// The chat's workspace on the host's filesystem: what `read` opens for `workspace://<rel>` and for
-    /// a relative path.
+    /// The Conversation's workspace on the host's filesystem: what `read` opens for
+    /// `workspace://<rel>` and for a relative path.
     pub fn host_workspace(&self) -> &Path {
         match self {
             Self::Container(container) => container.workspace_dir(),

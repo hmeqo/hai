@@ -1,6 +1,11 @@
 use super::{
-    account::account_element, chat::render_chat_info, memory::memory_element,
-    message::conversation_element, perception::perception_item, topic::topic_element,
+    account::account_element,
+    chat::{render_chat_info, render_current_chat},
+    host_action::host_actions_element,
+    memory::memory_element,
+    message::conversation_element,
+    perception::perception_item,
+    topic::topic_element,
 };
 use crate::{
     agent::{events::EventGroup, prompt::context::RenderContext},
@@ -19,12 +24,14 @@ pub fn render_main_context(ctx: &RenderContext, instruction: Node) -> String {
                 .current()
                 .recall()
                 .perceptions()
+                .host_actions()
                 .conversation()
                 .build(),
         ),
     )
 }
 
+#[cfg(test)]
 pub(crate) fn render_situation_only(groups: &[EventGroup]) -> String {
     render_xml(&Node::tag("context").child(build_situation_section(groups)))
 }
@@ -105,16 +112,21 @@ impl<'a> ContextBuilder<'a> {
     }
 
     fn chat(self) -> Self {
-        if !self.ctx.first_turn {
-            return self;
-        }
-        let chat = self
+        let current = self
             .ctx
-            .chat
-            .as_ref()
-            .expect("a chapter-opening turn carries the chat row");
-        let node = render_chat_info(chat);
-        self.add(node)
+            .chats
+            .iter()
+            .find(|chat| chat.id == self.ctx.origin_chat)
+            .or(self.ctx.chat.as_ref());
+        let Some(current) = current else {
+            return self;
+        };
+        let mut this = self;
+        if this.ctx.first_turn || this.ctx.roster_dirty {
+            let roster: Vec<Node> = this.ctx.chats.iter().map(render_chat_info).collect();
+            this = this.add(Node::tag("chats").children(roster));
+        }
+        this.add(render_current_chat(current))
     }
 
     fn accounts(self) -> Self {
@@ -177,6 +189,13 @@ impl<'a> ContextBuilder<'a> {
         self.add(node)
     }
 
+    /// What the host changed since the last Turn, rendered just before the conversation so the
+    /// agent reads it as the state it is about to answer in.
+    fn host_actions(self) -> Self {
+        let node = host_actions_element(&self.ctx.host_actions, self.ctx.language);
+        self.add(node)
+    }
+
     fn build(self) -> Vec<Node> {
         self.children
     }
@@ -190,13 +209,17 @@ mod tests {
     use crate::{
         agent::{
             events::{WakeEvent, WakeEvents, WakeReason},
-            prompt::context::{ContextMessages, render_context::fixtures::render_context_data},
+            prompt::{
+                context::{ContextMessages, render_context::fixtures::render_context_data},
+                text::TextCatalog,
+            },
         },
-        agentcore::{Language, TextCatalog, render::elements::Node},
+        agentcore::render::elements::Node,
+        config::conversation::Language,
         domain::{
-            model::{Account, Memory, Message, Platform, Topic, TopicStatus},
+            model::{Account, Memory, Message, Topic, TopicStatus},
             test_support,
-            vo::{AccountId, AgentCommand, ChatId, MessageId},
+            vo::{AccountId, AgentCommand, ChatId, HostAction, MessageId},
         },
     };
 
@@ -235,7 +258,7 @@ mod tests {
 
     fn memory(id: u128, content: &str) -> Memory {
         Memory {
-            chat_id: ChatId(2),
+            conversation_id: crate::domain::vo::ConversationId(2),
             created_at: jiff::Timestamp::now(),
             updated_at: jiff::Timestamp::now(),
             ..test_support::memory(id, content)
@@ -245,7 +268,7 @@ mod tests {
     fn topic(id: u128, title: &str, idle_hours: i64) -> Topic {
         let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(idle_hours);
         Topic {
-            chat_id: ChatId(2),
+            conversation_id: crate::domain::vo::ConversationId(2),
             status: TopicStatus::Active,
             started_at: at,
             last_active_at: at,
@@ -352,12 +375,12 @@ mod tests {
         let data = |first_turn: bool| {
             let mut data = render_context_data();
             data.chat.as_mut().expect("fixture chat").name = Some("Test Group".into());
+            std::sync::Arc::make_mut(&mut data.chats)[0].name = Some("Test Group".into());
             data.current_time = "2026-09-23T20:21:30+08:00".to_owned();
             data.first_turn = first_turn;
             data.accounts = vec![Account {
                 id: AccountId(6),
-                identity_id: None,
-                platform: Platform::Telegram,
+                channel_id: crate::domain::vo::PlatformChannelId(1),
                 external_id: "6".into(),
                 meta: None,
                 last_active_at: jiff::Timestamp::now(),
@@ -371,13 +394,66 @@ mod tests {
         assert!(first.contains("<you_are"), "{first}");
         assert!(first.contains("<accounts>"), "{first}");
         // an attribute-only node (chat) must not be dropped as empty
-        assert!(first.contains("<chat id=\"2\""), "{first}");
+        assert!(first.contains("<chats>"), "{first}");
+        assert!(first.contains("<chat alias=\"a\""), "{first}");
         assert!(first.contains("name=\"Test Group\""), "{first}");
+        assert!(first.contains("<current_chat alias=\"a\""), "{first}");
 
         let later = render_main_context(&RenderContext::new(data(false)), Node::tag("situation"));
         assert!(!later.contains("<you_are"), "{later}");
         assert!(!later.contains("<accounts>"), "{later}");
-        assert!(!later.contains("<chat "), "{later}");
+        assert!(!later.contains("<chats>"), "{later}");
+        assert!(later.contains("<current_chat alias=\"a\""), "{later}");
         assert!(later.contains("<current_time>"), "{later}");
+    }
+
+    /// A host action is context the agent reads before the conversation, in the context's language.
+    #[test]
+    fn host_actions_render_before_the_conversation() {
+        let mut data = render_context_data();
+        data.host_actions = vec![HostAction::PersonaChanged];
+        data.language = Language::En;
+
+        let rendered = render_main_context(&RenderContext::new(data), Node::tag("situation"));
+
+        assert!(rendered.contains("<host_actions>"), "{rendered}");
+        assert!(rendered.contains("<action kind=\"persona\">"), "{rendered}");
+        assert!(
+            rendered.contains("The user updated the persona."),
+            "{rendered}"
+        );
+        let host = rendered
+            .find("<host_actions>")
+            .expect("a host action section");
+        let conversation = rendered.find("<conversation").expect("a conversation");
+        assert!(host < conversation, "{rendered}");
+    }
+
+    /// An unchanged setting renders no section at all.
+    #[test]
+    fn no_host_actions_renders_no_section() {
+        let rendered = render_main_context(
+            &RenderContext::new(render_context_data()),
+            Node::tag("situation"),
+        );
+        assert!(!rendered.contains("<host_actions"), "{rendered}");
+    }
+
+    /// A membership change after the chapter opened re-renders the full roster, not a delta.
+    #[test]
+    fn a_dirty_roster_renders_on_a_later_turn() {
+        let mut data = render_context_data();
+        data.first_turn = false;
+        data.roster_dirty = true;
+        let mut second = data.chat.clone().expect("fixture chat");
+        second.id = ChatId(3);
+        second.alias = "b".into();
+        data.chats = std::sync::Arc::from([data.chat.clone().expect("fixture chat"), second]);
+
+        let rendered = render_main_context(&RenderContext::new(data), Node::tag("situation"));
+        assert!(rendered.contains("<chats>"), "{rendered}");
+        assert!(rendered.contains("<chat alias=\"a\""), "{rendered}");
+        assert!(rendered.contains("<chat alias=\"b\""), "{rendered}");
+        assert!(rendered.contains("<current_chat alias=\"a\""), "{rendered}");
     }
 }

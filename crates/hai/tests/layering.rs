@@ -19,18 +19,7 @@ use syn::{
 /// `test_support`. This mirrors `docs/architecture.md`'s measured dependencies; a file outside its
 /// layer's list fails.
 const EDGES: &[(&str, &[&str])] = &[
-    (
-        "app",
-        &[
-            "agent",
-            "agentcore",
-            "config",
-            "domain",
-            "error",
-            "platform",
-            "util",
-        ],
-    ),
+    ("bootstrap", &["agent", "config", "error", "platform"]),
     (
         "platform",
         &["agent", "agentcore", "config", "domain", "error", "util"],
@@ -41,7 +30,14 @@ const EDGES: &[(&str, &[&str])] = &[
     ("agentcore", &["error", "util"]),
     (
         "cli",
-        &["agent", "agentcore", "app", "config", "domain", "error"],
+        &[
+            "agent",
+            "agentcore",
+            "bootstrap",
+            "config",
+            "domain",
+            "error",
+        ],
     ),
     ("util", &["error"]),
 ];
@@ -167,8 +163,12 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The directory a file sits in, when it is not at the source root.
+/// The directory a file sits in, when it is not at the source root. The composition root is a root
+/// file rather than a directory, so it gets a layer of its own.
 fn layer_of(relative: &Path) -> Option<String> {
+    if relative == Path::new("bootstrap.rs") {
+        return Some("bootstrap".to_owned());
+    }
     let mut components = relative.components();
     let first = components.next()?.as_os_str().to_str()?.to_owned();
     components.next()?;
@@ -206,6 +206,26 @@ fn every_layer_names_only_what_architecture_declares() {
         checked += 1;
     }
     assert!(checked > 0, "no source file was checked");
+}
+
+/// `agentcore` is the technical core: it names no agent, domain or config module.
+#[test]
+fn agentcore_names_only_its_own_dependencies() {
+    let mut checked = 0;
+    for source in sources() {
+        if source.layer.as_deref() != Some("agentcore") {
+            continue;
+        }
+        for forbidden in ["agent", "domain", "config"] {
+            assert!(
+                !source.refs.crate_segments.contains(forbidden),
+                "{} names crate::{forbidden}; agentcore must not depend on the higher layers",
+                source.path.display()
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "no agentcore source file was checked");
 }
 
 /// SQL stays in the repositories: the service layer names no sqlx, statement or transaction.

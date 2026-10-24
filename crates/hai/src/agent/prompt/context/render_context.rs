@@ -7,9 +7,10 @@ use crate::{
         channel::ChannelProfile,
         prompt::context::{ContextMessages, fmt::display_name},
     },
+    config::conversation::Language,
     domain::{
-        model::{Account, Attachment, Chat, Memory, Message, Perception, Topic},
-        vo::{AccountId, AttachmentId, MessageId},
+        model::{Account, Attachment, ChatRoster, Memory, Message, Perception, Topic},
+        vo::{AccountId, AttachmentId, ChatId, HostAction, MessageId},
     },
 };
 
@@ -26,7 +27,17 @@ pub struct RenderContext {
 #[derive(Debug)]
 pub struct RenderContextData {
     pub channel: ChannelProfile,
-    pub chat: Option<Chat>,
+    pub chat: Option<ChatRoster>,
+    /// Every member Chat of the Conversation, and the one this Turn belongs to.
+    pub chats: std::sync::Arc<[ChatRoster]>,
+    /// Aliases of source Chats that are no longer members, for preserved history.
+    pub chat_aliases: HashMap<ChatId, String>,
+    pub origin_chat: ChatId,
+    pub roster_dirty: bool,
+    /// The setting changes the host made since the Conversation's last Turn, rendered as context.
+    pub host_actions: Vec<HostAction>,
+    /// The language the whole context is written in.
+    pub language: Language,
     pub current_time: String,
     /// The messages this turn's batch changed: they render below the `new messages` divider.
     pub new_message_ids: HashSet<MessageId>,
@@ -101,7 +112,7 @@ pub(crate) mod fixtures {
     use crate::{
         agent::{channel::ChannelProfile, prompt::context::ContextMessages},
         domain::{
-            model::{Chat, ChatType, Platform},
+            model::{ChatRoster, ChatType, Platform},
             vo::{AccountId, ChatId},
         },
     };
@@ -109,23 +120,26 @@ pub(crate) mod fixtures {
     /// The quiet `RenderContextData` the section tests start from: a channel and a group chat, no
     /// messages, accounts, topics or memories. A test overrides only the fields it asserts on.
     pub(crate) fn render_context_data() -> RenderContextData {
-        let now = jiff::Timestamp::now();
+        let chat = ChatRoster {
+            id: ChatId(2),
+            alias: "a".into(),
+            platform: Platform::Telegram,
+            chat_type: ChatType::Group,
+            name: None,
+        };
         RenderContextData {
             channel: ChannelProfile {
                 account_id: AccountId(1),
                 username: "channel".into(),
                 name: "Bot".into(),
             },
-            chat: Some(Chat {
-                id: ChatId(2),
-                platform: Platform::Telegram,
-                external_id: "2".into(),
-                chat_type: ChatType::Group,
-                name: None,
-                meta: None,
-                created_at: now,
-                updated_at: now,
-            }),
+            chat: Some(chat.clone()),
+            chats: std::sync::Arc::from([chat]),
+            chat_aliases: Default::default(),
+            origin_chat: ChatId(2),
+            roster_dirty: false,
+            host_actions: Vec::new(),
+            language: crate::config::conversation::Language::Zh,
             current_time: String::new(),
             new_message_ids: Default::default(),
             first_turn: true,

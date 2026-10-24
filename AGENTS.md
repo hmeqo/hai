@@ -2,15 +2,16 @@
 
 ## Project overview
 
-HAI is a long-term companion AI assistant running as a Telegram bot. Rust workspace (`hai` + `hai-macros`), layered `app → platform → agent → agentcore + config + domain` over `util` / `error`. The `docs/` tree is the spec authority; `docs/CONTEXT.md` is the term authority and `docs/architecture.md` holds the dependency rules.
+HAI is a long-term companion AI assistant running as a Telegram bot and a TeamSpeak 3 text-chat client. Rust workspace (`hai` + `hai-macros`), layered `bootstrap → platform → agent → agentcore + config + domain` over `util` / `error`. The `docs/` tree is the spec authority; `docs/CONTEXT.md` is the term authority and `docs/architecture.md` holds the dependency rules.
 
 Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 
-- a **Turn** is one loop execution, a **Step** is one LLM call
+- a **Conversation** is the top-level context owner; a **Chat** is one platform surface inside it (a Conversation may span platforms)
+- a **Turn** is one loop execution bound to one origin Chat, a **Step** is one LLM call
 - the **chapter wrap-up** is the chapter-end retention pass; a "summary" is a normal reply
 - **need-close** is a rendering hint, not a stored state
-- a **ChatEntry** is one accumulated change (the reason a Turn reads is derived from it, never carried by the doorbell)
-- a ChatAgent is **Idle or Busy** — wrapping up is a Busy
+- a **ChatEntry** is one accumulated change, naming its origin Chat (the reason a Turn reads is derived from it, never carried by the doorbell)
+- a **ConversationAgent** is **Idle or Busy** — wrapping up is a Busy; one Turn always runs for exactly one origin Chat
 
 ## Commands
 
@@ -20,7 +21,7 @@ Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 - **Build**: Cargo workspace (members `crates/*`, resolver 3) — `cargo build`; one crate: `cargo build --manifest-path crates/hai/Cargo.toml`
 - **Check**: `cargo clippy --all-targets` must be warning-free before delivery (the only tolerated note is the external `proc-macro-error2` future-incompat warning)
 - **Format**: `rustfmt.toml` (`imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`, `reorder_imports = true`)
-- **Schema**: `hai db migrate` is `domain/db.rs:migrate`, which runs `domain/db.rs:apply_schema` (which applies `crates/hai/migrations/schema.sql` and then `normalize_legacy_columns`: legacy NULL arrays become the empty array the model reads, and stale DDL defaults are dropped) and then `domain/repo/vector.rs:ensure_embedding_schema`; it never runs automatically, and only `hai db rebuild embeddings` builds the vector index
+- **Schema**: `hai db migrate` is `domain/storage.rs:migrate`, which runs `domain/storage.rs:apply_schema` (which applies `crates/hai/migrations/schema.sql`) and then `domain/repo/vector.rs:ensure_embedding_schema`; it never runs automatically, and only `hai db rebuild embeddings` builds the vector index
 
 ### Project commands
 
@@ -33,13 +34,14 @@ Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 | `hai db rebuild embeddings` | rebuild every vector and its index |
 | `hai log [--id N] [--chat ID] [--event TAG] [--session PREFIX]` | event-log TUI; `--id N` prints one event |
 | `hai kb import/list/search/delete/reindex` | knowledge-base management (idempotent import, semantic search, rebuild) |
+| `hai conversation attach/detach/list` | move a Chat and its pending entries between Conversations; `list` prints membership |
 
 ## Code style
 
 <CRITICAL>
 
 - **Terms** follow `docs/CONTEXT.md`; never invent a second name for a concept that has one
-- **Layering holds**: `agentcore/` must not depend on `agent/` or `domain/`. The known cycles are listed in `docs/architecture.md`; add no new ones, and `crates/hai/tests/layering.rs` fails on any edge the table does not name
+- **Layering holds**: `agentcore/` must not depend on `agent/`, `domain/` or `config/`, and `config/conversation/` holds the shared `Language`, `ContentPolicy` and `ConversationScope` values as a leaf used by config, domain, agent and platform. The known cycles are listed in `docs/architecture.md`; add no new ones, and `crates/hai/tests/layering.rs` fails on any edge the table does not name
 - **Types over conventions**: domain identifiers are newtypes, fixed sets are enums, events are the typed payload enum — no bare identifier strings and no magic values across a boundary
 - **Missing data violates the contract**: fail fast, never substitute a fallback, and do not spread the legacy "swallow the error and return `Ok(None)`" pattern
 - **Enum wire form lives once**: `#[serde(rename_all = …)]` and `#[strum(serialize_all = …)]` spell the same naming (a consistency test pins it); the accessor stays, the mapping is written once — a hand-written match only where the accessor must compose information
@@ -69,7 +71,7 @@ Conventions already in force:
 - Unit tests are few and per-module: list with `cargo test -p hai --lib -- --list`, run with `cargo test`
 - Test-only helpers several modules share live in a `#[cfg(test)] mod test_support`: one at the crate root for the whole crate, the rest in that layer's (`agent/`, `domain/`) — fixtures, fakes and assertion helpers; no test lives there
 - A fixture for a type a module owns stays in that module behind `#[cfg(test)] mod fixtures`; a test directory is owned by `test_support::TempDir` (created or adopted) and never removed by hand
-- Acceptance of core behavior needs a real Telegram bot and PostgreSQL; without them, verification is limited to compilation and tests — say so instead of implying more
+- Acceptance of core behavior needs a real Telegram bot or TeamSpeak server and PostgreSQL; without them, verification is limited to compilation and tests — say so instead of implying more
 - Before delivery, `cargo clippy --all-targets` must be warning-free
 
 ## Documentation navigation
@@ -78,12 +80,12 @@ Read the matching doc before changing code.
 
 | Task | Doc |
 |---|---|
-| ChatAgent lifecycle, scheduling, chapter reopen, communication | docs/topics/chat-agent.md |
+| ConversationAgent lifecycle, per-origin Turns, chapter reopen | docs/topics/chat-agent.md |
 | Prompt rendering, personality, skills | docs/topics/prompting.md |
 | Tools, execution, multimodal, MCP, networking | docs/topics/tools.md |
 | Data model, services, value objects, pgvector, schema | docs/topics/domain.md |
 | Configuration, error handling, paths, providers | docs/topics/config.md |
-| Telegram integration | docs/topics/platform.md |
+| Platform integration (Telegram, TeamSpeak) | docs/topics/platform.md |
 | Command table, dispatch, menus | docs/topics/commands.md |
 | CLI, event-log TUI, rebuild | docs/topics/cli.md |
 | Cross-module wiring, event system, assembly | docs/architecture.md |

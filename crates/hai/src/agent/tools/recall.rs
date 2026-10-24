@@ -19,7 +19,7 @@ use crate::{
     },
     domain::{
         service::{RecallItem, RecallQuery, RecallScope, ScorerErrorPolicy, Services, recall},
-        vo::{ChatId, TimeRange},
+        vo::{ConversationId, TimeRange},
     },
 };
 
@@ -61,7 +61,7 @@ pub struct RecallArgs {
 /// Recalls past matters: searches this chat's personal memories and topic archives. Reach for it when the user mentions a name, date or earlier agreement you do not know; when they ask about "before / last time / what we said"; or when you are about to record a new memory and want to check whether one already exists. Give `query` a semantic question and `keywords` the terms to match exactly (names, verbatim error text, proper nouns); both may be given at once. With only since/until it lists the range newest first. Results carry summaries only; for the full text use read topic://<id> or read memory://<id>.
 #[hai_macros::tool(reads_only)]
 pub struct Recall {
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub services: Services,
 }
 
@@ -78,7 +78,7 @@ impl Recall {
             on_error: ScorerErrorPolicy::Fail,
         };
 
-        let hits = recall(&self.services, self.chat_id, query).await?;
+        let hits = recall(&self.services, self.conversation_id, query).await?;
         if hits.is_empty() {
             return tool_data(serde_json::json!({
                 "recall": "Nothing matching was found.",
@@ -106,7 +106,7 @@ fn hit_element(item: RecallItem) -> Node {
 
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     vec![Arc::new(Recall {
-        chat_id: ctx.chat.chat_id(),
+        conversation_id: ctx.conversation_id,
         services: ctx.services.clone(),
     })]
 }

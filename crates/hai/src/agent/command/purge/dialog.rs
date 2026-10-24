@@ -1,7 +1,7 @@
 //! The purge confirmation's pages and the buttons each one offers.
 
 use crate::{
-    agentcore::Language,
+    config::conversation::Language,
     domain::vo::{PurgeSurface, PurgeSurfaces, Stretch},
 };
 

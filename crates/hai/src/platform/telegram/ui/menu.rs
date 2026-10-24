@@ -1,13 +1,15 @@
 //! The menu scopes to push: the catalog a client with no scope of its own reads, then one per client
 //! language code reading another, because Telegram hands a client the most specific scope it matches.
-
 use strum::IntoEnumIterator;
 use teloxide::{Bot, payloads::SetMyCommandsSetters, prelude::Requester, types::BotCommand};
 
 use super::super::inbound::command::OWN_COMMANDS;
 use crate::{
-    agent::command::DECLARATIONS,
-    agentcore::{Language, TextCatalog},
+    agent::{
+        command::{CommandGates, declarations},
+        prompt::text::{LanguageText, TextCatalog},
+    },
+    config::conversation::Language,
 };
 
 /// The catalog a client whose language has no scope of its own reads.
@@ -32,24 +34,48 @@ pub(in crate::platform::telegram) fn scopes() -> Vec<(Option<&'static str>, Text
 /// `BotCommand.command` allows only lowercase letters, digits and underscores — and the client
 /// renders the slash itself. A command whose bare form opens a page is listed here too: the menu is
 /// a UI index, not the command contract, and its complete command line works everywhere.
-pub(in crate::platform::telegram) fn bot_commands(catalog: TextCatalog) -> Vec<BotCommand> {
+pub(in crate::platform::telegram) fn bot_commands(
+    catalog: TextCatalog,
+    gates: CommandGates,
+) -> Vec<BotCommand> {
     let mut commands: Vec<BotCommand> = OWN_COMMANDS
         .iter()
         .map(|(name, copy)| BotCommand::new(*name, copy.get(catalog)))
         .collect();
     commands.extend(
-        DECLARATIONS
-            .iter()
-            .map(|declared| BotCommand::new(declared.name, declared.copy.get(catalog))),
+        declarations(gates)
+            .map(|declared| BotCommand::new(telegram_name(declared), declared.copy.get(catalog))),
     );
     commands
 }
 
+/// Telegram's menu accepts only lowercase letters, digits and underscores. A command whose
+/// canonical spelling contains another character is listed under its Telegram-safe alias; the
+/// parser accepts both spellings.
+fn telegram_name(declared: &crate::agent::command::Declaration) -> &'static str {
+    let valid = |name: &str| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    if valid(declared.name) {
+        declared.name
+    } else {
+        declared
+            .aliases
+            .iter()
+            .copied()
+            .find(|alias| valid(alias))
+            .unwrap_or(declared.name)
+    }
+}
+
 /// Pushes every menu scope. A failure only warns: the bot still answers commands, it just shows an
 /// older menu.
-pub(in crate::platform::telegram) async fn install(bot: &Bot) {
+pub(in crate::platform::telegram) async fn install(bot: &Bot, gates: CommandGates) {
     for (language_code, catalog) in scopes() {
-        let request = bot.set_my_commands(bot_commands(catalog));
+        let request = bot.set_my_commands(bot_commands(catalog, gates));
         let result = match language_code {
             Some(code) => request.language_code(code).await,
             None => request.await,
@@ -74,8 +100,9 @@ mod tests {
 
     #[test]
     fn menu_lists_every_command_by_its_bare_name() {
+        let gates = CommandGates::ALL;
         for catalog in TextCatalog::iter() {
-            let listed: Vec<String> = bot_commands(catalog)
+            let listed: Vec<String> = bot_commands(catalog, gates)
                 .into_iter()
                 .map(|command| command.command)
                 .collect();
@@ -85,16 +112,17 @@ mod tests {
                 Some("start"),
                 "the platform's own command comes first"
             );
-            for declared in &DECLARATIONS {
+            for declared in declarations(gates) {
+                let name = telegram_name(declared);
                 assert!(
-                    listed.contains(&declared.name.to_owned()),
+                    listed.contains(&name.to_owned()),
                     "{} is missing from the menu",
                     declared.name
                 );
             }
             assert_eq!(
                 listed.len(),
-                DECLARATIONS.len() + OWN_COMMANDS.len(),
+                declarations(gates).count() + OWN_COMMANDS.len(),
                 "the menu lists the two tables and nothing else"
             );
         }

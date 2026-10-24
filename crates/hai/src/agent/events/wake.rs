@@ -4,7 +4,8 @@ use derive_more::Deref;
 use strum::IntoStaticStr;
 
 use crate::{
-    agentcore::{Language, PerCatalog, TextCatalog},
+    agent::prompt::text::{LanguageText, PerCatalog, TextCatalog},
+    config::conversation::Language,
     domain::{
         model::ChatType,
         vo::{AgentCommand, ChatEntry, EntryAudience, EntryKind, ScheduledTaskId, WakeReasonKind},
@@ -34,18 +35,12 @@ impl TaskPayload {
 impl AgentCommand {
     /// The instruction text handed to the agent, read in `catalog`; `describe` injects it into the
     /// context. The command is a domain value; its wording is the agent's.
-    pub fn instruction(&self, catalog: TextCatalog) -> String {
+    pub(crate) fn instruction(&self, catalog: TextCatalog) -> String {
         match self {
-            Self::OrganizeMemory => ORGANIZE_MEMORY.get(catalog).into(),
             Self::Explain(target) => (EXPLAIN.get(catalog))(target.as_deref()),
         }
     }
 }
-
-const ORGANIZE_MEMORY: PerCatalog<&'static str> = PerCatalog {
-    zh: "执行记忆/主题整理，包括处理不符合规范的记忆或主题，删除重建",
-    en: "Tidy up memory and topics — including repairing or rebuilding entries that no longer hold up",
-};
 
 const EXPLAIN_STYLE: PerCatalog<&'static str> = PerCatalog {
     zh: "说清是什么、怎么用；版本号、参数、命令这类具体事实先核实，不确定就说不确定",
@@ -132,12 +127,16 @@ impl WakeReason {
 
     /// The reason one accumulated change stands for: who it was aimed at decides the reading, and a
     /// command or a scheduled task carries its own instruction. `None` for a change that is no reason
-    /// to wake the agent: a purge is carried out by the idle loop's own pass, and the change that
-    /// asked for it is spent there.
+    /// to wake the agent: a host action is context for the next Turn, a policy change requests the
+    /// wrap-up, and a purge is carried out by the idle loop's own pass, where the change that asked
+    /// for it is spent.
     pub fn of_entry(entry: &ChatEntry, chat_type: ChatType) -> Option<Self> {
         let reason = match &entry.kind {
             EntryKind::MessageCreated { .. } | EntryKind::MessageEdited { .. } => {
                 match (chat_type, entry.audience) {
+                    // Context belongs to a host action, which is matched by kind below; a message
+                    // entry marked Context is a contradiction and wakes nothing.
+                    (_, EntryAudience::Context) => return None,
                     (ChatType::Private, _) => Self::Direct,
                     (_, EntryAudience::Agent) => Self::Mention,
                     (_, EntryAudience::Bystanders) => Self::Observe,
@@ -148,7 +147,9 @@ impl WakeReason {
                 task_id,
                 description,
             } => Self::Scheduled(TaskPayload::new(description.clone()).with_id_opt(*task_id)),
-            EntryKind::Purge(_) => return None,
+            EntryKind::PolicyChanged | EntryKind::HostAction(_) | EntryKind::Purge(_) => {
+                return None;
+            }
         };
         Some(reason)
     }
@@ -247,7 +248,6 @@ mod tests {
 
     fn commands() -> Vec<AgentCommand> {
         vec![
-            AgentCommand::OrganizeMemory,
             AgentCommand::Explain(None),
             AgentCommand::Explain(Some("lifetimes".into())),
         ]
@@ -266,7 +266,7 @@ mod tests {
             "scheduled"
         );
         assert_eq!(
-            WakeReason::Command(AgentCommand::OrganizeMemory).label(),
+            WakeReason::Command(AgentCommand::Explain(None)).label(),
             "command"
         );
     }
@@ -327,6 +327,7 @@ mod tests {
         let at = jiff::Timestamp::from_second(1_700_000_000).expect("timestamp");
         let created = |audience| {
             ChatEntry::new(
+                crate::domain::vo::ChatId(1),
                 audience,
                 EntryKind::MessageCreated {
                     message_id: MessageId(1),
@@ -349,17 +350,19 @@ mod tests {
         );
 
         let command = ChatEntry::new(
+            crate::domain::vo::ChatId(1),
             EntryAudience::Agent,
-            EntryKind::Command(AgentCommand::OrganizeMemory),
+            EntryKind::Command(AgentCommand::Explain(None)),
             at,
         );
         assert_eq!(
             WakeReason::of_entry(&command, ChatType::Private),
-            Some(WakeReason::Command(AgentCommand::OrganizeMemory))
+            Some(WakeReason::Command(AgentCommand::Explain(None)))
         );
 
         // A purge is no reason to turn: the pass that carries it out reads it off the batch itself.
         let purge = ChatEntry::new(
+            crate::domain::vo::ChatId(1),
             EntryAudience::Agent,
             EntryKind::Purge(crate::domain::vo::PurgeSpec {
                 range: crate::domain::vo::Stretch::All,
@@ -368,5 +371,15 @@ mod tests {
             at,
         );
         assert_eq!(WakeReason::of_entry(&purge, ChatType::Private), None);
+
+        // A host action is context the next Turn reads; it is never a reason to start one.
+        let action = ChatEntry::new(
+            crate::domain::vo::ChatId(1),
+            EntryAudience::Context,
+            EntryKind::HostAction(crate::domain::vo::HostAction::PersonaChanged),
+            at,
+        );
+        assert_eq!(WakeReason::of_entry(&action, ChatType::Private), None);
+        assert_eq!(WakeReason::of_entry(&action, ChatType::Group), None);
     }
 }

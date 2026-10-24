@@ -4,7 +4,8 @@ use strum::{Display, EnumString, IntoStaticStr};
 use super::*;
 use crate::{
     domain::vo::{
-        AccountId, ChatId, MessageId, MessageMeta, PlatformMessageMeta, TopicId, enum_column,
+        AccountId, ChatId, ConversationId, MessageId, MessageMeta, PlatformMessageMeta, TopicId,
+        enum_column,
     },
     error::Result,
 };
@@ -13,6 +14,9 @@ use crate::{
 pub struct Message {
     pub id: MessageId,
     pub chat_id: ChatId,
+    /// The Conversation that owned the Chat when this message landed. It preserves history if the
+    /// Chat later moves.
+    pub conversation_id: ConversationId,
 
     /// Who sent it: the person's own account for a message they wrote, the channel's own account for
     /// a reply the agent sent.
@@ -64,6 +68,7 @@ impl Message {
 #[derive(Debug, Clone)]
 pub struct NewMessage {
     pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub account_id: Option<AccountId>,
     pub role: MessageRole,
     pub text: String,

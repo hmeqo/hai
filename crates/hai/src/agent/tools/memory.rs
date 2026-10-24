@@ -18,7 +18,7 @@ use crate::{
     domain::{
         model::MemoryKind,
         service::MemoryService,
-        vo::{AccountId, ChatId, MemoryId, MessageId},
+        vo::{AccountId, ConversationId, MemoryId, MessageId},
     },
 };
 
@@ -76,7 +76,7 @@ pub struct MemoryArgs {
 /// Memory maintenance, one independent fact per entry. Ops: record (write one; needs category/content, plus account_id for user_fact) / revise (change the content; needs id/content) / invalidate (needs id; the row stays for traceability, but recall stops returning it) / forget (delete for good; needs id) / pin (mark as long-lived; needs id/pinned; pinned entries stay resident at the head of the section and are limited in number). record returns the memory id and similar entries (on a duplicate, the returned id is the existing row's); if one of them is about the same fact, use revise/invalidate instead of recording another.
 #[hai_macros::tool]
 pub struct Memory {
-    pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub memories: MemoryService,
 }
 
@@ -100,7 +100,13 @@ impl Memory {
                 let source: Vec<MessageId> = args.message_ids.unwrap_or_default();
                 let outcome = self
                     .memories
-                    .record(kind, self.chat_id, content, args.account_id, &source)
+                    .record(
+                        kind,
+                        self.conversation_id,
+                        content,
+                        args.account_id,
+                        &source,
+                    )
                     .await?;
                 tool_data(serde_json::json!({
                     "id": outcome.memory.id.0,
@@ -111,23 +117,25 @@ impl Memory {
             MemoryOp::Revise => {
                 let id = required(args.id, "id", op)?;
                 let content = required(args.content, "content", op)?;
-                self.memories.revise(self.chat_id, id, content).await?;
+                self.memories
+                    .revise(self.conversation_id, id, content)
+                    .await?;
                 tool_ok()
             }
             MemoryOp::Invalidate => {
                 let id = required(args.id, "id", op)?;
-                self.memories.invalidate(self.chat_id, id).await?;
+                self.memories.invalidate(self.conversation_id, id).await?;
                 tool_ok()
             }
             MemoryOp::Forget => {
                 let id = required(args.id, "id", op)?;
-                self.memories.forget(self.chat_id, id).await?;
+                self.memories.forget(self.conversation_id, id).await?;
                 tool_ok()
             }
             MemoryOp::Pin => {
                 let id = required(args.id, "id", op)?;
                 let pinned = required(args.pinned, "pinned", op)?;
-                self.memories.pin(self.chat_id, id, pinned).await?;
+                self.memories.pin(self.conversation_id, id, pinned).await?;
                 tool_ok()
             }
         }
@@ -140,7 +148,7 @@ fn similar_section(memories: &[crate::domain::model::Memory]) -> Node {
 
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
     vec![Arc::new(Memory {
-        chat_id: ctx.chat.chat_id(),
+        conversation_id: ctx.conversation_id,
         memories: ctx.services.memory.clone(),
     })]
 }

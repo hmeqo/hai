@@ -2,13 +2,18 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{BusyPass, scheduler::SchedulerStatus};
 use crate::{
-    agent::{chat::types::DigestRequest, command::digest::run::DigestReport, events::Doorbell},
-    agentcore::{Language, PerCatalog},
-    domain::vo::{ChatId, Stretch},
+    agent::{
+        chat::types::DigestRequest,
+        command::digest::run::DigestReport,
+        events::Doorbell,
+        prompt::text::{LanguageText, PerCatalog},
+    },
+    config::conversation::Language,
+    domain::vo::{ChatId, ConversationId, Stretch},
     error::{AppError, Result},
 };
 
-pub(crate) struct ChatAgentStatus {
+pub(crate) struct ConversationAgentStatus {
     pub scheduler: SchedulerStatus,
     pub step_count: usize,
     pub context_tokens: u32,
@@ -19,7 +24,7 @@ pub(crate) struct ChatAgentStatus {
     pub model: String,
 }
 
-impl ChatAgentStatus {
+impl ConversationAgentStatus {
     fn render(&self, language: Language) -> String {
         let labels = LABELS.get(language.text_catalog());
         let sched = &self.scheduler;
@@ -129,50 +134,57 @@ fn fmt_tokens(n: u32) -> String {
 }
 
 #[derive(Clone)]
-pub struct ChatAgentRef {
-    chat_id: ChatId,
+pub struct ConversationAgentHandle {
+    conversation_id: ConversationId,
     doorbell: Doorbell,
-    status_tx: mpsc::UnboundedSender<oneshot::Sender<ChatAgentStatus>>,
+    status_tx: mpsc::UnboundedSender<oneshot::Sender<ConversationAgentStatus>>,
     digest_tx: mpsc::UnboundedSender<DigestRequest>,
 }
 
-impl ChatAgentRef {
+impl ConversationAgentHandle {
     pub(crate) fn new(
-        chat_id: ChatId,
+        conversation_id: ConversationId,
         doorbell: Doorbell,
-        status_tx: mpsc::UnboundedSender<oneshot::Sender<ChatAgentStatus>>,
+        status_tx: mpsc::UnboundedSender<oneshot::Sender<ConversationAgentStatus>>,
         digest_tx: mpsc::UnboundedSender<DigestRequest>,
     ) -> Self {
         Self {
-            chat_id,
+            conversation_id,
             doorbell,
             status_tx,
             digest_tx,
         }
     }
 
-    /// Rings the chat's doorbell; the changes themselves are already in the database.
-    pub fn notify(&self) {
+    /// Rings the Conversation's doorbell; the changes themselves are already in the database.
+    pub fn wake(&self) {
         self.doorbell.notify();
+    }
+
+    /// Wakes the agent and makes this Chat's arrival eligible to steer its running Turn.
+    pub fn notify_chat(&self, chat_id: ChatId) {
+        self.doorbell.notify_chat(chat_id);
     }
 
     /// Queues one digest and hands back where its report lands. A busy chat runs it when the slot is
     /// free; the request lives in memory only, so a restart drops it.
     pub fn request_digest(
         &self,
+        chat_id: ChatId,
         stretch: Stretch,
         language: Option<Language>,
     ) -> Result<oneshot::Receiver<Result<DigestReport, String>>> {
         let (reply, report) = oneshot::channel();
         self.digest_tx
             .send(DigestRequest {
+                chat_id,
                 stretch,
                 language,
                 reply,
             })
             .map_err(|_| {
                 tracing::warn!(
-                    chat_id = %self.chat_id,
+                    conversation_id = %self.conversation_id,
                     "Failed to queue a digest: the agent is gone"
                 );
                 AppError::message("the chat agent is not running")
@@ -184,16 +196,16 @@ impl ChatAgentRef {
         Some(self.status().await?.render(language))
     }
 
-    async fn status(&self) -> Option<ChatAgentStatus> {
+    async fn status(&self) -> Option<ConversationAgentStatus> {
         let (tx, rx) = oneshot::channel();
         if self.status_tx.send(tx).is_err() {
-            tracing::warn!(chat_id = %self.chat_id, "Failed to send status query: agent dead");
+            tracing::warn!(conversation_id = %self.conversation_id, "Failed to send status query: agent dead");
             return None;
         }
         match rx.await {
             Ok(s) => Some(s),
             Err(_) => {
-                tracing::warn!(chat_id = %self.chat_id, "Status query cancelled: agent dropped");
+                tracing::warn!(conversation_id = %self.conversation_id, "Status query cancelled: agent dropped");
                 None
             }
         }

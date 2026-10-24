@@ -5,7 +5,10 @@ use crate::{
     domain::{
         model::ScheduledTask,
         repo::{ConversationRecordRepo, window},
-        vo::{ChannelKey, ChatEntry, ChatId, RepeatInterval, ScheduledTaskId, TimeRange},
+        vo::{
+            ChannelKey, ChatEntry, ChatId, ConversationId, RepeatInterval, ScheduledTaskId,
+            TimeRange,
+        },
     },
     error::Result,
 };
@@ -119,9 +122,14 @@ impl ScheduledTaskRepo {
         task: &ScheduledTask,
         entry: &ChatEntry,
         now: jiff::Timestamp,
-    ) -> Result<()> {
+    ) -> Result<ConversationId> {
         let mut tx = self.pool.begin().await?;
-        ConversationRecordRepo::append_entry_in_tx(&mut tx, task.chat_id, entry).await?;
+        let conversation_id: ConversationId =
+            sqlx::query_scalar("SELECT conversation_id FROM chat WHERE id = $1")
+                .bind(task.chat_id.0)
+                .fetch_one(&mut *tx)
+                .await?;
+        ConversationRecordRepo::append_entry_in_tx(&mut tx, conversation_id, entry).await?;
         match task.next_fire_after(now) {
             Some(next) => {
                 sqlx::query(
@@ -142,7 +150,7 @@ impl ScheduledTaskRepo {
             }
         }
         tx.commit().await?;
-        Ok(())
+        Ok(conversation_id)
     }
 
     /// Deletes the tasks a purge reaches, whole, and hands back their ids so the changes that fired

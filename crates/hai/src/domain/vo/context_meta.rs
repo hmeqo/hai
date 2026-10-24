@@ -62,9 +62,7 @@ mod tests {
         assert_ne!(meta.session, session);
     }
 
-    /// A snapshot missing a field is unreadable, not a chapter with an invented session: the row is
-    /// brought to the current shape by `db.rs:normalize_legacy_columns`, never by a
-    /// deserialization default.
+    /// A snapshot missing a field is unreadable, not a chapter with an invented session.
     #[test]
     fn a_snapshot_without_a_session_is_an_error() {
         let legacy = serde_json::json!({ "tokens": 0, "turn_count": 0, "step_count": 0 });

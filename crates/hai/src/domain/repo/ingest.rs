@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::{Message, MessageRole, NewAttachment, NewMessage},
         repo::{ConversationRecordRepo, MessageRepo},
-        vo::{AccountId, ChatEntry, ChatId, EntryAudience, EntryKind},
+        vo::{AccountId, ChatEntry, ChatId, ConversationId, EntryAudience, EntryKind},
     },
     error::{AppError, Result},
 };
@@ -14,6 +14,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct PlatformChange {
     pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub account_id: AccountId,
     pub text: String,
     pub attachments: Vec<NewAttachment>,
@@ -78,6 +79,7 @@ impl IngestRepo {
                 )
                 .await?;
                 let entry = ChatEntry::new(
+                    change.chat_id,
                     change.audience,
                     EntryKind::MessageEdited {
                         message_id: existing.id,
@@ -85,7 +87,8 @@ impl IngestRepo {
                     },
                     edited_at,
                 );
-                ConversationRecordRepo::append_entry_in_tx(&mut tx, change.chat_id, &entry).await?;
+                ConversationRecordRepo::append_entry_in_tx(&mut tx, change.conversation_id, &entry)
+                    .await?;
                 tx.commit().await?;
                 Ok(updated)
             }
@@ -121,6 +124,7 @@ impl IngestRepo {
                     &mut tx,
                     NewMessage {
                         chat_id: change.chat_id,
+                        conversation_id: change.conversation_id,
                         account_id: Some(change.account_id),
                         role: MessageRole::User,
                         text: change.text,
@@ -136,13 +140,15 @@ impl IngestRepo {
                 .await?;
                 let at = change.sent_at.unwrap_or_else(jiff::Timestamp::now);
                 let entry = ChatEntry::new(
+                    change.chat_id,
                     change.audience,
                     EntryKind::MessageCreated {
                         message_id: message.id,
                     },
                     at,
                 );
-                ConversationRecordRepo::append_entry_in_tx(&mut tx, change.chat_id, &entry).await?;
+                ConversationRecordRepo::append_entry_in_tx(&mut tx, change.conversation_id, &entry)
+                    .await?;
                 tx.commit().await?;
                 Ok(message)
             }

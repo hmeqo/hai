@@ -77,6 +77,12 @@ id_type!(
     pg pub struct AccountId(pub i64);
 );
 id_type!(
+    pg pub struct PlatformChannelId(pub i64);
+);
+id_type!(
+    pg pub struct ConversationId(pub i64);
+);
+id_type!(
     pg pub struct TopicId(pub uuid::Uuid);
 );
 id_type!(
@@ -87,9 +93,6 @@ id_type!(
 );
 id_type!(
     pg pub struct PerceptionId(pub uuid::Uuid);
-);
-id_type!(
-    pg pub struct IdentityId(pub uuid::Uuid);
 );
 id_type!(
     pg pub struct KnowledgeDocumentId(pub uuid::Uuid);

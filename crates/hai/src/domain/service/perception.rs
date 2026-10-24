@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::Perception,
         repo::Repos,
-        vo::{AttachmentParser, PerceptionId, Subject, SubjectKind},
+        vo::{AttachmentParser, ConversationId, PerceptionId, Subject, SubjectKind},
     },
     error::Result,
 };
@@ -23,17 +23,25 @@ impl PerceptionService {
 
     pub async fn find(
         &self,
+        conversation_id: ConversationId,
         subject: &Subject,
         parser: AttachmentParser,
         focus: Option<&str>,
     ) -> Result<Option<Perception>> {
-        self.repos.perception.find(subject, parser, focus).await
+        self.repos
+            .perception
+            .find(conversation_id, subject, parser, focus)
+            .await
     }
 
     /// One round trip per subject kind; a file can yield several rows (base transcription plus
     /// targeted readings). `Subject.value` is the `subject` column verbatim, so nothing re-adds a
     /// platform prefix to an already-qualified handle.
-    pub async fn find_by_subjects(&self, subjects: &[Subject]) -> Result<Vec<Perception>> {
+    pub async fn find_by_subjects(
+        &self,
+        conversation_id: ConversationId,
+        subjects: &[Subject],
+    ) -> Result<Vec<Perception>> {
         let mut rows = Vec::new();
         for kind in [SubjectKind::Handle, SubjectKind::Url] {
             let values: Vec<String> = subjects
@@ -47,7 +55,7 @@ impl PerceptionService {
             rows.extend(
                 self.repos
                     .perception
-                    .find_by_subjects(kind, &values)
+                    .find_by_subjects(conversation_id, kind, &values)
                     .await?,
             );
         }
@@ -56,6 +64,7 @@ impl PerceptionService {
 
     pub async fn upsert(
         &self,
+        conversation_id: ConversationId,
         subject: &Subject,
         parser: AttachmentParser,
         focus: Option<&str>,
@@ -64,7 +73,12 @@ impl PerceptionService {
         // The row that comes out is the one this call wrote, not the one it read: the content is what
         // the caller asked for either way. The only way the update finds nothing is a concurrent
         // delete, and then a fresh row is what the caller wants.
-        let perception = match self.repos.perception.find(subject, parser, focus).await? {
+        let perception = match self
+            .repos
+            .perception
+            .find(conversation_id, subject, parser, focus)
+            .await?
+        {
             Some(existing) => {
                 self.repos
                     .perception
@@ -78,7 +92,7 @@ impl PerceptionService {
             None => {
                 self.repos
                     .perception
-                    .create(subject, parser, focus, content)
+                    .create(conversation_id, subject, parser, focus, content)
                     .await?
             }
         };

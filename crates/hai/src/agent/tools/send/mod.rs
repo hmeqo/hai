@@ -296,9 +296,10 @@ mod tests {
                 OutboundField, OutboundMessage, OutboundSource, TypingGuard,
             },
             environment::{sandbox::Sandbox, workspace::Workspace},
+            model::ProviderRegistry,
         },
-        config::{AppConfig, ProviderRegistry},
-        domain::vo::{AccountId, ChannelKey, ChatId},
+        config::AppConfig,
+        domain::vo::{AccountId, ChannelKey, ChatId, ConversationId},
     };
 
     const TEXT_FIELDS: [OutboundField; 1] = [OutboundField {
@@ -435,7 +436,6 @@ mod tests {
             forms,
             reference,
             quote,
-            choices: false,
             max_media_bytes: 50 * 1024 * 1024,
         }
     }
@@ -444,14 +444,11 @@ mod tests {
     /// embedding role the roles insist on.
     fn service_config(provider: &str, model: &str) -> AppConfig {
         let mut cfg = AppConfig::default();
-        cfg.model_roles.default.provider = provider.into();
-        cfg.model_roles.default.model = model.into();
+        cfg.model_roles.default.model = format!("{provider}/{model}");
         cfg.providers.insert(provider.into(), Default::default());
         cfg.model_roles.embedding = crate::config::schema::EmbeddingConfig {
-            provider: Some("openai".into()),
-            model: Some("text-embedding-3-small".into()),
+            model: "openai/text-embedding-3-small".into(),
             dimension: None,
-            base_url: None,
         };
         cfg.providers.insert("openai".into(), Default::default());
         cfg
@@ -461,7 +458,7 @@ mod tests {
     fn service_of(cfg: &AppConfig) -> MultimodalService {
         let registry =
             ProviderRegistry::from_sources(cfg, &|_| Some("test-key".to_owned()), &|_| true);
-        let roles = crate::config::model_role::resolve(cfg, &registry).expect("model roles");
+        let roles = crate::agent::model::resolve(cfg, &registry).expect("model roles");
         MultimodalService::from_config(cfg, &roles).expect("multimodal service")
     }
 
@@ -470,9 +467,12 @@ mod tests {
         service_of(&service_config("anthropic", "claude-sonnet-4-5"))
     }
 
-    /// The sandbox a tool under test acts in: the chat's own workspace, host-mode.
+    /// The sandbox a tool under test acts in: the Conversation's own workspace, host-mode.
     fn host_sandbox() -> Arc<Sandbox> {
-        Arc::new(Sandbox::host(Workspace::for_chat(ChatId(9)), 30))
+        Arc::new(Sandbox::host(
+            Workspace::for_conversation(ConversationId(9)),
+            30,
+        ))
     }
 
     fn tool(channel: Arc<dyn Channel>) -> SendMessage {
@@ -510,11 +510,9 @@ mod tests {
     fn speaking_service() -> MultimodalService {
         let mut cfg = service_config("openai", "gpt-4o");
         cfg.model_roles.speech = Some(crate::config::schema::SpeechConfig {
-            provider: None,
-            model: Some("gpt-4o-mini-tts".into()),
+            model: Some("openai/gpt-4o-mini-tts".into()),
             voice: "alloy".into(),
             speed: 1.0,
-            base_url: None,
         });
         service_of(&cfg)
     }

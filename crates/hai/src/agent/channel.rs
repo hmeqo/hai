@@ -1,16 +1,18 @@
 //! One channel as the agent sees it: `Channel` is the outbound side (send, files, typing, and what
-//! that channel declares); `ChannelAccess` is what the inbound tail and the commands it hands a page
-//! to are given — admission, host copy, a page of buttons and its press, and a file. The platform
-//! layer implements both — an agent module holds a `Channel` and never a platform type. Acting on a
-//! chat goes through `ChannelHandle`, which binds the chat the agent belongs to.
+//! that channel declares); `ChannelAccess` is what the inbound tail is given — admission, host copy,
+//! and a file — and `ChannelChoices` is the separate surface for a page of buttons and its press. A
+//! platform that cannot show a page implements only `ChannelAccess`. The platform layer implements
+//! these traits; an agent module holds a `Channel` and never a platform type. Acting on a chat goes
+//! through `ChannelHandle`, which binds the chat the agent belongs to.
 
-use std::{fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::{
     agent::web::WebUrl,
-    domain::vo::{AccountId, ChannelKey, ChatId, MessageId, TopicId},
+    domain::vo::{AccountId, ChannelKey, ChatAddress, ChatId, MessageId, TopicId},
     error::Result,
 };
 
@@ -88,6 +90,36 @@ pub struct OutboundMessage {
     pub chat_id: ChatId,
     pub reply: ReplyTo,
     pub payload: OutboundPayload,
+}
+
+/// Every configured channel of the process, by its local key. A Conversation may hold Chats from
+/// more than one; the router is how one agent reaches each Chat's own platform.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelRouter {
+    channels: Arc<RwLock<HashMap<ChannelKey, Arc<dyn Channel>>>>,
+}
+
+impl ChannelRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn register(&self, channel: Arc<dyn Channel>) {
+        self.channels
+            .write()
+            .await
+            .insert(channel.key().clone(), channel);
+    }
+
+    pub async fn get(&self, key: &ChannelKey) -> Option<Arc<dyn Channel>> {
+        self.channels.read().await.get(key).cloned()
+    }
+
+    pub async fn handle(&self, key: &ChannelKey, chat_id: ChatId) -> Option<ChannelHandle> {
+        self.get(key)
+            .await
+            .map(|channel| ChannelHandle::new(channel, chat_id))
+    }
 }
 
 /// One chat on the channel the agent runs on. The chat is bound here, so every verb that acts on it
@@ -218,8 +250,6 @@ pub struct ChannelCapabilities {
     pub reference: bool,
     /// A message can quote a part of the one it points at.
     pub quote: bool,
-    /// The platform can put out a page of buttons and read a press back.
-    pub choices: bool,
     /// The largest single upload this platform takes; a bigger local file is refused before it is read.
     pub max_media_bytes: u64,
 }
@@ -262,30 +292,45 @@ pub trait Channel: Debug + Send + Sync + 'static {
 }
 
 /// What an inbound path needs from the channel's platform: whether a chat may talk here, how to
-/// deliver copy the host composed, and how to put a question to a person and read the answer. The
-/// tail reads it, and so do the commands it hands a page to (`purge`, `digest`).
+/// deliver copy the host composed, and a file the host puts out itself. The tail reads it; a
+/// platform with a page of buttons also implements `ChannelChoices`, and one without never does.
 #[async_trait::async_trait]
 pub trait ChannelAccess: Debug + Send + Sync + 'static {
     /// Whether this chat may use the channel; the allowlist spelling is the platform's own.
-    fn admits(&self, chat_external_id: &str) -> bool;
+    fn admits(&self, chat: &ChatAddress) -> bool;
+    /// The chat a private message to this sender goes to; the sender id is the platform's own
+    /// user spelling.
+    fn private_chat_external_id(&self, sender_external_id: &str) -> Result<ChatAddress>;
     /// How this platform spells a command: `/` where a slash line is the convention, `!` where it is
     /// not. Host copy that names a form prints it with this prefix.
     fn command_prefix(&self) -> &'static str;
     /// Delivers host copy (a greeting, an unauthorized notice); never stored.
-    async fn notice(&self, chat_external_id: &str, text: &str) -> Result<()>;
+    async fn notice(&self, chat: &ChatAddress, text: &str) -> Result<()>;
+    /// Delivers a file the host puts out itself (a digest's report), rather than a message the agent
+    /// sent: it bypasses the conversation and is never recorded, like any other host copy. `caption`
+    /// goes out with the file.
+    async fn notice_document(
+        &self,
+        chat: &ChatAddress,
+        filename: &str,
+        bytes: Vec<u8>,
+        caption: &str,
+    ) -> Result<()>;
+}
+
+/// What a platform with a page of buttons offers the commands that draw one. `purge` and `digest`
+/// receive it only when the channel implements it; otherwise the dialog fallback answers on the
+/// command line.
+#[async_trait::async_trait]
+pub trait ChannelChoices: Debug + Send + Sync + 'static {
     /// Puts copy out with a row of buttons under it. Host copy like any other: delivered, never
     /// stored. What a token means belongs to the caller; how the buttons are laid out is the
     /// platform's.
-    async fn ask(
-        &self,
-        chat_external_id: &str,
-        prompt: &str,
-        options: &[ChoiceOption],
-    ) -> Result<()>;
+    async fn ask(&self, chat: &ChatAddress, prompt: &str, options: &[ChoiceOption]) -> Result<()>;
     /// Rewrites one of the host's own button messages; no options takes the buttons away.
     async fn edit_choice(
         &self,
-        chat_external_id: &str,
+        chat: &ChatAddress,
         message_external_id: &str,
         prompt: &str,
         options: &[ChoiceOption],
@@ -294,17 +339,7 @@ pub trait ChannelAccess: Debug + Send + Sync + 'static {
     async fn answer_callback(&self, query_id: &str, answer: CallbackAnswer<'_>) -> Result<()>;
     /// Takes one of the host's own messages away, after the page it carried has done its job.
     /// Host copy, so a refusal is cosmetic.
-    async fn delete_notice(&self, chat_external_id: &str, message_external_id: &str) -> Result<()>;
-    /// Delivers a file the host puts out itself (a digest's report), rather than a message the agent
-    /// sent: it bypasses the conversation and is never recorded, like any other host copy. `caption`
-    /// goes out with the file.
-    async fn notice_document(
-        &self,
-        chat_external_id: &str,
-        filename: &str,
-        bytes: Vec<u8>,
-        caption: &str,
-    ) -> Result<()>;
+    async fn delete_notice(&self, chat: &ChatAddress, message_external_id: &str) -> Result<()>;
 }
 
 /// What answering a press says: nothing at all (the client stops waiting and shows nothing), a toast

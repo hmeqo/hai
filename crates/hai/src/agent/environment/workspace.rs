@@ -1,29 +1,31 @@
-//! The chat's own directory on the host.
+//! The Conversation's own directory on the host.
 
 use std::path::{Path, PathBuf};
 
 use crate::{
     config::Paths,
-    domain::vo::{ChatId, TimeRange},
+    domain::vo::{ConversationId, TimeRange},
     error::Result,
 };
 
-/// The directory a chat's tools work in.
+/// The directory a Conversation's tools work in.
 #[derive(Debug)]
 pub struct Workspace {
     dir: PathBuf,
 }
 
 impl Workspace {
-    /// A chat's workspace is named here and nowhere else.
-    pub fn for_chat(chat_id: ChatId) -> Self {
+    /// A Conversation's workspace is named here and nowhere else.
+    pub fn for_conversation(conversation_id: ConversationId) -> Self {
         Self {
-            dir: Paths::inferred().workspaces_dir().join(chat_id.to_string()),
+            dir: Paths::inferred()
+                .workspaces_dir()
+                .join(conversation_id.to_string()),
         }
     }
 
-    pub async fn create(chat_id: ChatId) -> Result<Self> {
-        let workspace = Self::for_chat(chat_id);
+    pub async fn create(conversation_id: ConversationId) -> Result<Self> {
+        let workspace = Self::for_conversation(conversation_id);
         tokio::fs::create_dir_all(workspace.dir()).await?;
         Ok(workspace)
     }
@@ -126,9 +128,12 @@ mod tests {
 
     #[test]
     fn a_chat_gets_its_own_directory_under_the_workspaces_root() {
-        let first = Workspace::for_chat(ChatId(4242));
+        let first = Workspace::for_conversation(ConversationId(4242));
         assert_eq!(first.dir(), Paths::inferred().workspaces_dir().join("4242"));
-        assert_ne!(first.dir(), Workspace::for_chat(ChatId(4243)).dir());
+        assert_ne!(
+            first.dir(),
+            Workspace::for_conversation(ConversationId(4243)).dir()
+        );
     }
 
     /// A purge deletes the files the window holds, whatever depth they sit at, and takes the

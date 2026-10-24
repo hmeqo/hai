@@ -39,6 +39,7 @@ async fn run(
         for task in due {
             let chat_id = task.chat_id;
             let entry = ChatEntry::new(
+                chat_id,
                 EntryAudience::Agent,
                 EntryKind::Scheduled {
                     task_id: Some(task.id),
@@ -46,8 +47,11 @@ async fn run(
                 },
                 now,
             );
-            services.scheduled_task.fire(&task, &entry, now).await?;
-            registry.get_or_create(chat_id).await.notify();
+            let conversation_id = services.scheduled_task.fire(&task, &entry, now).await?;
+            registry
+                .get_or_create(conversation_id)
+                .await
+                .notify_chat(chat_id);
         }
 
         tokio::select! {

@@ -171,7 +171,8 @@ impl Directory {
 mod tests {
     use super::*;
     use crate::{
-        agent::environment::workspace::Workspace, config::schema::SandboxConfig, domain::vo::ChatId,
+        agent::environment::workspace::Workspace, config::schema::SandboxConfig,
+        domain::vo::ConversationId,
     };
 
     #[test]
@@ -291,11 +292,11 @@ mod tests {
 
     #[test]
     fn a_local_address_shares_the_workspace_mapping() {
-        let host = Sandbox::host(Workspace::for_chat(ChatId(9)), 30);
+        let host = Sandbox::host(Workspace::for_conversation(ConversationId(9)), 30);
         let container = Sandbox::container(
             &SandboxConfig::default(),
             Vec::new(),
-            Workspace::for_chat(ChatId(9)),
+            Workspace::for_conversation(ConversationId(9)),
         );
 
         // A relative path means the workspace, whatever the environment calls it.

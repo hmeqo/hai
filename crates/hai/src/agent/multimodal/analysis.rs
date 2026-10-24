@@ -7,7 +7,9 @@ use crate::{
     },
     domain::{
         service::Services,
-        vo::{AttachmentId, AttachmentKind, AttachmentParser, ImageFormat, Subject},
+        vo::{
+            AttachmentId, AttachmentKind, AttachmentParser, ConversationId, ImageFormat, Subject,
+        },
     },
     error::{AppError, Result},
 };
@@ -17,6 +19,7 @@ use crate::{
 pub struct MediaAnalyzer {
     multimodal: MultimodalService,
     services: Services,
+    conversation_id: ConversationId,
     chat: ChannelHandle,
     inline_limit: InlineLimit,
 }
@@ -25,12 +28,14 @@ impl MediaAnalyzer {
     pub fn new(
         multimodal: MultimodalService,
         services: Services,
+        conversation_id: ConversationId,
         chat: ChannelHandle,
         inline_limit: InlineLimit,
     ) -> Self {
         Self {
             multimodal,
             services,
+            conversation_id,
             chat,
             inline_limit,
         }
@@ -63,7 +68,7 @@ impl MediaAnalyzer {
             && let Some(hit) = self
                 .services
                 .perception
-                .find(subject, parser, focus)
+                .find(self.conversation_id, subject, parser, focus)
                 .await?
         {
             return Ok(hit.content);
@@ -72,7 +77,7 @@ impl MediaAnalyzer {
         if let Some(subject) = &subject {
             self.services
                 .perception
-                .upsert(subject, parser, focus, &content)
+                .upsert(self.conversation_id, subject, parser, focus, &content)
                 .await?;
         }
         Ok(content)

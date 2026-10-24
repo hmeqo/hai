@@ -5,7 +5,7 @@ use crate::{
     domain::{
         model::{Message, MessageRole, NewAttachment, NewMessage},
         repo::{AttachmentRepo, window},
-        vo::{ChatId, MessageId, TimeRange, TopicId},
+        vo::{ChatId, ConversationId, MessageId, TimeRange, TopicId},
     },
     error::Result,
 };
@@ -62,11 +62,12 @@ impl MessageRepo {
         new: NewMessage,
     ) -> Result<Message> {
         let message = sqlx::query_as::<_, Message>(
-            "INSERT INTO message (chat_id, account_id, role, text, topic_id, \
+            "INSERT INTO message (chat_id, conversation_id, account_id, role, text, topic_id, \
              reply_to_id, external_id, meta, sent_at, edited_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *",
         )
         .bind(new.chat_id)
+        .bind(new.conversation_id)
         .bind(new.account_id)
         .bind(new.role.as_str())
         .bind(new.text)
@@ -134,10 +135,12 @@ impl MessageRepo {
     ) -> Result<Message> {
         self.update_with_attachments(existing.id, text, meta, edited_at, attachments)
             .await?;
-        Ok(self
-            .by_id(existing.id)
-            .await?
-            .expect("the row was written just above"))
+        self.by_id(existing.id).await?.ok_or_else(|| {
+            crate::error::AppError::message(format!(
+                "message {} disappeared after refresh",
+                existing.id
+            ))
+        })
     }
 
     pub(crate) async fn refresh_in_tx(
@@ -201,12 +204,16 @@ impl MessageRepo {
         Ok(id.map(MessageId))
     }
 
-    /// The newest `limit` messages of the chat, ascending.
-    pub async fn recent_asc(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
+    /// The newest `limit` messages of a Conversation, ascending, across all member Chats.
+    pub async fn recent_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
         let mut rows = sqlx::query_as::<_, Message>(
-            "SELECT * FROM message WHERE chat_id = $1 ORDER BY id DESC LIMIT $2",
+            "SELECT * FROM message WHERE conversation_id = $1 ORDER BY id DESC LIMIT $2",
         )
-        .bind(chat_id.0)
+        .bind(conversation_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -227,15 +234,6 @@ impl MessageRepo {
         Ok(exists)
     }
 
-    pub async fn update_meta(&self, id: MessageId, meta: Option<Value>) -> Result<()> {
-        sqlx::query("UPDATE message SET meta = $2 WHERE id = $1")
-            .bind(id.0)
-            .bind(meta)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     /// The messages of a window, ascending: the whole of what the chat said and heard in it.
     pub async fn in_range(&self, chat_id: ChatId, range: TimeRange) -> Result<Vec<Message>> {
         let sql = format!(
@@ -251,16 +249,19 @@ impl MessageRepo {
     /// never saw leave) has nothing to delete there and is left out.
     pub async fn external_ids_in_range(
         &self,
+        conversation_id: ConversationId,
         chat_id: ChatId,
         range: TimeRange,
     ) -> Result<Vec<String>> {
         let sql = format!(
             "SELECT external_id FROM message \
-             WHERE chat_id = $1 AND external_id IS NOT NULL {} ORDER BY id",
-            window::time_window("COALESCE(sent_at, created_at)", 2),
+             WHERE conversation_id = $1 AND chat_id = $2 AND external_id IS NOT NULL {} \
+             ORDER BY id",
+            window::time_window("COALESCE(sent_at, created_at)", 3),
         );
-        let query =
-            sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(conversation_id.0)
+            .bind(chat_id.0);
         let rows = range.bind(query).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(|(external_id,)| external_id).collect())
     }
@@ -270,16 +271,18 @@ impl MessageRepo {
     /// a deleted message go with it, by the foreign key's own cascade.
     pub(crate) async fn delete_in_range_in_tx(
         tx: &mut sqlx::PgConnection,
+        conversation_id: ConversationId,
         chat_id: ChatId,
         range: TimeRange,
     ) -> Result<Vec<DeletedMessage>> {
         let sql = format!(
-            "DELETE FROM message WHERE chat_id = $1 {} \
+            "DELETE FROM message WHERE conversation_id = $1 AND chat_id = $2 {} \
              RETURNING id, topic_id",
-            window::time_window("COALESCE(sent_at, created_at)", 2),
+            window::time_window("COALESCE(sent_at, created_at)", 3),
         );
-        let query =
-            sqlx::query_as::<_, DeletedMessage>(sqlx::AssertSqlSafe(sql.as_str())).bind(chat_id.0);
+        let query = sqlx::query_as::<_, DeletedMessage>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(conversation_id.0)
+            .bind(chat_id.0);
         range
             .bind(query)
             .fetch_all(&mut *tx)

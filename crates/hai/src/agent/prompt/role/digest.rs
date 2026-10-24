@@ -1,4 +1,7 @@
-use crate::{agent::process::AgentRuntime, agentcore::Language};
+use crate::{
+    agent::process::AgentRuntime,
+    config::conversation::{ContentPolicy, Language},
+};
 
 /// The interface block a digest reads instead of `SYSTEM_PROMPT`.
 pub(crate) const CONTRACT: &str = r#"## The interface
@@ -8,11 +11,17 @@ You are writing a report, not speaking to anyone in the moment. Nothing you call
 **Your response text is the report**, written in the shape the situation section asks for.
 "#;
 
-pub(crate) fn system_prompt(runtime: &AgentRuntime, language: Language) -> String {
+pub(crate) fn system_prompt(
+    runtime: &AgentRuntime,
+    language: Language,
+    content_policy: ContentPolicy,
+) -> String {
     super::default::assemble(
         runtime,
         super::default::Speaking::Artifact,
         language,
         CONTRACT,
+        None,
+        content_policy,
     )
 }

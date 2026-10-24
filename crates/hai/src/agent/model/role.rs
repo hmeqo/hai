@@ -3,48 +3,18 @@
 
 use strum::IntoEnumIterator;
 
+use super::provider::ProviderRegistry;
 use crate::{
     agentcore::{ModelKind, ModelTarget, provider::ChatTransport},
-    config::{AppConfig, ConfigIssue, ProviderRegistry},
+    config::{AppConfig, ConfigIssue},
     error::{Result, bail},
 };
 
-/// The selectors one `[model-roles.<role>]` block names, or `None` when the config declares no block
-/// for that role at all. An unnamed key is `None` inside either way: a block that leaves out
-/// `provider` inherits the `default` block's, and one that leaves out `model` has not configured its
-/// role.
+/// One role's model, or why it is absent.
 #[derive(Debug, Clone, Copy)]
-struct Selectors<'a> {
-    provider: Option<&'a str>,
+struct Row<'a> {
+    policy: RolePolicy,
     model: Option<&'a str>,
-    base_url: Option<&'a str>,
-}
-
-/// The selectors of a block whose keys are optional.
-fn selectors<'a>(
-    provider: Option<&'a String>,
-    model: Option<&'a String>,
-    base_url: Option<&'a String>,
-) -> Selectors<'a> {
-    Selectors {
-        provider: provider.map(String::as_str),
-        model: model.map(String::as_str),
-        base_url: base_url.map(String::as_str),
-    }
-}
-
-/// The selectors of a block that states its provider and model as plain strings, so an empty value
-/// is what "not named" looks like there. The chat and rerank blocks are the two that do.
-fn stated_selectors<'a>(
-    provider: &'a str,
-    model: &'a str,
-    base_url: Option<&'a String>,
-) -> Selectors<'a> {
-    Selectors {
-        provider: (!provider.is_empty()).then_some(provider),
-        model: (!model.is_empty()).then_some(model),
-        base_url: base_url.map(String::as_str),
-    }
 }
 
 /// What an absent or model-less block means for one role.
@@ -58,66 +28,44 @@ enum RolePolicy {
     Required,
 }
 
-/// The table: one arm per role — what a block-less row means, and the selectors it names. Video
-/// reads the `vision` row's block, which is why there is no row of its own.
-fn row(config: &AppConfig, kind: ModelKind) -> (RolePolicy, Option<Selectors<'_>>) {
+fn row(config: &AppConfig, kind: ModelKind) -> Row<'_> {
     let roles = &config.model_roles;
     match kind {
-        ModelKind::Chat => (
-            RolePolicy::Required,
-            Some(stated_selectors(
-                &roles.default.provider,
-                &roles.default.model,
-                roles.default.base_url.as_ref(),
-            )),
-        ),
-        ModelKind::Vision => (
-            RolePolicy::InheritMain,
-            roles
-                .vision
-                .as_ref()
-                .map(|b| selectors(b.provider.as_ref(), b.model.as_ref(), b.base_url.as_ref())),
-        ),
-        ModelKind::Transcription => (
-            RolePolicy::InheritMain,
-            roles
+        ModelKind::Chat => Row {
+            policy: RolePolicy::Required,
+            model: Some(&roles.default.model),
+        },
+        ModelKind::Vision => Row {
+            policy: RolePolicy::InheritMain,
+            model: roles.vision.as_ref().and_then(|b| b.model.as_deref()),
+        },
+        ModelKind::Transcription => Row {
+            policy: RolePolicy::InheritMain,
+            model: roles
                 .transcription
                 .as_ref()
-                .map(|b| selectors(b.provider.as_ref(), b.model.as_ref(), b.base_url.as_ref())),
-        ),
-        ModelKind::Speech => (
-            RolePolicy::Off,
-            roles
-                .speech
-                .as_ref()
-                .map(|b| selectors(b.provider.as_ref(), b.model.as_ref(), b.base_url.as_ref())),
-        ),
-        ModelKind::Image => (
-            RolePolicy::Off,
-            roles
-                .image
-                .as_ref()
-                .map(|b| selectors(b.provider.as_ref(), b.model.as_ref(), b.base_url.as_ref())),
-        ),
-        ModelKind::Embedding => (
-            RolePolicy::Required,
-            Some(selectors(
-                roles.embedding.provider.as_ref(),
-                roles.embedding.model.as_ref(),
-                roles.embedding.base_url.as_ref(),
-            )),
-        ),
-        ModelKind::Rerank => (
-            RolePolicy::Off,
-            roles
-                .rerank
-                .as_ref()
-                .map(|b| stated_selectors(&b.provider, &b.model, b.base_url.as_ref())),
-        ),
+                .and_then(|b| b.model.as_deref()),
+        },
+        ModelKind::Speech => Row {
+            policy: RolePolicy::Off,
+            model: roles.speech.as_ref().and_then(|b| b.model.as_deref()),
+        },
+        ModelKind::Image => Row {
+            policy: RolePolicy::Off,
+            model: roles.image.as_ref().and_then(|b| b.model.as_deref()),
+        },
+        ModelKind::Embedding => Row {
+            policy: RolePolicy::Required,
+            model: Some(&roles.embedding.model),
+        },
+        ModelKind::Rerank => Row {
+            policy: RolePolicy::Off,
+            model: roles.rerank.as_ref().and_then(|b| b.model.as_deref()),
+        },
     }
 }
 
-/// The ModelRoles a process resolved: one target per role, plus the chat transport the genai client
+/// The ModelRoles a process resolved: one model per role, plus the chat transport the genai client
 /// is built from.
 #[derive(Debug)]
 pub(crate) struct ModelRoles {
@@ -130,11 +78,26 @@ pub(crate) struct ModelRoles {
     pub rerank: Option<ModelTarget>,
 }
 
+/// Splits `provider/model` at the first slash. The provider owns the endpoint; the remainder is the
+/// provider's model id.
+pub(crate) fn split_model(model: &str) -> Result<(&str, &str)> {
+    let (provider, model_id) = model.split_once('/').ok_or_else(|| {
+        crate::error::AppError::message(format!("model {model:?} must be provider/model"))
+    })?;
+    if provider.is_empty() || model_id.is_empty() {
+        return Err(crate::error::AppError::message(format!(
+            "model {model:?} must name both provider and model"
+        )));
+    }
+    Ok((provider, model_id))
+}
+
 /// Resolves the whole table against the providers this process can reach.
 pub(crate) fn resolve(config: &AppConfig, registry: &ProviderRegistry) -> Result<ModelRoles> {
     let chat = required_role(config, registry, ModelKind::Chat)?;
+    let (provider, _) = split_model(&config.model_roles.default.model)?;
     let chat = ChatTransport {
-        kind: registry.provider_kind(&config.model_roles.default.provider)?,
+        kind: registry.provider_kind(provider)?,
         target: chat,
     };
     Ok(ModelRoles {
@@ -160,85 +123,55 @@ fn required_role(
     registry: &ProviderRegistry,
     kind: ModelKind,
 ) -> Result<ModelTarget> {
-    Ok(resolve_role(config, registry, kind)?.expect("a required role always resolves to a target"))
+    Ok(resolve_role(config, registry, kind)?.expect("a required role always resolves to a model"))
 }
 
 /// The providers the roles name, which availability is resolved for; a block nothing declares names
 /// none.
 pub(crate) fn providers_named(config: &AppConfig) -> Vec<&str> {
-    ModelKind::iter()
-        .filter_map(|kind| row(config, kind).1)
-        .filter_map(|selectors| selectors.provider)
-        .collect()
+    let mut names: Vec<&str> = ModelKind::iter()
+        .filter_map(|kind| row(config, kind).model)
+        .filter_map(|model| split_model(model).ok().map(|(provider, _)| provider))
+        .collect();
+    names.extend(
+        config
+            .models
+            .values()
+            .filter_map(|model| split_model(model).ok().map(|(provider, _)| provider)),
+    );
+    names
 }
 
-/// Resolves one row: the target its block names, or `None` for a role that is off.
+/// Resolves one row: the model its block names, or `None` for a role that is off.
 fn resolve_role(
     config: &AppConfig,
     registry: &ProviderRegistry,
     kind: ModelKind,
 ) -> Result<Option<ModelTarget>> {
-    let (policy, declared) = row(config, kind);
-    let main = &config.model_roles.default;
-    let provider = declared
-        .and_then(|selectors| selectors.provider)
-        .unwrap_or(main.provider.as_str());
-    let base_url = declared.and_then(|selectors| selectors.base_url);
-
-    let Some(model) = declared.and_then(|selectors| selectors.model) else {
-        return match policy {
-            // A row nobody declared runs on the main model, and stays off when that provider cannot
-            // speak the kind: the user never declared it.
-            RolePolicy::InheritMain if declared.is_none() => {
-                if !registry.serves(kind, provider) {
-                    return Ok(None);
-                }
-                Ok(Some(target(
-                    registry,
-                    kind,
-                    provider,
-                    &main.model,
-                    main.base_url.as_deref(),
-                )?))
-            }
-            // A declared block that names no model keeps its own provider and takes the main model.
-            RolePolicy::InheritMain => Ok(Some(target(
-                registry,
-                kind,
-                provider,
-                &main.model,
-                base_url,
-            )?)),
-            RolePolicy::Off => Ok(None),
-            RolePolicy::Required => bail!(ConfigIssue::model_role(kind, model_required(kind))),
-        };
-    };
-    Ok(Some(target(registry, kind, provider, model, base_url)?))
-}
-
-/// One endpoint, or the error an unnamed provider earns. The name is empty exactly when the row
-/// inherited `default` and `default` names nobody, so that is the block the message points at.
-fn target(
-    registry: &ProviderRegistry,
-    kind: ModelKind,
-    provider: &str,
-    model: &str,
-    base_url: Option<&str>,
-) -> Result<ModelTarget> {
-    if provider.is_empty() {
-        bail!(ConfigIssue::model_role(
-            ModelKind::Chat,
-            "no provider is named: set `provider` here"
-        ));
+    let row = row(config, kind);
+    if let Some(model) = row.model.filter(|model| !model.trim().is_empty()) {
+        let (provider, model_id) = split_model(model)?;
+        return registry.endpoint(kind, provider, model_id, None).map(Some);
     }
-    registry.endpoint(kind, provider, model, base_url)
+
+    match row.policy {
+        RolePolicy::InheritMain => {
+            let (provider, model) = split_model(&config.model_roles.default.model)?;
+            if !registry.serves(kind, provider) {
+                return Ok(None);
+            }
+            registry.endpoint(kind, provider, model, None).map(Some)
+        }
+        RolePolicy::Off => Ok(None),
+        RolePolicy::Required => bail!(ConfigIssue::model_role(kind, model_required(kind))),
+    }
 }
 
 /// The message a required role's model-less block earns; the two required roles differ in why.
 fn model_required(kind: ModelKind) -> &'static str {
     match kind {
         ModelKind::Embedding => "is required (memory/retrieval depends on it) but model is empty",
-        _ => "model is required",
+        _ => "model is required (provider/model)",
     }
 }
 
@@ -257,14 +190,11 @@ mod tests {
     /// role every process insists on.
     fn config(provider: &str, model: &str) -> AppConfig {
         let mut cfg = AppConfig::default();
-        cfg.model_roles.default.provider = provider.into();
-        cfg.model_roles.default.model = model.into();
+        cfg.model_roles.default.model = format!("{provider}/{model}");
         cfg.providers.insert(provider.into(), Default::default());
         cfg.model_roles.embedding = EmbeddingConfig {
-            provider: Some("openai".into()),
-            model: Some("text-embedding-3-small".into()),
+            model: "openai/text-embedding-3-small".into(),
             dimension: None,
-            base_url: None,
         };
         cfg.providers.insert("openai".into(), Default::default());
         cfg
@@ -276,9 +206,11 @@ mod tests {
 
     fn image(model: Option<&str>, provider: Option<&str>) -> ImageConfig {
         ImageConfig {
-            provider: provider.map(str::to_owned),
-            model: model.map(str::to_owned),
-            base_url: None,
+            model: match (model, provider) {
+                (Some(model), Some(provider)) => Some(format!("{provider}/{model}")),
+                (Some(model), None) => Some(format!("openrouter/{model}")),
+                (None, _) => None,
+            },
         }
     }
 
@@ -287,7 +219,13 @@ mod tests {
     #[test]
     fn an_absent_inheriting_block_takes_the_main_endpoint() {
         let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.default.base_url = Some("https://gateway.internal/v1".into());
+        cfg.providers.insert(
+            "openai".into(),
+            ProviderConfig {
+                base_url: Some("https://gateway.internal/v1".into()),
+                ..Default::default()
+            },
+        );
 
         let roles = roles(&cfg).unwrap();
         let vision = roles.vision.unwrap();
@@ -340,17 +278,11 @@ mod tests {
             .insert("openrouter".into(), Default::default());
         cfg.model_roles.image = Some(image(None, Some("openrouter")));
         cfg.model_roles.speech = Some(SpeechConfig {
-            provider: Some("openrouter".into()),
             model: None,
             voice: String::new(),
             speed: 1.0,
-            base_url: None,
         });
-        cfg.model_roles.rerank = Some(crate::config::schema::RerankConfig {
-            provider: "openrouter".into(),
-            model: String::new(),
-            base_url: None,
-        });
+        cfg.model_roles.rerank = Some(crate::config::schema::RerankConfig { model: None });
 
         let roles = roles(&cfg).unwrap();
         assert!(roles.image.is_none());
@@ -364,9 +296,7 @@ mod tests {
     fn a_rerank_block_takes_the_default_provider_and_the_kinds_own_endpoint() {
         let mut cfg = config("openrouter", "openai/gpt-4o");
         cfg.model_roles.rerank = Some(crate::config::schema::RerankConfig {
-            provider: String::new(),
-            model: "cohere/rerank-4-fast".into(),
-            base_url: None,
+            model: Some("openrouter/cohere/rerank-4-fast".into()),
         });
 
         let roles = roles(&cfg).unwrap();
@@ -380,14 +310,12 @@ mod tests {
     #[test]
     fn a_required_role_with_no_model_fails() {
         let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.embedding.model = None;
+        cfg.model_roles.embedding.model = String::new();
 
         let err = roles(&cfg).unwrap_err();
         assert!(
-            err.to_string().contains(
-                "[model-roles.embedding] is required (memory/retrieval depends on it) but model is \
-                 empty"
-            ),
+            err.to_string()
+                .contains("[model-roles.embedding] is required"),
             "{err}"
         );
     }
@@ -396,15 +324,11 @@ mod tests {
     #[test]
     fn an_unnamed_default_provider_points_at_the_default_block() {
         let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.default.provider = String::new();
+        cfg.model_roles.default.model = String::new();
         cfg.model_roles.image = Some(image(Some("some-image-model"), None));
 
         let err = roles(&cfg).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[model-roles.default] no provider is named: set `provider` here"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("model is required"), "{err}");
     }
 
     /// The chat role is required like embedding is, for the one thing a Step loop cannot do without.
@@ -414,11 +338,7 @@ mod tests {
         cfg.model_roles.default.model = String::new();
 
         let err = roles(&cfg).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[model-roles.default] model is required"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("model is required"), "{err}");
     }
 
     /// Availability is resolved for the providers the roles name; a role nobody declared, and an
@@ -430,7 +350,7 @@ mod tests {
         assert!(providers_named(&cfg).contains(&"openai"));
         assert!(providers_named(&cfg).contains(&"openrouter"));
 
-        cfg.model_roles.default.provider = String::new();
+        cfg.model_roles.default.model = String::new();
         assert!(!providers_named(&cfg).contains(&""));
     }
 
@@ -440,7 +360,7 @@ mod tests {
     fn a_declared_block_on_a_provider_that_cannot_serve_the_kind_fails() {
         let mut cfg = config("openai", "gpt-4o");
         cfg.providers.insert("deepseek".into(), Default::default());
-        cfg.model_roles.embedding.provider = Some("deepseek".into());
+        cfg.model_roles.embedding.model = "deepseek/text-embedding".into();
 
         let err = roles(&cfg).unwrap_err();
         assert!(err.to_string().contains("serves no embedding API"), "{err}");
@@ -452,10 +372,8 @@ mod tests {
     fn the_embedding_role_resolves_without_a_chat_model() {
         let mut cfg = AppConfig::default();
         cfg.model_roles.embedding = EmbeddingConfig {
-            provider: Some("openai".into()),
-            model: Some("text-embedding-3-small".into()),
+            model: "openai/text-embedding-3-small".into(),
             dimension: None,
-            base_url: None,
         };
         cfg.providers.insert("openai".into(), Default::default());
 
@@ -466,10 +384,6 @@ mod tests {
         );
 
         let err = roles(&cfg).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[model-roles.default] model is required"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("model is required"), "{err}");
     }
 }

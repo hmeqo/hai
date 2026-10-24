@@ -1,6 +1,6 @@
 pub mod agent;
 pub mod agentcore;
-pub mod app;
+pub(crate) mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod domain;

@@ -16,7 +16,7 @@ use crate::{
         prompt::role::{RoleSpec, StepDecision, StepFacts},
     },
     agentcore::tool::{AgentTool, ToolError, schema, tool_err},
-    domain::vo::{ModelRetryReason, Step, StepNumber, ToolCallResult},
+    domain::vo::{ChatId, ModelRetryReason, Step, StepNumber, ToolCallResult},
 };
 
 mod retry;
@@ -71,14 +71,24 @@ pub(crate) struct StepLoop<O: StepObserver> {
     pub(crate) spec: RoleSpec,
     pub(crate) budget: usize,
     /// The turn's arrival check; a pass that nothing may interrupt leaves it `None`.
-    pub(crate) steering: Option<Doorbell>,
+    pub(crate) steering: Option<Steering>,
     pub(crate) observer: O,
     /// Whether the budget notice has been said, so a run hears it once.
     warned: bool,
     /// The last call's shape, for the repeat nudge.
     stall: StallGuard,
+    /// A speaking call has already succeeded in this run: text after it is a closing remark, not an
+    /// unsent reply.
+    spoke: bool,
     /// Where this run's own injected messages sit, so [`transcript`](Self::transcript) can drop them.
     notices: Vec<usize>,
+}
+
+/// Where an interrupting arrival must come from, and the doorbell it rings.
+pub(crate) struct Steering {
+    pub chat_id: ChatId,
+    pub since: u64,
+    pub doorbell: Doorbell,
 }
 
 pub(crate) struct StepLoopOutput {
@@ -99,7 +109,7 @@ impl<O: StepObserver> StepLoop<O> {
         messages: Messages,
         spec: RoleSpec,
         budget: usize,
-        steering: Option<Doorbell>,
+        steering: Option<Steering>,
         observer: O,
     ) -> Self {
         Self {
@@ -112,6 +122,7 @@ impl<O: StepObserver> StepLoop<O> {
             observer,
             warned: false,
             stall: StallGuard::default(),
+            spoke: false,
             notices: Vec::new(),
         }
     }
@@ -154,7 +165,11 @@ impl<O: StepObserver> StepLoop<O> {
                 });
             }
 
-            if self.steering.as_ref().is_some_and(Doorbell::take_signal) {
+            if self
+                .steering
+                .as_ref()
+                .is_some_and(|steering| steering.doorbell.steered(steering.chat_id, steering.since))
+            {
                 return Ok(StepLoopOutput {
                     steps,
                     messages: self.transcript(),
@@ -224,6 +239,7 @@ impl<O: StepObserver> StepLoop<O> {
             &response_text,
             &active_calls,
             tools,
+            self.spoke,
         )) {
             StepDecision::Continue => (false, None),
             StepDecision::Stop => (true, None),
@@ -257,7 +273,13 @@ impl<O: StepObserver> StepLoop<O> {
         let mut stalled = false;
         for call in calls {
             self.observer.observed(StepEvent::ToolCall { step, call });
+            let speaking = tools
+                .iter()
+                .any(|tool| tool.name() == call.fn_name && tool.speaks());
             let result = execute_single_tool(call, tools, &self.spec, &mut self.messages).await;
+            if speaking && result.success {
+                self.spoke = true;
+            }
             self.observer.observed(StepEvent::ToolCallResult {
                 step,
                 result: &result,

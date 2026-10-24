@@ -1,6 +1,6 @@
 //! `/purge`: the confirmation a person goes through, and what a confirmed purge leaves behind. The
 //! dialog is host copy held in memory; a confirmed purge is one entry in the accumulation, which the
-//! chat's own agent carries out in a pass of its own.
+//! Conversation's own agent carries out in a pass of its own.
 
 pub(crate) mod copy;
 mod dialog;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     agent::{
-        channel::{CallbackAnswer, ChannelAccess, ChoiceOption, DeleteReport},
+        channel::{CallbackAnswer, ChannelChoices, ChoiceOption, DeleteReport},
         command::{
             Command, CommandContext, PurgeArg, Reply, Started, SystemCommand,
             dialog::{Audience, DialogPage, PageSite, Pages, Press, settle},
@@ -21,7 +21,7 @@ use crate::{
         host_copy::HostCopy,
         inbound::Arrival,
     },
-    agentcore::Language,
+    config::conversation::Language,
     domain::vo::{ChatEntry, ChatId, EntryAudience, EntryKind, PurgeCounts, PurgeSpec},
     error::Result,
 };
@@ -41,7 +41,7 @@ pub(crate) struct PurgeReport {
 /// confirmation; a bare `/purge` starts at the menu.
 pub(crate) async fn open(
     pages: &Pages,
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     chat_id: ChatId,
     arrival: &Arrival,
     arg: PurgeArg,
@@ -62,17 +62,13 @@ pub(crate) async fn open(
         .map(|sender| sender.external_id.as_str());
     let site = PageSite {
         chat_id,
-        chat_external_id: &arrival.chat.external_id,
+        chat: &arrival.chat.address,
         chat_type: arrival.chat.kind,
         language,
     };
     let options = page(pages, site, sender_id, state);
-    access
-        .ask(
-            site.chat_external_id,
-            &copy::stage_text(language, &state),
-            &options,
-        )
+    choices
+        .ask(site.chat, &copy::stage_text(language, &state), &options)
         .await
 }
 
@@ -81,7 +77,7 @@ pub(crate) async fn open(
 pub(crate) async fn apply(
     ctx: &CommandContext,
     pages: &Pages,
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     state: PurgeDialog,
     action: PurgeAction,
     press: &Press<'_>,
@@ -91,7 +87,7 @@ pub(crate) async fn apply(
     let next = match action {
         PurgeAction::Cancel => {
             return settle(
-                access,
+                choices,
                 &site,
                 press.message_external_id,
                 &copy::cancelled(language),
@@ -112,13 +108,13 @@ pub(crate) async fn apply(
         PurgeAction::Toggle(surface) => state.toggled(surface),
         PurgeAction::Take(range) => state.confirm(range),
         PurgeAction::Confirm => {
-            return confirm(ctx, access, state, press).await;
+            return confirm(ctx, choices, state, press).await;
         }
     };
 
     let options = page(pages, site, press.sender_id, next);
     settle(
-        access,
+        choices,
         &site,
         press.message_external_id,
         &copy::stage_text(language, &next),
@@ -133,15 +129,19 @@ pub(crate) async fn apply(
 /// confirmation page and a complete `--yes` command line submit the same `PurgeSpec` here.
 pub(crate) async fn queue(ctx: &CommandContext, spec: PurgeSpec) -> Result<()> {
     let entry = ChatEntry::new(
+        ctx.chat_id,
         EntryAudience::Agent,
         EntryKind::Purge(spec),
         jiff::Timestamp::now(),
     );
     ctx.services
         .conversation
-        .append_entry(ctx.chat_id, &entry)
+        .append_entry(ctx.conversation_id, &entry)
         .await?;
-    ctx.agents.get_or_create(ctx.chat_id).await.notify();
+    ctx.agents
+        .get_or_create(ctx.conversation_id)
+        .await
+        .notify_chat(ctx.chat_id);
     Ok(())
 }
 
@@ -149,7 +149,7 @@ pub(crate) async fn queue(ctx: &CommandContext, spec: PurgeSpec) -> Result<()> {
 /// is settled with the receipt.
 async fn confirm(
     ctx: &CommandContext,
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     state: PurgeDialog,
     press: &Press<'_>,
 ) -> Result<()> {
@@ -157,7 +157,7 @@ async fn confirm(
     let PurgeDialog::Confirm { range, surfaces } = state else {
         // Only the confirmation page carries a stretch to run; a page that is not it has nothing
         // to confirm, which means this press outlived its dialog.
-        return access
+        return choices
             .answer_callback(
                 press.query_id,
                 CallbackAnswer::Toast(&HostCopy::DialogStale.render(site.language)),
@@ -169,8 +169,8 @@ async fn confirm(
         surfaces,
         yes: true,
     }));
-    let Reply::Started(Started::Purge(spec)) = execute(ctx, command).await? else {
-        return access
+    let Reply::Started(Started::Purge(spec)) = execute(ctx, command).await?.reply else {
+        return choices
             .answer_callback(
                 press.query_id,
                 CallbackAnswer::Toast(&HostCopy::DialogStale.render(site.language)),
@@ -179,7 +179,7 @@ async fn confirm(
     };
     if let Err(e) = queue(ctx, spec).await {
         tracing::warn!(chat_id = %site.chat_id, error = %e, "a confirmed purge could not be queued");
-        return access
+        return choices
             .answer_callback(
                 press.query_id,
                 CallbackAnswer::Alert(&copy::not_queued(site.language)),
@@ -188,7 +188,7 @@ async fn confirm(
     }
 
     settle(
-        access,
+        choices,
         &site,
         press.message_external_id,
         &copy::started(site.language, &spec),

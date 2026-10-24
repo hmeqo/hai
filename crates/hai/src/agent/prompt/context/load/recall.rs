@@ -4,7 +4,7 @@ use crate::{
     domain::{
         model::{Memory, Topic},
         service::{RecallItem, RecallQuery, RecallScope, ScorerErrorPolicy, Services, recall},
-        vo::{ChatId, MemoryId, TimeRange, TopicId},
+        vo::{ConversationId, MemoryId, TimeRange, TopicId},
     },
     error::Result,
 };
@@ -21,7 +21,7 @@ pub struct ChapterRecall {
 
 pub async fn chapter_recall(
     services: &Services,
-    chat_id: ChatId,
+    chat_id: ConversationId,
     window_text: &str,
     current_memories: &[Memory],
     current_topics: &[Topic],

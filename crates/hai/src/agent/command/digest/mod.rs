@@ -14,7 +14,7 @@ pub(crate) use run::{DigestPass, run};
 
 use crate::{
     agent::{
-        channel::{CallbackAnswer, ChannelAccess, ChoiceOption},
+        channel::{CallbackAnswer, ChannelAccess, ChannelChoices, ChoiceOption},
         command::{
             Command, CommandContext, DigestArg, MAX_DIGEST_DAYS, MIN_DIGEST_DAYS, Reply, Started,
             SystemCommand,
@@ -24,10 +24,10 @@ use crate::{
         host_copy::HostCopy,
         inbound::Arrival,
     },
-    agentcore::Language,
+    config::conversation::Language,
     domain::{
         model::ChatType,
-        vo::{ChatId, Stretch},
+        vo::{ChatAddress, ChatId, Stretch},
     },
     error::Result,
 };
@@ -36,44 +36,48 @@ use crate::{
 /// a bare `/digest` starts by choosing one.
 pub(crate) async fn open(
     pages: &Pages,
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     chat_id: ChatId,
     arrival: &Arrival,
     arg: DigestArg,
     language: Language,
 ) -> Result<()> {
+    let delivery = arg
+        .delivery
+        .map(|delivery| delivery.for_chat(arrival.chat.kind));
     let state = match arg.stretch {
         Some(stretch) => DigestDialog::Confirm {
             stretch,
             language: arg.language,
-            delivery: arg.delivery,
+            delivery,
         },
         None => DigestDialog::Stretch {
             language: arg.language,
-            delivery: arg.delivery,
+            delivery,
         },
     };
     let site = PageSite {
         chat_id,
-        chat_external_id: &arrival.chat.external_id,
+        chat: &arrival.chat.address,
         chat_type: arrival.chat.kind,
         language,
     };
     let options = page(pages, site, &state);
-    access
-        .ask(
-            site.chat_external_id,
-            &copy::stage_text(language, &state),
-            &options,
-        )
+    choices
+        .ask(site.chat, &copy::stage_text(language, &state), &options)
         .await
+}
+
+pub(crate) struct DialogSurface {
+    pub(crate) pages: Arc<Pages>,
+    pub(crate) access: Arc<dyn ChannelAccess>,
+    pub(crate) choices: Arc<dyn ChannelChoices>,
 }
 
 /// One button press on a digest page. The page table is the shared one, so the handles arrive owned:
 /// a started pass outlives this call.
 pub(crate) async fn apply(
-    pages: Arc<Pages>,
-    access: Arc<dyn ChannelAccess>,
+    surface: DialogSurface,
     ctx: &CommandContext,
     state: DigestDialog,
     action: DigestAction,
@@ -102,7 +106,7 @@ pub(crate) async fn apply(
         }
         DigestAction::Take(stretch) => {
             if let Some(delivery) = state.delivery() {
-                return submit(pages, access, ctx, &state, stretch, delivery, press).await;
+                return submit(surface, ctx, &state, stretch, delivery, press).await;
             }
             let state = DigestDialog::Confirm {
                 stretch,
@@ -115,29 +119,37 @@ pub(crate) async fn apply(
         }
         DigestAction::Start(delivery) => {
             let DigestDialog::Confirm { stretch, .. } = &state else {
-                return stale(&*access, press).await;
+                return stale(&*surface.choices, press).await;
             };
-            return submit(pages, access, ctx, &state, *stretch, delivery, press).await;
+            return submit(surface, ctx, &state, *stretch, delivery, press).await;
         }
         DigestAction::Retry => {
             let DigestDialog::Failed {
                 stretch, delivery, ..
             } = &state
             else {
-                return stale(&*access, press).await;
+                return stale(&*surface.choices, press).await;
             };
             let (stretch, delivery) = (*stretch, *delivery);
-            return submit(pages, access, ctx, &state, stretch, delivery, press).await;
+            return submit(surface, ctx, &state, stretch, delivery, press).await;
         }
         // `redeliver` refuses a state that is not the undelivered one.
         DigestAction::Deliver(delivery) => {
-            return redeliver(&pages, &*access, state, delivery, press).await;
+            return redeliver(
+                &surface.pages,
+                &*surface.access,
+                &*surface.choices,
+                state,
+                delivery,
+                press,
+            )
+            .await;
         }
     };
 
-    let options = draw(&pages, press.site, &state, actions);
+    let options = draw(&surface.pages, press.site, &state, actions);
     settle(
-        &*access,
+        &*surface.choices,
         &press.site,
         press.message_external_id,
         &text,
@@ -149,10 +161,17 @@ pub(crate) async fn apply(
 
 /// The platform chat a delivery goes to for this press, or `None` when a person-targeted press named
 /// nobody the platform could deliver to.
-fn destination<'a>(delivery: Delivery, press: &Press<'a>) -> Option<&'a str> {
+fn destination(
+    delivery: Delivery,
+    press: &Press<'_>,
+    access: &dyn ChannelAccess,
+) -> Result<Option<ChatAddress>> {
     match delivery {
-        Delivery::Chat => Some(press.site.chat_external_id),
-        Delivery::Person => press.sender_id,
+        Delivery::Chat => Ok(Some(press.site.chat.clone())),
+        Delivery::Person => press
+            .sender_id
+            .map(|sender| access.private_chat_external_id(sender))
+            .transpose(),
     }
 }
 
@@ -162,9 +181,9 @@ pub(crate) struct Request {
     pub(crate) stretch: Stretch,
     pub(crate) report_language: Option<Language>,
     pub(crate) delivery: Delivery,
-    pub(crate) target: String,
+    pub(crate) target: ChatAddress,
     /// The chat the request came from, and so where a notice about it goes.
-    pub(crate) origin: String,
+    pub(crate) origin: ChatAddress,
     /// The language of everything this request says outside the report itself.
     pub(crate) ui_language: Language,
 }
@@ -173,8 +192,9 @@ pub(crate) struct Request {
 /// press, so the handles are owned.
 pub(crate) struct PageRequest {
     pub(crate) pages: Arc<Pages>,
+    pub(crate) choices: Arc<dyn ChannelChoices>,
     pub(crate) chat_id: ChatId,
-    pub(crate) chat_external_id: String,
+    pub(crate) chat: ChatAddress,
     pub(crate) chat_type: ChatType,
     pub(crate) message_external_id: String,
     pub(crate) query_id: String,
@@ -183,37 +203,43 @@ pub(crate) struct PageRequest {
 /// Submits one complete digest from a page: the same `Command` the command line builds, through the
 /// same executor and the same start. The page handles are the only difference.
 async fn submit(
-    pages: Arc<Pages>,
-    access: Arc<dyn ChannelAccess>,
+    surface: DialogSurface,
     ctx: &CommandContext,
     state: &DigestDialog,
     stretch: Stretch,
     delivery: Delivery,
     press: &Press<'_>,
 ) -> Result<()> {
-    let Some(chat) = destination(delivery, press) else {
-        return refuse(&pages, &*access, press, state).await;
+    let DialogSurface {
+        pages,
+        access,
+        choices,
+    } = surface;
+    let delivery = delivery.for_chat(press.site.chat_type);
+    let Some(chat) = destination(delivery, press, &*access)? else {
+        return refuse(&pages, &*choices, press, state).await;
     };
     let command = Command::System(SystemCommand::Digest(DigestArg {
         stretch: Some(stretch),
         language: state.language(),
         delivery: Some(delivery),
     }));
-    let Reply::Started(Started::Digest(submitted)) = execute(ctx, command).await? else {
-        return stale(&*access, press).await;
+    let Reply::Started(Started::Digest(submitted)) = execute(ctx, command).await?.reply else {
+        return stale(&*choices, press).await;
     };
     let request = Request {
         stretch: submitted.stretch,
         report_language: submitted.language,
         delivery: submitted.delivery,
-        target: chat.to_owned(),
-        origin: press.site.chat_external_id.to_owned(),
+        target: chat,
+        origin: press.site.chat.clone(),
         ui_language: press.site.language,
     };
     let page = PageRequest {
         pages,
+        choices,
         chat_id: press.site.chat_id,
-        chat_external_id: press.site.chat_external_id.to_owned(),
+        chat: press.site.chat.clone(),
         chat_type: press.site.chat_type,
         message_external_id: press.message_external_id.to_owned(),
         query_id: press.query_id.to_owned(),
@@ -240,18 +266,21 @@ pub(crate) async fn start(
         ui_language,
     } = request;
     let running = DigestDialog::Running { stretch, delivery };
-    let query_id = page.as_ref().map(|page| page.query_id.clone());
+    let answer = page
+        .as_ref()
+        .map(|page| (Arc::clone(&page.choices), page.query_id.clone()));
 
     if let Some(page) = &page {
         let site = PageSite {
             chat_id: page.chat_id,
-            chat_external_id: &page.chat_external_id,
+            chat: &page.chat,
             chat_type: page.chat_type,
             language: ui_language,
         };
-        if let Err(e) = access
+        if let Err(e) = page
+            .choices
             .edit_choice(
-                site.chat_external_id,
+                site.chat,
                 &page.message_external_id,
                 &copy::stage_text(ui_language, &running),
                 &[],
@@ -269,9 +298,9 @@ pub(crate) async fn start(
 
     match ctx
         .agents
-        .get_or_create(ctx.chat_id)
+        .get_or_create(ctx.conversation_id)
         .await
-        .request_digest(stretch, report_language)
+        .request_digest(ctx.chat_id, stretch, report_language)
     {
         Ok(reply) => {
             let reply_access = access.clone();
@@ -287,7 +316,7 @@ pub(crate) async fn start(
                 // here because it outlives the press.
                 let site = page.as_ref().map(|page| PageSite {
                     chat_id: page.chat_id,
-                    chat_external_id: &page.chat_external_id,
+                    chat: &page.chat,
                     chat_type: page.chat_type,
                     language: ui_language,
                 });
@@ -296,6 +325,7 @@ pub(crate) async fn start(
                         (Some(page), Some(site)) => {
                             DeliveryJob {
                                 access: &*reply_access,
+                                choices: &*page.choices,
                                 pages: &page.pages,
                                 site,
                                 message_external_id: &page.message_external_id,
@@ -334,7 +364,7 @@ pub(crate) async fn start(
                                 delivery,
                             };
                             draw_page(
-                                &*reply_access,
+                                &*page.choices,
                                 &page.pages,
                                 site,
                                 &page.message_external_id,
@@ -358,7 +388,7 @@ pub(crate) async fn start(
                                 delivery,
                             };
                             draw_page(
-                                &*reply_access,
+                                &*page.choices,
                                 &page.pages,
                                 site,
                                 &page.message_external_id,
@@ -379,7 +409,7 @@ pub(crate) async fn start(
             Some(page) => {
                 let site = PageSite {
                     chat_id: page.chat_id,
-                    chat_external_id: &page.chat_external_id,
+                    chat: &page.chat,
                     chat_type: page.chat_type,
                     language: ui_language,
                 };
@@ -390,7 +420,7 @@ pub(crate) async fn start(
                     delivery,
                 };
                 draw_page(
-                    &*access,
+                    &*page.choices,
                     &page.pages,
                     site,
                     &page.message_external_id,
@@ -406,8 +436,8 @@ pub(crate) async fn start(
         },
     }
 
-    if let Some(query_id) = query_id {
-        access
+    if let Some((choices, query_id)) = answer {
+        choices
             .answer_callback(&query_id, CallbackAnswer::Quiet)
             .await?;
     }
@@ -417,7 +447,7 @@ pub(crate) async fn start(
 /// Draws one page where its message stands, tokens fresh; a rewrite the platform refuses goes out
 /// as a new message.
 async fn draw_page(
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     pages: &Pages,
     site: PageSite<'_>,
     message_external_id: &str,
@@ -425,7 +455,7 @@ async fn draw_page(
 ) {
     let options = page(pages, site, state);
     let text = copy::stage_text(site.language, state);
-    if let Err(e) = rewrite_or_ask(access, &site, message_external_id, &text, &options).await {
+    if let Err(e) = rewrite_or_ask(choices, &site, message_external_id, &text, &options).await {
         tracing::warn!(chat_id = %site.chat_id, error = %e, "digest page could not be delivered");
     }
 }
@@ -435,6 +465,7 @@ async fn draw_page(
 async fn redeliver(
     pages: &Pages,
     access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     state: DigestDialog,
     delivery: Delivery,
     press: &Press<'_>,
@@ -446,23 +477,25 @@ async fn redeliver(
         ..
     } = &state
     else {
-        return stale(access, press).await;
+        return stale(choices, press).await;
     };
     let (stretch, report, truncated) = (*stretch, report.as_ref(), *truncated);
-    let Some(chat) = destination(delivery, press) else {
-        return refuse(pages, access, press, &state).await;
+    let delivery = delivery.for_chat(press.site.chat_type);
+    let Some(chat) = destination(delivery, press, access)? else {
+        return refuse(pages, choices, press, &state).await;
     };
     DeliveryJob {
         access,
+        choices,
         pages,
         site: press.site,
         message_external_id: press.message_external_id,
         delivery,
-        target: chat,
+        target: &chat,
     }
     .send(stretch, report, truncated)
     .await;
-    access
+    choices
         .answer_callback(press.query_id, CallbackAnswer::Quiet)
         .await
 }
@@ -471,12 +504,12 @@ async fn redeliver(
 /// tokens and the answer says why nothing ran.
 async fn refuse(
     pages: &Pages,
-    access: &dyn ChannelAccess,
+    choices: &dyn ChannelChoices,
     press: &Press<'_>,
     state: &DigestDialog,
 ) -> Result<()> {
-    draw_page(access, pages, press.site, press.message_external_id, state).await;
-    access
+    draw_page(choices, pages, press.site, press.message_external_id, state).await;
+    choices
         .answer_callback(
             press.query_id,
             CallbackAnswer::Alert(&copy::no_sender(press.site.language)),
@@ -487,12 +520,13 @@ async fn refuse(
 /// What one delivery needs: the page it settles, the channel, and where the report goes.
 struct DeliveryJob<'a> {
     access: &'a dyn ChannelAccess,
+    choices: &'a dyn ChannelChoices,
     pages: &'a Pages,
     site: PageSite<'a>,
     message_external_id: &'a str,
     delivery: Delivery,
     /// The platform chat the document goes to, which `destination` resolved from the press.
-    target: &'a str,
+    target: &'a ChatAddress,
 }
 
 impl DeliveryJob<'_> {
@@ -515,8 +549,8 @@ impl DeliveryJob<'_> {
         {
             Ok(()) => {
                 if let Err(e) = self
-                    .access
-                    .delete_notice(self.site.chat_external_id, self.message_external_id)
+                    .choices
+                    .delete_notice(self.site.chat, self.message_external_id)
                     .await
                 {
                     tracing::warn!(chat_id = %self.site.chat_id, error = %e, "digest page could not be removed");
@@ -531,7 +565,7 @@ impl DeliveryJob<'_> {
                     error: e.to_string().into(),
                 };
                 draw_page(
-                    self.access,
+                    self.choices,
                     self.pages,
                     self.site,
                     self.message_external_id,
@@ -544,9 +578,9 @@ impl DeliveryJob<'_> {
 }
 
 /// A press whose page is not the one it should be: the dialog has moved on, so nothing is done.
-async fn stale(access: &dyn ChannelAccess, press: &Press<'_>) -> Result<()> {
+async fn stale(choices: &dyn ChannelChoices, press: &Press<'_>) -> Result<()> {
     let language = press.site.language;
-    access
+    choices
         .answer_callback(
             press.query_id,
             CallbackAnswer::Toast(&HostCopy::DialogStale.render(language)),
@@ -620,16 +654,22 @@ mod tests {
         }
     }
 
+    /// A stable address for one of the test chats.
+    fn target(id: &str) -> &'static ChatAddress {
+        Box::leak(Box::new(ChatAddress::new(None, id)))
+    }
+
     /// One delivery the way the dialog makes it: the page, the channel and where the report goes.
     fn job<'a>(
         access: &'a RecordingAccess,
         pages: &'a Pages,
         site: PageSite<'a>,
         delivery: Delivery,
-        target: &'a str,
+        target: &'a ChatAddress,
     ) -> DeliveryJob<'a> {
         DeliveryJob {
             access,
+            choices: access,
             pages,
             site,
             message_external_id: "m",
@@ -638,11 +678,16 @@ mod tests {
         }
     }
 
+    fn address() -> &'static ChatAddress {
+        static ADDRESS: std::sync::OnceLock<ChatAddress> = std::sync::OnceLock::new();
+        ADDRESS.get_or_init(|| ChatAddress::new(None, "7"))
+    }
+
     /// The chat every test page speaks to.
     fn site() -> PageSite<'static> {
         PageSite {
             chat_id: CHAT,
-            chat_external_id: "7",
+            chat: address(),
             chat_type: ChatType::Private,
             language: Language::Zh,
         }
@@ -652,7 +697,7 @@ mod tests {
         Arrival {
             platform: Platform::Telegram,
             chat: ArrivalChat {
-                external_id: "7".to_owned(),
+                address: address().clone(),
                 kind: ChatType::Private,
                 title: None,
             },
@@ -757,7 +802,7 @@ mod tests {
         let access = RecordingAccess::default();
         let pages = Pages::new();
 
-        job(&access, &pages, site(), Delivery::Person, "42")
+        job(&access, &pages, site(), Delivery::Person, target("42"))
             .send(WEEK, "the report", false)
             .await;
 
@@ -791,7 +836,7 @@ mod tests {
         let access = RecordingAccess::default();
         let pages = Pages::new();
 
-        job(&access, &pages, site(), Delivery::Chat, "7")
+        job(&access, &pages, site(), Delivery::Chat, target("7"))
             .send(WEEK, "the report", false)
             .await;
 
@@ -839,9 +884,15 @@ mod tests {
         };
         assert_eq!(action, DigestAction::Start(Delivery::Person));
 
-        job(&access, &pages, group_site(), Delivery::Person, "43")
-            .send(WEEK, "the report", false)
-            .await;
+        job(
+            &access,
+            &pages,
+            group_site(),
+            Delivery::Person,
+            target("43"),
+        )
+        .send(WEEK, "the report", false)
+        .await;
 
         let documents = access.documents.lock().expect("test channel lock");
         assert_eq!(documents.len(), 1);
@@ -861,7 +912,7 @@ mod tests {
         };
         let pages = Pages::new();
 
-        job(&access, &pages, site(), Delivery::Person, "42")
+        job(&access, &pages, site(), Delivery::Person, target("42"))
             .send(WEEK, "the report", false)
             .await;
 
@@ -914,7 +965,7 @@ mod tests {
         };
 
         let working = RecordingAccess::default();
-        job(&working, &pages, site(), Delivery::Person, "42")
+        job(&working, &pages, site(), Delivery::Person, target("42"))
             .send(stretch, &report, truncated)
             .await;
 

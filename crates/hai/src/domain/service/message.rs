@@ -5,8 +5,8 @@ use crate::{
         model::{Attachment, AttachmentHandle, Message, MessageRole, NewAttachment, NewMessage},
         repo::Repos,
         vo::{
-            AccountId, AttachmentId, ChatId, LlmMessageMeta, MessageId, MessageMeta,
-            PlatformMessageMeta, TimeRange, TopicId,
+            AccountId, AttachmentId, ChatId, ConversationId, LlmMessageMeta, MessageId,
+            MessageMeta, PlatformMessageMeta, TimeRange, TopicId,
         },
     },
     error::Result,
@@ -16,6 +16,7 @@ use crate::{
 /// left — an outgoing reply that pointed at an excerpt included.
 pub struct NewAgentMessage {
     pub chat_id: ChatId,
+    pub conversation_id: ConversationId,
     pub account_id: Option<AccountId>,
     pub text: String,
     pub attachments: Vec<NewAttachment>,
@@ -76,6 +77,7 @@ impl MessageService {
         };
         self.upsert_by_external_id(NewMessage {
             chat_id: msg.chat_id,
+            conversation_id: msg.conversation_id,
             account_id: msg.account_id,
             role: MessageRole::Assistant,
             text: msg.text,
@@ -105,16 +107,19 @@ impl MessageService {
         self.repos.message.by_ids(ids).await
     }
 
-    pub async fn recent_asc(&self, chat_id: ChatId, limit: i64) -> Result<Vec<Message>> {
-        self.repos.message.recent_asc(chat_id, limit).await
+    pub async fn recent_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        self.repos
+            .message
+            .recent_for_conversation(conversation_id, limit)
+            .await
     }
 
     pub async fn has_newer_from_user(&self, chat_id: ChatId, id: MessageId) -> Result<bool> {
         self.repos.message.has_newer_from_user(chat_id, id).await
-    }
-
-    pub async fn update_meta(&self, id: MessageId, meta: Option<serde_json::Value>) -> Result<()> {
-        self.repos.message.update_meta(id, meta).await
     }
 
     pub async fn attachments_by_messages(
@@ -141,21 +146,26 @@ impl MessageService {
     /// The platform ids of a window's messages, for deleting them there.
     pub async fn external_ids_in_range(
         &self,
+        conversation_id: ConversationId,
         chat_id: ChatId,
         range: TimeRange,
     ) -> Result<Vec<String>> {
         self.repos
             .message
-            .external_ids_in_range(chat_id, range)
+            .external_ids_in_range(conversation_id, chat_id, range)
             .await
     }
 
     /// The platform files a window's messages carry, for the bytes cache and the transcripts.
     pub async fn attachment_handles_in_range(
         &self,
+        conversation_id: ConversationId,
         chat_id: ChatId,
         range: TimeRange,
     ) -> Result<Vec<AttachmentHandle>> {
-        self.repos.attachment.handles_in_range(chat_id, range).await
+        self.repos
+            .attachment
+            .handles_in_range(conversation_id, chat_id, range)
+            .await
     }
 }
