@@ -30,8 +30,10 @@ enum Missing {
     Unknown,
     /// Nothing to reach: a block with neither transport nor endpoint, or a kind with no shared root.
     NoEndpoint,
-    /// The kind needs a credential and neither the environment nor the block supplied one.
-    NoApiKey(&'static [&'static str]),
+    /// The kind needs a credential and neither the environment nor the block supplied one; the
+    /// candidates are the provider's own variable, when its name is not its kind's, then the
+    /// kind's.
+    NoApiKey(Vec<String>),
     /// The keyless endpoint did not answer.
     Unreachable(String),
 }
@@ -51,9 +53,6 @@ impl Missing {
                 )
             }
             Self::NoEndpoint => ConfigIssue::provider(name, "has no endpoint: set `base-url` here"),
-            Self::NoApiKey([]) => {
-                ConfigIssue::provider(name, "needs an api-key: set `api-key` here")
-            }
             Self::NoApiKey(keys) => ConfigIssue::provider(
                 name,
                 format!(
@@ -128,29 +127,12 @@ impl ProviderRegistry {
         Self { providers }
     }
 
-    /// Only an available provider, which is what every lookup past startup wants.
-    fn ready(&self, provider: &str) -> Option<&ProviderEntry> {
-        match self.providers.get(provider) {
-            Some(Availability::Ready(entry)) => Some(entry),
-            _ => None,
-        }
-    }
-
     pub(crate) fn get_checked(&self, provider: &str) -> Result<&ProviderEntry> {
         match self.providers.get(provider) {
             Some(Availability::Ready(entry)) => Ok(entry),
             Some(Availability::Unavailable(missing)) => Err(missing.issue(provider).into()),
             None => Err(Missing::Unknown.issue(provider).into()),
         }
-    }
-
-    /// Whether the provider's kind speaks this model kind at all; a caller that only delegates (an
-    /// absent vision or transcription block) asks this before it asks for the endpoint.
-    pub fn serves(&self, kind: ModelKind, provider: &str) -> bool {
-        self.ready(provider)
-            .and_then(|entry| entry.kind)
-            .and_then(|provider_kind| provider_kind.endpoint_for(kind))
-            .is_some()
     }
 
     /// One endpoint resolved for a caller: an explicit `base_url` wins, then the kind's own preset,
@@ -228,18 +210,59 @@ impl ProviderRegistry {
     }
 }
 
-/// The names availability is resolved for: every declared block plus every provider the model roles
-/// name, so a name nothing mentions stays unknown.
+/// The names availability is resolved for: every declared block, every provider a `[models]` entry
+/// names, and every provider a role selector spells directly, so a name nothing mentions stays
+/// unknown.
 fn candidates(config: &AppConfig) -> Vec<String> {
     let mut names: Vec<String> = config.providers.keys().cloned().collect();
     names.extend(
-        super::role::providers_named(config)
-            .into_iter()
-            .map(str::to_owned),
+        config
+            .models
+            .values()
+            .filter_map(|model| super::split_model(&model.model).ok())
+            .map(|identity| identity.provider.to_owned()),
+    );
+    names.extend(
+        super::role::direct_selectors(config)
+            .filter_map(|(selector, _)| super::split_model(selector).ok())
+            .map(|identity| identity.provider.to_owned()),
     );
     names.sort();
     names.dedup();
     names
+}
+
+/// The variables a provider's credential may come from, in precedence order: the one its own name
+/// derives (`my-gateway` → `MY_GATEWAY_API_KEY`), then the ones its kind shares, each once. A
+/// provider named after its own kind derives nothing, so the kind's order stands (`google` keeps
+/// `GEMINI_API_KEY` before `GOOGLE_API_KEY`).
+fn credential_vars(name: &str, kind: ProviderKind) -> Vec<String> {
+    let kind_name: &'static str = kind.into();
+    let derived = (name != kind_name).then(|| name_env_key(name));
+    let mut vars: Vec<String> = Vec::new();
+    for var in derived
+        .iter()
+        .map(String::as_str)
+        .chain(kind.env_keys().iter().copied())
+    {
+        if !vars.iter().any(|existing| existing == var) {
+            vars.push(var.to_owned());
+        }
+    }
+    vars
+}
+
+/// The environment variable a provider name derives: upper-cased, with anything but an ASCII
+/// alphanumeric replaced by `_` (`my-gateway` → `MY_GATEWAY_API_KEY`).
+fn name_env_key(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| match c.is_ascii_alphanumeric() {
+            true => c.to_ascii_uppercase(),
+            false => '_',
+        })
+        .collect();
+    format!("{stem}_API_KEY")
 }
 
 /// The one place availability is decided, so probing and resolving cannot disagree on what to probe.
@@ -268,10 +291,10 @@ fn evidence(config: &AppConfig, env: &impl Fn(&str) -> Option<String>, name: &st
         return Evidence::Missing(Missing::NoEndpoint);
     };
 
-    let key = kind
-        .env_keys()
+    let keys = credential_vars(name, kind);
+    let key = keys
         .iter()
-        .find_map(|name| read_env_key(env, name))
+        .find_map(|variable| read_env_key(env, variable))
         .or_else(|| block.and_then(|block| block.api_key.clone()));
     let entry = ProviderEntry {
         config: ProviderConfig {
@@ -286,7 +309,7 @@ fn evidence(config: &AppConfig, env: &impl Fn(&str) -> Option<String>, name: &st
         // A block that states its own endpoint is taken at its word.
         None if block.is_some_and(|block| block.base_url.is_some()) => Evidence::Ready(entry),
         None if kind.keyless() => Evidence::Reachable(entry, base_url.to_owned()),
-        None => Evidence::Missing(Missing::NoApiKey(kind.env_keys())),
+        None => Evidence::Missing(Missing::NoApiKey(keys)),
     }
 }
 
@@ -324,6 +347,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::agent::test_support::model_config;
 
     /// A key for every kind, so a test declares only the blocks it means to exercise.
     fn any_key(name: &str) -> Option<String> {
@@ -347,6 +371,14 @@ mod tests {
             );
         }
         config
+    }
+
+    fn with_chat_model(config: &mut AppConfig, provider: &str) {
+        config.model_roles.default.model = "main".into();
+        config.models.insert(
+            "main".into(),
+            model_config(provider, "a-model", [ModelKind::Chat]),
+        );
     }
 
     /// A registry of declared blocks, resolved as if every endpoint answered.
@@ -382,7 +414,7 @@ mod tests {
     #[test]
     fn an_env_key_alone_makes_a_provider_usable() {
         let mut config = AppConfig::default();
-        config.model_roles.default.model = "openrouter/a-model".to_owned();
+        with_chat_model(&mut config, "openrouter");
         let env = |name: &str| (name == "OPENROUTER_API_KEY").then(|| "env-key".to_owned());
 
         let registry = ProviderRegistry::from_sources(&config, &env, &|_| false);
@@ -411,11 +443,65 @@ mod tests {
         assert_eq!(chat(&from_file, "openai").credential.key(), "file-key");
     }
 
+    /// A provider's own variable outranks the one its kind shares, and the kind is the fallback.
+    #[test]
+    fn a_named_provider_reads_its_own_variable_first() {
+        let config = config_of(&[("my-gateway", Some(ProviderKind::OpenAI))]);
+        let both = |name: &str| match name {
+            "MY_GATEWAY_API_KEY" => Some("gateway-key".to_owned()),
+            "OPENAI_API_KEY" => Some("openai-key".to_owned()),
+            _ => None,
+        };
+        let registry = ProviderRegistry::from_sources(&config, &both, &|_| true);
+        assert_eq!(
+            chat(&registry, "my-gateway").credential.key(),
+            "gateway-key"
+        );
+
+        let shared = |name: &str| (name == "OPENAI_API_KEY").then(|| "openai-key".to_owned());
+        let registry = ProviderRegistry::from_sources(&config, &shared, &|_| true);
+        assert_eq!(chat(&registry, "my-gateway").credential.key(), "openai-key");
+    }
+
+    /// The failure names the provider's own variable, not only its kind's.
+    #[test]
+    fn a_missing_key_names_the_provider_variable() {
+        let config = config_of(&[("commandcode", Some(ProviderKind::OpenAI))]);
+        let registry = ProviderRegistry::from_sources(&config, &no_env, &|_| true);
+        let err = registry
+            .endpoint(ModelKind::Chat, "commandcode", "a-model", None)
+            .unwrap_err();
+        assert!(err.to_string().contains("COMMANDCODE_API_KEY"), "{err}");
+        assert!(err.to_string().contains("OPENAI_API_KEY"), "{err}");
+    }
+
+    /// A provider named after its own kind derives no variable of its own, so the kind's order —
+    /// and its single mention in a failure — stands.
+    #[test]
+    fn a_kind_named_provider_keeps_the_kinds_order() {
+        assert_eq!(
+            credential_vars("google", ProviderKind::Google),
+            ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+        );
+    }
+
+    /// A provider named only by a direct role selector is discovered like any other, so the
+    /// documented `[model-roles.default] model = "provider/model"` setup needs no preset.
+    #[test]
+    fn a_direct_role_selector_makes_its_provider_available() {
+        let mut config = AppConfig::default();
+        config.model_roles.default.model = "openrouter/anthropic/claude-sonnet-4.5".into();
+        config.model_roles.embedding.model = "openrouter/openai/text-embedding-3-small".into();
+
+        let registry = ProviderRegistry::from_sources(&config, &any_key, &|_| true);
+        assert!(registry.get_checked("openrouter").is_ok());
+    }
+
     /// A blank variable is unconfigured, and the failure names the variable to set.
     #[test]
     fn a_blank_env_value_is_unset() {
         let mut config = AppConfig::default();
-        config.model_roles.default.model = "openai/a-model".to_owned();
+        with_chat_model(&mut config, "openai");
 
         let registry =
             ProviderRegistry::from_sources(&config, &|_| Some("  ".to_owned()), &|_| true);
@@ -447,7 +533,7 @@ mod tests {
     #[test]
     fn a_keyless_kind_is_probed_at_its_default_endpoint() {
         let mut config = AppConfig::default();
-        config.model_roles.default.model = "ollama/a-model".to_owned();
+        with_chat_model(&mut config, "ollama");
 
         let registry = ProviderRegistry::from_sources(&config, &no_env, &|_| true);
         let chat = chat(&registry, "ollama");
@@ -502,7 +588,6 @@ mod tests {
             .endpoint(ModelKind::Rerank, "local-rerank", "bge-reranker", None)
             .unwrap();
         assert_eq!(target.base_url, "http://127.0.0.1:8080/v1/rerank");
-        assert!(!registry.serves(ModelKind::Rerank, "local-rerank"));
     }
 
     /// A kind that shares no root (azure) is unusable without an endpoint, credential or not.
@@ -640,14 +725,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(target.base_url, "https://acme.openai.azure.com/openai/v1");
-    }
-
-    /// This kind does not speak that model kind.
-    #[test]
-    fn serves_reports_the_kind_whitelist() {
-        let registry = registry(&[("openrouter", None), ("deepseek", None)]);
-        assert!(registry.serves(ModelKind::Rerank, "openrouter"));
-        assert!(!registry.serves(ModelKind::Rerank, "deepseek"));
     }
 
     /// The probe reads reachability, and anything it cannot turn into a host:port is unreachable.

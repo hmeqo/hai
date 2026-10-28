@@ -1,3 +1,4 @@
+pub(crate) mod conversation;
 pub mod display;
 pub mod kb;
 pub mod log;
@@ -13,12 +14,7 @@ use uuid::Uuid;
 use crate::{
     bootstrap,
     config::{AppConfig, Paths, env},
-    domain::{
-        repo::Repos,
-        service::ConversationService,
-        storage,
-        vo::{ChatId, ConversationId},
-    },
+    domain::{service::settings::RESET_FLAG, storage},
 };
 
 #[derive(Parser)]
@@ -50,15 +46,62 @@ pub enum Commands {
         #[command(subcommand)]
         action: KbAction,
     },
-    /// Inspect or change Conversation membership
+    /// Inspect or change a Conversation and its Chats
+    #[command(visible_alias = "conv", arg_required_else_help = true)]
     Conversation {
-        #[command(subcommand)]
-        action: ConversationAction,
+        #[command(flatten)]
+        args: ConversationArgs,
     },
+}
+
+#[derive(Args)]
+pub struct ConversationArgs {
+    /// Conversation id; omit for membership commands
+    pub conversation: Option<i64>,
+    #[command(subcommand)]
+    pub action: Option<ConversationAction>,
 }
 
 #[derive(Subcommand)]
 pub enum ConversationAction {
+    /// List Conversations and their member Chats
+    List,
+    /// Read or set a Conversation's language
+    #[command(override_usage = "hai conversation <CONVERSATION> lang [CODE] [--reset]")]
+    Lang {
+        /// Language code, e.g. en, zh, ja
+        #[arg(value_name = "CODE", conflicts_with = "reset")]
+        code: Option<String>,
+        #[command(flatten)]
+        reset: ResetArg,
+    },
+    /// Read or set a Conversation's model alias
+    #[command(override_usage = "hai conversation <CONVERSATION> model [ALIAS] [--reset]")]
+    Model {
+        /// A `[models]` alias that declares the chat role
+        #[arg(value_name = "ALIAS", conflicts_with = "reset")]
+        alias: Option<String>,
+        #[command(flatten)]
+        reset: ResetArg,
+    },
+    /// Read or set a Conversation's content level
+    #[command(override_usage = "hai conversation <CONVERSATION> content-policy [LEVEL] [--reset]")]
+    ContentPolicy {
+        /// Content level: safe, standard or unrestricted
+        #[arg(value_name = "LEVEL", conflicts_with = "reset")]
+        level: Option<String>,
+        #[command(flatten)]
+        reset: ResetArg,
+    },
+    /// Read or set a Conversation's persona
+    #[command(override_usage = "hai conversation <CONVERSATION> persona [TEXT] [--reset]")]
+    Persona {
+        /// Persona text; surrounding whitespace is trimmed
+        #[arg(value_name = "TEXT", conflicts_with = "reset")]
+        text: Option<String>,
+        #[command(flatten)]
+        reset: ResetArg,
+    },
     /// Move one Chat into an existing Conversation, carrying its pending entries
     Attach {
         #[arg(long)]
@@ -71,8 +114,14 @@ pub enum ConversationAction {
         #[arg(long)]
         chat: i64,
     },
-    /// List Conversations and their member Chats
-    List,
+}
+
+/// The one reset flag every setting subcommand flattens.
+#[derive(Args)]
+pub struct ResetArg {
+    /// Restore the configured value
+    #[arg(long = RESET_FLAG)]
+    pub reset: bool,
 }
 
 #[derive(Args)]
@@ -191,32 +240,8 @@ impl Cli {
                 Commands::Kb { action } => {
                     kb::execute(action, &cfg).await?;
                 }
-                Commands::Conversation { action } => {
-                    let pool = sqlx::PgPool::connect(&cfg.database.url).await?;
-                    let service = ConversationService::new(Repos::new(pool));
-                    match action {
-                        ConversationAction::Attach { chat, conversation } => {
-                            service
-                                .attach(ChatId(chat), ConversationId(conversation))
-                                .await?;
-                            println!("Chat {chat} moved to Conversation {conversation}");
-                        }
-                        ConversationAction::Detach { chat } => {
-                            let conversation = service.detach(ChatId(chat)).await?;
-                            println!("Chat {chat} moved to Conversation {conversation}");
-                        }
-                        ConversationAction::List => {
-                            for conversation in service.list().await? {
-                                println!("conversation {}", conversation.id);
-                                for chat in conversation.chats {
-                                    println!(
-                                        "  chat {} alias={} channel={} external={}",
-                                        chat.id, chat.alias, chat.channel_key, chat.external_id
-                                    );
-                                }
-                            }
-                        }
-                    }
+                Commands::Conversation { args } => {
+                    conversation::execute(args, &cfg).await?;
                 }
             }
         } else {

@@ -41,11 +41,13 @@ pub mod entry;
 pub mod event;
 pub mod host_action;
 pub mod id;
+pub mod image_ref;
 pub mod meta;
 pub mod model_alias;
 pub mod purge;
 pub mod session;
 pub mod step;
+pub mod stored_message;
 pub mod stretch;
 pub mod subject;
 pub mod time;
@@ -69,6 +71,7 @@ pub use id::{
     KnowledgeDocumentId, MemoryId, MessageId, PerceptionId, PlatformChannelId, ScheduledTaskId,
     SessionId, StepNumber, TopicId, TurnNumber, attachment_id,
 };
+pub use image_ref::{ImageId, ImageRef};
 pub use meta::{
     LlmMessageMeta, MessageMeta, PlatformAccountMeta, PlatformMessageMeta, TeamspeakAccountMeta,
     TelegramAccountMeta, TelegramMessageMeta, TelegramQuote,
@@ -77,6 +80,7 @@ pub use model_alias::ModelAlias;
 pub use purge::{PurgeCounts, PurgeSpec, PurgeSurface, PurgeSurfaces};
 pub use session::{SessionKind, SessionRef};
 pub use step::Step;
+pub use stored_message::{StoredMessage, StoredPart, StoredRole, StoredToolCall};
 pub use stretch::{Stretch, TimeUnit, whole_units};
 pub use subject::{Subject, SubjectKind};
 pub use time::{RepeatInterval, TimeRange};

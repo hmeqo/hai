@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::{
     agent::model::ModelRoles,
-    agentcore::{ApiClient, ModelKind, ModelTarget},
+    agentcore::{ApiClient, ModelKind, ModelTarget, api::ImageUrl},
     config::{AppConfig, ConfigIssue, schema::SpeechConfig},
     domain::vo::{AttachmentParser, ImageFormat, MediaCodec},
     error::{AppError, Result, bail},
@@ -29,7 +29,7 @@ impl ImageSource {
         Self::Bytes { data, format }
     }
 
-    fn into_image_url(self) -> String {
+    pub(crate) fn into_image_url(self) -> String {
         match self {
             Self::Url(url) => url,
             Self::Bytes { data, format } => {
@@ -91,6 +91,7 @@ struct MultimodalServiceInner {
     transcription: Option<AnalysisCfg>,
     speech: Option<SpeechCfg>,
     image: Option<ModelTarget>,
+    inline_max_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,7 @@ impl MultimodalService {
             ),
             speech: speech_cfg(roles.speech.as_ref(), speech_block)?,
             image: roles.image.clone(),
+            inline_max_bytes: analysis.inline_max_bytes,
         })))
     }
 
@@ -235,11 +237,11 @@ impl MultimodalService {
         self.0.speech.is_some()
     }
 
-    pub async fn generate_image(
-        &self,
-        prompt: &str,
-        images: &[crate::agentcore::api::ImageUrl],
-    ) -> Result<Vec<u8>> {
+    pub(crate) fn inline_max_bytes(&self) -> u64 {
+        self.0.inline_max_bytes
+    }
+
+    pub async fn generate_image(&self, prompt: &str, images: &[ImageUrl]) -> Result<Vec<u8>> {
         let ep = self
             .0
             .image
@@ -312,14 +314,23 @@ fn speech_cfg(
     }))
 }
 
-fn unavailable(name: &str) -> crate::error::AppError {
+fn unavailable(name: &str) -> AppError {
     AppError::message(format!("{name} is unavailable"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agent::model::ProviderRegistry, config::AppConfig};
+    use crate::{
+        agent::{
+            model::{ModelCatalog, ProviderRegistry, resolve as resolve_models},
+            test_support::{chat_embedding_config, model_config},
+        },
+        config::{
+            AppConfig,
+            schema::{ImageConfig, SpeechConfig, VisionAnalysisConfig, VisionConfig},
+        },
+    };
 
     #[test]
     fn image_bytes_carry_their_own_format_into_the_data_url() {
@@ -333,15 +344,20 @@ mod tests {
         assert_eq!(url.into_image_url(), "https://example.com/a.webp");
     }
 
+    #[test]
+    fn the_inline_limit_comes_from_the_config() {
+        let cfg = chat_embedding_config("openai", "gpt-4o");
+        assert_eq!(service(&cfg).unwrap().inline_max_bytes(), 20 * 1024 * 1024);
+    }
+
     /// The analysis switch and the model block are separate: a `[model-roles.vision]` block carries only
     /// the model, and `[agent.multimodal.vision]` is enabled unless turned off.
     #[test]
     fn the_vision_analysis_defaults_on() {
-        let vision: crate::config::schema::VisionConfig =
-            toml::from_str("model = \"openai/gpt-4o\"").unwrap();
+        let vision: VisionConfig = toml::from_str("model = \"openai/gpt-4o\"").unwrap();
         assert_eq!(vision.model.as_deref(), Some("openai/gpt-4o"));
 
-        let analysis = crate::config::schema::VisionAnalysisConfig::default();
+        let analysis = VisionAnalysisConfig::default();
         assert!(analysis.enabled);
         assert!(analysis.image_prompt.is_none());
     }
@@ -354,29 +370,16 @@ mod tests {
 
     /// The service one config builds: the roles resolved, then interpreted.
     fn service(cfg: &AppConfig) -> Result<MultimodalService> {
-        let roles = crate::agent::model::resolve(cfg, &registry(cfg))?;
+        let catalog = ModelCatalog::resolve(cfg, &registry(cfg))?;
+        let roles = resolve_models(cfg, &registry(cfg), &catalog)?;
         MultimodalService::from_config(cfg, &roles)
-    }
-
-    /// The config every case starts from: one chat model with its provider registered, plus the
-    /// embedding role the service insists on.
-    fn config(provider: &str, model: &str) -> AppConfig {
-        let mut cfg = AppConfig::default();
-        cfg.model_roles.default.model = format!("{provider}/{model}");
-        cfg.providers.insert(provider.into(), Default::default());
-        cfg.model_roles.embedding = crate::config::schema::EmbeddingConfig {
-            model: "openai/text-embedding-3-small".into(),
-            dimension: None,
-        };
-        cfg.providers.insert("openai".into(), Default::default());
-        cfg
     }
 
     /// An absent understanding block leaves the capability off when the main provider cannot read
     /// that media, instead of failing startup over a block nobody configured.
     #[tokio::test]
     async fn an_absent_block_on_a_provider_that_cannot_read_the_media_stays_off() {
-        let cfg = config("anthropic", "claude-sonnet-4-5");
+        let cfg = chat_embedding_config("anthropic", "claude-sonnet-4-5");
 
         let svc = service(&cfg).unwrap();
         assert!(
@@ -386,34 +389,26 @@ mod tests {
         );
     }
 
-    /// An absent understanding block runs on the main model and inherits its endpoint, so a proxied
-    /// `[model-roles.default]` does not send the delegated call to the provider's own root.
+    /// An absent understanding block is off; the default model is not inherited implicitly.
     #[test]
-    fn an_absent_understanding_block_inherits_the_default_endpoint() {
-        let mut cfg = config("openai", "gpt-4o");
-        cfg.providers.insert(
-            "openai".into(),
-            crate::config::schema::ProviderConfig {
-                base_url: Some("https://gateway.internal/v1".into()),
-                ..Default::default()
-            },
-        );
+    fn an_absent_understanding_block_is_off() {
+        let cfg = chat_embedding_config("openai", "gpt-4o");
 
         let svc = service(&cfg).unwrap();
-        assert!(svc.vision_enabled());
-        assert!(svc.transcription_enabled());
-
-        let vision = svc.0.vision.as_ref().unwrap();
-        assert_eq!(vision.target.base_url, "https://gateway.internal/v1");
-        assert_eq!(vision.target.model, "gpt-4o");
+        assert!(!svc.vision_enabled());
+        assert!(!svc.transcription_enabled());
     }
 
     /// A block that declares a vision model on a provider which cannot read images fails startup.
     #[test]
     fn a_declared_understanding_block_is_checked() {
-        let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.vision = Some(crate::config::schema::VisionConfig {
-            model: Some("anthropic/claude-sonnet-4-5".into()),
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        cfg.models.insert(
+            "claude".into(),
+            model_config("anthropic", "claude-sonnet-4-5", [ModelKind::Vision]),
+        );
+        cfg.model_roles.vision = Some(VisionConfig {
+            model: Some("claude".into()),
         });
         cfg.providers.insert("anthropic".into(), Default::default());
 
@@ -424,9 +419,17 @@ mod tests {
     /// A configured `[model-roles.image]` resolves to an image role in `from_config`.
     #[test]
     fn image_from_config() {
-        let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.image = Some(crate::config::schema::ImageConfig {
-            model: Some("openrouter/google/gemini-2.5-flash-image".into()),
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        cfg.models.insert(
+            "image-model".into(),
+            model_config(
+                "openrouter",
+                "google/gemini-2.5-flash-image",
+                [ModelKind::Image],
+            ),
+        );
+        cfg.model_roles.image = Some(ImageConfig {
+            model: Some("image-model".into()),
         });
         cfg.providers
             .insert("openrouter".into(), Default::default());
@@ -437,36 +440,51 @@ mod tests {
     /// Conditional mounting: an absent `[model-roles.image]` leaves image generation disabled.
     #[test]
     fn image_disabled_when_unconfigured() {
-        let cfg = config("openai", "gpt-4o");
+        let cfg = chat_embedding_config("openai", "gpt-4o");
         let svc = service(&cfg).unwrap();
         assert!(!svc.image_enabled());
     }
 
-    /// Conditional mounting: a configured `[model-roles.image]` with an empty model stays disabled.
+    /// A present `[model-roles.image]` with no candidate stays disabled.
     #[test]
-    fn image_disabled_when_model_empty() {
-        let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.image = Some(crate::config::schema::ImageConfig { model: None });
+    fn image_disabled_when_no_candidate() {
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        cfg.model_roles.image = Some(ImageConfig { model: None });
         let svc = service(&cfg).unwrap();
         assert!(!svc.image_enabled());
     }
 
-    /// An omitted provider falls back to `model_roles.default.provider` when image generation configures
-    /// only a model.
+    /// An image alias carries its own provider; it never borrows the chat entry's provider.
     #[test]
-    fn image_provider_falls_back_to_agent() {
-        let mut cfg = config("openrouter", "gpt-4o");
-        cfg.model_roles.image = Some(crate::config::schema::ImageConfig {
-            model: Some("openrouter/google/gemini-2.5-flash-image".into()),
+    fn image_alias_uses_its_own_provider() {
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        cfg.models.insert(
+            "image-model".into(),
+            model_config(
+                "openrouter",
+                "google/gemini-2.5-flash-image",
+                [ModelKind::Image],
+            ),
+        );
+        cfg.model_roles.image = Some(ImageConfig {
+            model: Some("image-model".into()),
         });
+        cfg.providers
+            .insert("openrouter".into(), Default::default());
         let svc = service(&cfg).unwrap();
         assert!(svc.image_enabled());
     }
 
-    fn speech_config(voice: &str, model: Option<&str>) -> AppConfig {
-        let mut cfg = config("openai", "gpt-4o");
-        cfg.model_roles.speech = Some(crate::config::schema::SpeechConfig {
-            model: model.map(|model| format!("openai/{model}")),
+    fn speech_config(voice: &str, model_name: Option<&str>) -> AppConfig {
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        if let Some(model_id) = model_name {
+            cfg.models.insert(
+                "speech-model".into(),
+                model_config("openai", model_id, [ModelKind::Speech]),
+            );
+        }
+        cfg.model_roles.speech = Some(SpeechConfig {
+            model: model_name.map(|_| "speech-model".into()),
             voice: voice.into(),
             speed: 1.0,
         });
@@ -481,9 +499,9 @@ mod tests {
         assert!(svc.speech_enabled());
     }
 
-    /// Conditional mounting: a configured `[model-roles.speech]` with an empty model stays disabled.
+    /// A present `[model-roles.speech]` with no candidate stays disabled.
     #[test]
-    fn speech_disabled_when_model_empty() {
+    fn speech_disabled_when_no_candidate() {
         let cfg = speech_config("alloy", None);
         let svc = service(&cfg).unwrap();
         assert!(!svc.speech_enabled());

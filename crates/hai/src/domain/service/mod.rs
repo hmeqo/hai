@@ -1,5 +1,6 @@
 pub mod conversation;
 pub mod conversation_record;
+pub mod image;
 pub mod knowledge;
 pub mod memory;
 pub mod message;
@@ -9,6 +10,7 @@ pub mod preference;
 pub mod purge;
 pub(crate) mod retrieval;
 pub mod scheduled_task;
+pub mod settings;
 pub mod topic;
 
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use std::sync::Arc;
 pub use conversation::{ChatSummary, ConversationService, ConversationSummary};
 pub use conversation_record::ConversationRecordService;
 use derive_more::Deref;
+pub use image::ImageStore;
 pub use knowledge::{KnowledgeService, RelatedChunk};
 pub use memory::{MemoryService, RecordOutcome};
 pub use message::{MessageService, NewAgentMessage};
@@ -26,6 +29,7 @@ pub use purge::PurgeService;
 pub(crate) use retrieval::ScorerErrorPolicy;
 pub use retrieval::{RecallItem, RecallQuery, RecallScope, recall};
 pub use scheduled_task::ScheduledTaskService;
+pub use settings::{SettingChange, SettingsChange, SettingsService};
 pub use topic::TopicService;
 
 use crate::{
@@ -51,10 +55,16 @@ pub struct ServicesInner {
     pub perception: PerceptionService,
     pub preference: PreferenceService,
     pub purge: PurgeService,
+    pub images: ImageStore,
 }
 
 impl Services {
-    pub fn new(repos: Repos, embedding: Arc<dyn EmbeddingService>, scorer: Option<Scorer>) -> Self {
+    pub fn new(
+        repos: Repos,
+        embedding: Arc<dyn EmbeddingService>,
+        scorer: Option<Scorer>,
+        images: ImageStore,
+    ) -> Self {
         let platform = PlatformService::new(repos.clone());
         let message = MessageService::new(repos.clone());
         let conversation = ConversationRecordService::new(repos.clone());
@@ -79,6 +89,7 @@ impl Services {
             perception,
             preference,
             purge,
+            images,
             scorer,
         }))
     }

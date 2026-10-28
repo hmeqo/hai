@@ -4,7 +4,7 @@ pub(crate) mod wrap_up;
 
 use std::sync::Arc;
 
-use genai::chat::{ChatMessage, ChatOptions, ToolCall};
+use genai::chat::{ChatMessage, ChatOptions, ReasoningEffort, ToolCall};
 
 use crate::{
     agent::process::AgentRuntime,
@@ -75,12 +75,31 @@ impl<'a> StepFacts<'a> {
     }
 }
 
+pub(crate) struct ChatOptionsSpec<'a> {
+    pub chat: &'a ChatConfig,
+    pub max_tokens: Option<u32>,
+    pub reasoning_effort: Option<&'a ReasoningEffort>,
+}
+
 pub(crate) struct RoleSpec {
     role: AgentRole,
     pub system_prompt: String,
     pub options: ChatOptions,
     pub steering: bool,
     contract_violations: u32,
+}
+
+#[cfg(test)]
+impl RoleSpec {
+    pub(crate) fn stub(role: AgentRole) -> Self {
+        Self {
+            role,
+            system_prompt: String::new(),
+            options: ChatOptions::default(),
+            steering: false,
+            contract_violations: 0,
+        }
+    }
 }
 
 impl RoleSpec {
@@ -113,13 +132,15 @@ impl AgentRole {
     pub(crate) fn spec(
         self,
         runtime: &AgentRuntime,
-        chat: &ChatConfig,
+        options: ChatOptionsSpec<'_>,
         chat_type: ChatType,
         language: Language,
         persona: Option<&str>,
         content_policy: ContentPolicy,
     ) -> RoleSpec {
         let cfg = &runtime.cfg().agent;
+        let options =
+            build_chat_options(options.chat, options.max_tokens, options.reasoning_effort);
         match self {
             AgentRole::Default => RoleSpec {
                 role: self,
@@ -130,7 +151,7 @@ impl AgentRole {
                     persona,
                     content_policy,
                 ),
-                options: build_chat_options(chat),
+                options,
                 steering: cfg.context.steering,
                 contract_violations: 0,
             },
@@ -143,14 +164,14 @@ impl AgentRole {
                     None,
                     content_policy,
                 ),
-                options: build_chat_options(chat),
+                options: options.clone(),
                 steering: false,
                 contract_violations: 0,
             },
             AgentRole::Digest => RoleSpec {
                 role: self,
                 system_prompt: digest::system_prompt(runtime, language, content_policy),
-                options: build_chat_options(chat),
+                options,
                 steering: false,
                 contract_violations: 0,
             },
@@ -168,25 +189,57 @@ pub(super) fn stop_when_no_calls(facts: StepFacts<'_>) -> StepDecision {
     }
 }
 
-pub(crate) fn build_chat_options(cfg: &ChatConfig) -> ChatOptions {
-    let mut opts = ChatOptions::default().with_temperature(cfg.temperature as f64);
-    if let Some(maxt) = cfg.max_tokens {
-        opts = opts.with_max_tokens(maxt);
+pub(crate) fn build_chat_options(
+    cfg: &ChatConfig,
+    max_tokens: Option<u32>,
+    reasoning_effort: Option<&ReasoningEffort>,
+) -> ChatOptions {
+    let mut opts = ChatOptions::default();
+    if let Some(temperature) = cfg.temperature {
+        opts = opts.with_temperature(temperature as f64);
     }
-    if cfg.reasoning
-        && let Some(effort) = cfg.reasoning_effort()
-    {
-        opts = opts.with_reasoning_effort(effort);
+    if let Some(max_tokens) = max_tokens {
+        opts = opts.with_max_tokens(max_tokens);
+    }
+    if let Some(effort) = reasoning_effort {
+        opts = opts.with_reasoning_effort(effort.clone());
     }
     opts
 }
 
 #[cfg(test)]
 mod tests {
-    use genai::chat::{ChatOptions, ToolCall};
+    use genai::chat::{ChatOptions, ReasoningEffort, ToolCall};
 
-    use super::{AgentRole, RoleSpec, StepDecision, StepFacts, stop_when_no_calls};
-    use crate::{agent::test_support::StubTool, domain::vo::StepNumber};
+    use super::{
+        AgentRole, RoleSpec, StepDecision, StepFacts, build_chat_options, stop_when_no_calls,
+    };
+    use crate::{
+        agent::test_support::StubTool,
+        config::schema::{ChatConfig, ThinkingLevel},
+        domain::vo::StepNumber,
+    };
+
+    #[test]
+    fn options_take_role_temperature_and_model_limits() {
+        let cfg = ChatConfig {
+            model: "alias".into(),
+            temperature: Some(0.2),
+            thinking: ThinkingLevel::Inherit,
+        };
+        let effort = ReasoningEffort::High;
+        let options = build_chat_options(&cfg, Some(123), Some(&effort));
+        assert!(
+            (options.temperature.expect("temperature") - 0.2).abs() < 1e-6,
+            "{:?}",
+            options.temperature
+        );
+        assert_eq!(options.max_tokens, Some(123));
+        assert_eq!(
+            options.reasoning_effort.map(|effort| effort.variant_name()),
+            Some("high")
+        );
+    }
 
     /// Both passes end when the model asks for nothing more: their output is already written.
     #[test]

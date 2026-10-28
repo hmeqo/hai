@@ -103,17 +103,15 @@ impl BatchComposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum AgentEventPayload {
-    /// `started_by` and `composition` are absent on records written before those fields existed.
     TurnStarted {
         turn: TurnNumber,
         reason: WakeReasonKind,
         /// The messages this prompt carried: the batch's own, plus the chapter's seed when the
         /// chapter opens.
-        #[serde(alias = "msg_count")]
         prompt_messages: usize,
         full_prompt: String,
-        started_by: Option<StartedBy>,
-        composition: Option<BatchComposition>,
+        started_by: StartedBy,
+        composition: BatchComposition,
     },
 
     ToolCall {
@@ -347,11 +345,12 @@ mod tests {
         let back: AgentEvent = serde_json::from_value(json).expect("round trip");
         assert_eq!(back.session, Some(session));
 
-        let legacy = serde_json::json!({
+        let without_session = serde_json::json!({
             "chat_id": 7,
             "payload": { "event": "wrap-up-started" },
         });
-        let event: AgentEvent = serde_json::from_value(legacy).expect("a row with no session");
+        let event: AgentEvent =
+            serde_json::from_value(without_session).expect("a host transaction carries no session");
         assert_eq!(event.session, None);
     }
 }

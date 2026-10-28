@@ -8,7 +8,7 @@ use crate::{
     },
     domain::{
         service::Services,
-        vo::{ConversationId, ModelAlias},
+        vo::{ConversationId, ConversationPreferences, ModelAlias},
     },
     error::Result,
 };
@@ -21,6 +21,23 @@ pub struct ResolvedConversationSettings {
     pub model: Option<ModelAlias>,
     pub content_policy: ContentPolicy,
     pub persona: Option<String>,
+}
+
+/// Resolves one stored preference against the configured defaults. Absence of a preference and an
+/// absent configured persona both land as `None`.
+pub(crate) fn resolve(
+    cfg: &AppConfig,
+    prefs: &ConversationPreferences,
+) -> ResolvedConversationSettings {
+    ResolvedConversationSettings {
+        language: prefs.language_or(cfg.conversation.language),
+        model: prefs.model.clone(),
+        content_policy: prefs.content_policy_or(cfg.conversation.content_policy),
+        persona: prefs
+            .persona_or(cfg.conversation.persona.as_deref())
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_owned),
+    }
 }
 
 #[derive(Clone)]
@@ -45,16 +62,7 @@ impl ConversationSettings {
             .get(conversation_id)
             .await?
             .unwrap_or_default();
-        let default_model = self.cfg.conversation.model.as_deref().map(ModelAlias::new);
-        Ok(ResolvedConversationSettings {
-            language: prefs.language_or(self.cfg.conversation.language),
-            model: prefs.model_or(default_model.as_ref()),
-            content_policy: prefs.content_policy_or(self.cfg.conversation.content_policy),
-            persona: prefs
-                .persona_or(self.cfg.conversation.persona.as_deref())
-                .filter(|text| !text.trim().is_empty())
-                .map(str::to_owned),
-        })
+        Ok(resolve(self.cfg.as_ref(), &prefs))
     }
 
     pub async fn language(&self, conversation_id: ConversationId) -> Result<Language> {
@@ -82,28 +90,10 @@ impl ConversationSettings {
             .await
     }
 
-    /// The stored alias, or the configured default; `None` means `[model-roles.default]`.
+    /// The Conversation's stored model; `None` means `[model-roles.default]`.
     pub async fn model(&self, conversation_id: ConversationId) -> Result<Option<ModelAlias>> {
         let prefs = self.services.preference.get(conversation_id).await?;
-        Ok(prefs.unwrap_or_default().model_or(
-            self.cfg
-                .conversation
-                .model
-                .as_deref()
-                .map(ModelAlias::new)
-                .as_ref(),
-        ))
-    }
-
-    pub async fn set_model(
-        &self,
-        conversation_id: ConversationId,
-        model: ModelAlias,
-    ) -> Result<()> {
-        self.services
-            .preference
-            .set_model(conversation_id, model)
-            .await
+        Ok(prefs.unwrap_or_default().model)
     }
 
     pub async fn reset_model(&self, conversation_id: ConversationId) -> Result<()> {
@@ -162,33 +152,64 @@ impl ConversationSettings {
             .await
     }
 
-    /// The alias in `[conversation].model`, without reading the Conversation's preference.
-    pub fn configured_model(&self) -> Option<ModelAlias> {
-        self.cfg.conversation.model.as_deref().map(ModelAlias::new)
-    }
-
-    pub fn model_aliases(&self) -> impl Iterator<Item = &str> {
-        self.cfg.models.keys().map(String::as_str)
-    }
-
-    pub fn model_exists(&self, alias: &str) -> bool {
-        self.cfg.models.contains_key(alias)
-    }
-
-    pub fn default_model_label(&self) -> &str {
-        self.cfg
-            .model_roles
-            .default
-            .model
-            .split_once('/')
-            .map(|(_, model)| model)
-            .unwrap_or(&self.cfg.model_roles.default.model)
-    }
-
     pub fn command_gates(&self) -> CommandGates {
         CommandGates {
             allow_persona_change: self.cfg.conversation.allow_persona_change,
             allow_content_policy_change: self.cfg.conversation.allow_content_policy_change,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+    use crate::{
+        config::{
+            AppConfig,
+            conversation::{ContentPolicy, Language},
+        },
+        domain::vo::{ConversationPreferences, ModelAlias},
+    };
+
+    fn configured() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.conversation.language = Language::En;
+        cfg.conversation.content_policy = ContentPolicy::Standard;
+        cfg.conversation.persona = Some("configured persona".into());
+        cfg
+    }
+
+    #[test]
+    fn absent_preferences_resolve_to_the_configured_defaults() {
+        let resolved = resolve(&configured(), &ConversationPreferences::default());
+        assert_eq!(resolved.language, Language::En);
+        assert_eq!(resolved.model, None);
+        assert_eq!(resolved.content_policy, ContentPolicy::Standard);
+        assert_eq!(resolved.persona.as_deref(), Some("configured persona"));
+    }
+
+    #[test]
+    fn stored_preferences_override_the_defaults() {
+        let prefs = ConversationPreferences {
+            language: Some(Language::Zh),
+            model: Some(ModelAlias::new("main")),
+            content_policy: Some(ContentPolicy::Unrestricted),
+            persona: Some("stored persona".into()),
+        };
+        let resolved = resolve(&configured(), &prefs);
+        assert_eq!(resolved.language, Language::Zh);
+        assert_eq!(resolved.model, Some(ModelAlias::new("main")));
+        assert_eq!(resolved.content_policy, ContentPolicy::Unrestricted);
+        assert_eq!(resolved.persona.as_deref(), Some("stored persona"));
+    }
+
+    #[test]
+    fn a_blank_stored_persona_does_not_fall_back_to_the_configured_one() {
+        let prefs = ConversationPreferences {
+            persona: Some("  ".into()),
+            ..ConversationPreferences::default()
+        };
+        let resolved = resolve(&configured(), &prefs);
+        assert_eq!(resolved.persona, None);
     }
 }

@@ -6,8 +6,11 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
 use crate::{
-    agent::model::{ProviderRegistry, embedding},
-    agentcore::api::embedding::{EmbeddingApi, EmbeddingService},
+    agent::model::{ModelCatalog, ProviderRegistry, embedding},
+    agentcore::{
+        ModelKind,
+        api::embedding::{EmbeddingApi, EmbeddingService},
+    },
     config::AppConfig,
     domain::{repo::vector, storage},
     error::{AppError, Result},
@@ -18,8 +21,9 @@ const MAX_CONCURRENT: usize = 10;
 pub async fn rebuild_embeddings(config: &AppConfig) -> Result<()> {
     let (pool, dimension) = storage::init_db_with_dimension(config).await?;
     let registry = ProviderRegistry::discover(config).await;
+    let catalog = ModelCatalog::resolve_for(config, &registry, &[ModelKind::Embedding])?;
     let svc: Arc<dyn EmbeddingService> =
-        Arc::new(EmbeddingApi::new(embedding(config, &registry)?)?);
+        Arc::new(EmbeddingApi::new(embedding(config, &registry, &catalog)?)?);
 
     vector::reset_embedding_dimension(&pool, dimension).await?;
 

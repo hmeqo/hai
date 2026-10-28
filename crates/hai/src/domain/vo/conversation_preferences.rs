@@ -44,10 +44,6 @@ impl ConversationPreferences {
         self.language.unwrap_or(default)
     }
 
-    pub fn model_or(&self, default: Option<&ModelAlias>) -> Option<ModelAlias> {
-        self.model.clone().or_else(|| default.cloned())
-    }
-
     pub fn content_policy_or(&self, default: ContentPolicy) -> ContentPolicy {
         self.content_policy.unwrap_or(default)
     }

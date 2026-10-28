@@ -160,7 +160,7 @@ impl EventDisplay {
                 started_by,
                 ..
             } => {
-                let by = started_by_label(started_by).unwrap_or("—");
+                let by = started_by_label(started_by);
                 format!("TURN   {turn}  {reason}  prompt:{prompt_messages}  by:{by}")
             }
             AgentEventPayload::ToolCall {
@@ -297,9 +297,9 @@ impl EventDisplay {
     }
 }
 
-/// What `hai log` calls the ground a turn started on; `None` when the record predates the field.
-fn started_by_label(started_by: &Option<StartedBy>) -> Option<&'static str> {
-    started_by.as_ref().map(|path| <&str>::from(*path))
+/// What `hai log` calls the ground a turn started on.
+fn started_by_label(started_by: &StartedBy) -> &'static str {
+    <&str>::from(*started_by)
 }
 
 /// The turn, tool and outcome a payload carries: what the timeline groups by and what the structured
@@ -545,18 +545,14 @@ fn sections(ae: &AgentEventPayload) -> Vec<Section> {
             d.field("Turn", turn);
             d.field("Reason", reason);
             d.field("Prompt messages", prompt_messages);
-            if let Some(path) = started_by_label(started_by) {
-                d.field("Started by", path);
-            }
-            if let Some(counts) = composition {
-                d.field(
-                    "Batch",
-                    format!(
-                        "{} addressed / {} bystanders",
-                        counts.addressed, counts.bystanders
-                    ),
-                );
-            }
+            d.field("Started by", started_by_label(started_by));
+            d.field(
+                "Batch",
+                format!(
+                    "{} addressed / {} bystanders",
+                    composition.addressed, composition.bystanders
+                ),
+            );
             if !full_prompt.is_empty() {
                 d.block("Prompt", &display_json_value(full_prompt));
             }
@@ -785,7 +781,7 @@ mod tests {
                 "event": "turn-started",
                 "turn": 5,
                 "reason": "direct",
-                "msg_count": 3,
+                "prompt_messages": 3,
                 "full_prompt": "the prompt",
                 "started_by": "window",
                 "composition": { "addressed": 1, "bystanders": 2 }
@@ -814,9 +810,10 @@ mod tests {
                 "event": "turn-started",
                 "turn": 5,
                 "reason": "direct",
-                "msg_count": 1,
+                "prompt_messages": 1,
                 "full_prompt": full_prompt,
-            }
+                "started_by": "window",
+                "composition": { "addressed": 1, "bystanders": 0 }}
         }));
         let display = EventDisplay::from_event(&started).expect("a parsed event");
 

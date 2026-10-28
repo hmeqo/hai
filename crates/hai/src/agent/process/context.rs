@@ -16,10 +16,10 @@ use crate::{
         },
         provider::ChatTransport,
     },
-    config::AppConfig,
+    config::{AppConfig, Paths},
     domain::{
         repo::{Repos, vector},
-        service::Services,
+        service::{ImageStore, Services},
         storage,
     },
     error::Result,
@@ -55,8 +55,8 @@ pub(crate) struct Assembly {
 pub(crate) async fn assemble(cfg: &AppConfig) -> Result<Assembly> {
     let providers = ProviderRegistry::discover(cfg).await;
 
-    let roles = resolve(cfg, &providers)?;
     let model_catalog = ModelCatalog::resolve(cfg, &providers)?;
+    let roles = resolve(cfg, &providers, &model_catalog)?;
     let multimodal = MultimodalService::from_config(cfg, &roles)?;
     let retrieval = &cfg.agent.retrieval;
     let scorer = roles
@@ -75,10 +75,12 @@ pub(crate) async fn assemble(cfg: &AppConfig) -> Result<Assembly> {
     let (pool, dimension) = storage::init_db_with_dimension(cfg).await?;
     vector::assert_embedding_dimension(&pool, dimension).await?;
     let repos = Repos::new(pool);
+    let images = ImageStore::new(Paths::inferred().data_dir().join("images"));
     let services = Services::new(
         repos.clone(),
         Arc::new(EmbeddingApi::new(roles.embedding)?),
         scorer,
+        images,
     );
 
     Ok(Assembly {

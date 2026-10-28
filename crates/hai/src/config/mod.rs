@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
     AgentConfig, ChannelSection, ConversationConfig, DatabaseConfig, KnowledgeConfig,
-    LoggingConfig, ModelRolesConfig, PromptConfig, ProviderConfig, SandboxConfig, SkillsConfig,
-    ToolsConfig, WebConfig,
+    LoggingConfig, ModelConfig, ModelRolesConfig, PromptConfig, ProviderConfig, SandboxConfig,
+    SkillsConfig, ToolsConfig, WebConfig,
 };
 
 pub(crate) const PROJECT_NAME: &str = "hai";
@@ -23,7 +23,7 @@ pub(crate) const AGENT_NAME: &str = "hai";
 pub struct AppConfig {
     pub agent: AgentConfig,
     pub conversation: ConversationConfig,
-    pub models: std::collections::BTreeMap<String, String>,
+    pub models: std::collections::BTreeMap<String, ModelConfig>,
     pub prompt: PromptConfig,
     pub knowledge: KnowledgeConfig,
     pub providers: HashMap<String, ProviderConfig>,

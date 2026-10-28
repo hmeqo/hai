@@ -41,8 +41,36 @@ pub struct AgentRegistry {
 
 struct AgentEntry {
     handle: ConversationAgentHandle,
-    task: JoinHandle<()>,
+    lease: AgentLease,
     generation: u64,
+}
+
+/// The task and token an agent entry owns. Dropping the lease stops the task; the cloneable handle
+/// is only a command proxy.
+struct AgentLease {
+    shutdown: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+impl AgentLease {
+    fn new(shutdown: CancellationToken, task: JoinHandle<()>) -> Self {
+        Self { shutdown, task }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
+
+    async fn join(mut self) {
+        let _ = (&mut self.task).await;
+    }
+}
+
+impl Drop for AgentLease {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.task.abort();
+    }
 }
 
 impl AgentRegistry {
@@ -58,14 +86,14 @@ impl AgentRegistry {
 
     pub async fn get_or_create(&self, conversation_id: ConversationId) -> ConversationAgentHandle {
         if let Some(entry) = self.agents.read().await.get(&conversation_id)
-            && !entry.task.is_finished()
+            && !entry.lease.is_finished()
         {
             return entry.handle.clone();
         }
         let mut agents = self.agents.write().await;
-        agents.retain(|_, entry| !entry.task.is_finished());
+        agents.retain(|_, entry| !entry.lease.is_finished());
         if let Some(entry) = agents.get(&conversation_id)
-            && !entry.task.is_finished()
+            && !entry.lease.is_finished()
         {
             return entry.handle.clone();
         }
@@ -79,7 +107,7 @@ impl AgentRegistry {
     pub async fn get(&self, conversation_id: ConversationId) -> Option<ConversationAgentHandle> {
         let agents = self.agents.read().await;
         let entry = agents.get(&conversation_id)?;
-        if entry.task.is_finished() {
+        if entry.lease.is_finished() {
             return None;
         }
         Some(entry.handle.clone())
@@ -92,11 +120,12 @@ impl AgentRegistry {
         let (digest_tx, digest_rx) = mpsc::unbounded_channel();
         let runtime = self.runtime.clone();
         let router = self.router.clone();
-        let shutdown = self.shutdown.clone();
+        let agent_shutdown = self.shutdown.child_token();
+        let task_shutdown = agent_shutdown.clone();
         let agents = self.agents.clone();
         let doorbell_for_turn = doorbell.clone();
         let task = tokio::spawn(async move {
-            match ConversationAgent::new(runtime, conversation_id, router, shutdown, digest_rx)
+            match ConversationAgent::new(runtime, conversation_id, router, task_shutdown, digest_rx)
                 .await
             {
                 Ok(mut agent) => agent.run(doorbell_for_turn, status_rx).await,
@@ -112,21 +141,72 @@ impl AgentRegistry {
         });
         AgentEntry {
             handle: ConversationAgentHandle::new(conversation_id, doorbell, status_tx, digest_tx),
-            task,
+            lease: AgentLease::new(agent_shutdown, task),
             generation,
         }
     }
 
     pub async fn drain(&self, timeout: Duration) {
-        let tasks: Vec<JoinHandle<()>> = {
+        let leases: Vec<AgentLease> = {
             let mut agents = self.agents.write().await;
-            agents.drain().map(|(_, entry)| entry.task).collect()
+            agents.drain().map(|(_, entry)| entry.lease).collect()
         };
         let deadline = Instant::now() + timeout;
-        for task in tasks {
-            if tokio::time::timeout_at(deadline, task).await.is_err() {
+        for lease in leases {
+            if tokio::time::timeout_at(deadline, lease.join())
+                .await
+                .is_err()
+            {
                 tracing::warn!("agent drain timed out, remaining agents abandoned");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::AgentLease;
+
+    struct SetOnDrop(Arc<AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_lease_stops_its_task() {
+        let shutdown = CancellationToken::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task = {
+            let shutdown = shutdown.clone();
+            let dropped = dropped.clone();
+            tokio::spawn(async move {
+                let _set = SetOnDrop(dropped);
+                shutdown.cancelled().await;
+            })
+        };
+
+        tokio::task::yield_now().await;
+        drop(AgentLease::new(shutdown, task));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the task was stopped");
     }
 }

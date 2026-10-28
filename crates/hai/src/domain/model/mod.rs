@@ -98,36 +98,6 @@ mod tests {
         assert_eq!((counts.addressed, counts.bystanders), (1, 2));
     }
 
-    /// A turn record written before `started_by` and `composition` existed must still decode: the
-    /// audit trail is read back by `hai log`, and a field a record never carried is not corruption.
-    /// The fixture spells the message count the way those records did, which is what the field's alias
-    /// keeps readable.
-    #[test]
-    fn a_turn_record_from_before_the_ground_fields_still_decodes() {
-        let old = serde_json::json!({
-            "event": "turn-started",
-            "turn": 3,
-            "reason": "Observe",
-            "msg_count": 17,
-            "full_prompt": ""
-        });
-
-        match serde_json::from_value::<AgentEventPayload>(old).expect("a pre-field record decodes")
-        {
-            AgentEventPayload::TurnStarted {
-                prompt_messages,
-                started_by,
-                composition,
-                ..
-            } => {
-                assert_eq!(prompt_messages, 17);
-                assert_eq!(started_by, None);
-                assert_eq!(composition, None);
-            }
-            other => panic!("expected a turn record; got {other:?}"),
-        }
-    }
-
     #[test]
     fn domain_enum_names_agree_between_serde_and_strum() {
         assert_names_agree(MemoryKind::iter(), |kind| kind.as_str());
@@ -150,8 +120,11 @@ mod tests {
                     reason: WakeReasonKind::Observe,
                     prompt_messages: 0,
                     full_prompt: String::new(),
-                    started_by: None,
-                    composition: None,
+                    started_by: StartedBy::Window,
+                    composition: BatchComposition {
+                        addressed: 0,
+                        bystanders: 0,
+                    },
                 },
                 AgentEventPayload::ToolCall {
                     turn: TurnNumber(0),

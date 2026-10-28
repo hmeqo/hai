@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        model::ConversationRecord,
+        model::{ChatType, ConversationRecord, Platform},
         vo::{ChannelKey, ChapterWrite, ChatEntry, ChatId, ConversationId, EntryKind},
     },
     error::Result,
@@ -17,6 +17,9 @@ pub struct ConversationRow {
     pub alias: Option<String>,
     pub external_id: Option<String>,
     pub channel_key: Option<ChannelKey>,
+    pub platform: Option<Platform>,
+    pub chat_type: Option<ChatType>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +184,8 @@ impl ConversationRecordRepo {
 
     pub async fn list(&self) -> Result<Vec<ConversationRow>> {
         sqlx::query_as(
-            "SELECT v.id AS conversation_id, c.id AS chat_id, c.alias, c.external_id, p.channel_key \
+            "SELECT v.id AS conversation_id, c.id AS chat_id, c.alias, c.external_id, p.channel_key, \
+                    p.platform, c.chat_type, c.name \
              FROM conversation v LEFT JOIN chat c ON c.conversation_id = v.id \
              LEFT JOIN platform_channel p ON p.id = c.channel_id \
              ORDER BY v.id, c.id",

@@ -10,8 +10,11 @@ use super::{
     paging::{DEFAULT_LINES, MAX_LINE_CHARS, MAX_LIST_ENTRIES, MAX_WINDOW_LINES, Page, paginate},
 };
 use crate::{
-    agent::multimodal::{ImageSource, MediaSource, Payload},
-    agentcore::tool::{ToolError, tool_err},
+    agent::multimodal::{
+        ImageSource, MediaSource, Payload,
+        analysis::{ResolvedMedia, reads_natively, resolve_parser},
+    },
+    agentcore::tool::{ToolError, ToolMedia, tool_err},
     domain::vo::{AttachmentParser, ImageFormat, MediaCodec},
 };
 
@@ -195,12 +198,13 @@ impl Read {
         &self,
         path: &Path,
         args: &ReadArgs,
+        image_input: bool,
     ) -> Result<ReadOutput, ToolError> {
         self.sandbox.ensure_readable(path)?;
         let stat = stat(path).await?;
         match stat.kind {
             EntryKind::Dir => self.list_dir(path, args).await,
-            EntryKind::File => self.read_file(path, stat.size, args).await,
+            EntryKind::File => self.read_file(path, stat.size, args, image_input).await,
             EntryKind::Other => Err(tool_err(format!(
                 "{} is neither a file nor a directory",
                 path.display()
@@ -237,16 +241,43 @@ impl Read {
         path: &Path,
         size: u64,
         args: &ReadArgs,
+        image_input: bool,
     ) -> Result<ReadOutput, ToolError> {
         let name = name_of(path);
         let head = read_range(path, 0..MAX_SNIFF_BYTES.min(size)).await?;
         let parser = AttachmentParser::from_bytes(&head)
             .or_else(|| name.and_then(AttachmentParser::from_filename));
-        if let Some(parser) = parser {
-            let payload = self.payload(parser, &head, path, name, size).await?;
+        if let Some(detected) = parser {
+            let payload = self.payload(detected, &head, path, name, size).await?;
+            let parser = resolve_parser(detected, args.parser)?;
+            let payload = if reads_natively(parser, image_input) {
+                match payload {
+                    Payload::Image(ImageSource::Bytes { data, format }) => {
+                        return Ok(ReadOutput::Image {
+                            media: ToolMedia::Image {
+                                mime: format.mime().to_owned(),
+                                data,
+                                focus: Some(
+                                    args.focus.as_deref().unwrap_or_default().trim().to_owned(),
+                                ),
+                            },
+                        });
+                    }
+                    payload => payload,
+                }
+            } else {
+                payload
+            };
             let content = self
                 .analyzer
-                .analyze(payload, parser, args.parser, None, args.focus.as_deref())
+                .analyze(
+                    ResolvedMedia {
+                        parser,
+                        payload,
+                        subject: None,
+                    },
+                    args.focus.as_deref(),
+                )
                 .await?;
             return Ok(ReadOutput::Text { content });
         }
@@ -289,7 +320,7 @@ impl Read {
 
     /// A file's bytes, refused before they are read once they exceed what one request may carry.
     async fn whole(&self, path: &Path, size: u64) -> Result<Vec<u8>, ToolError> {
-        self.analyzer.inline_limit().refuse(size)?;
+        self.resolver.inline_limit().refuse(size)?;
         read_range(path, 0..size).await
     }
 

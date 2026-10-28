@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HostAction {
     PersonaChanged,
+    /// Carried by stored entries and read as `<host_actions>`; no agent command writes it.
     ModelChanged,
     LanguageChanged,
     ContentPolicyChanged,

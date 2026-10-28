@@ -1,3 +1,4 @@
+pub(crate) mod attachment;
 pub(crate) mod channel;
 pub(crate) mod chat;
 pub(crate) mod command;

@@ -23,6 +23,11 @@ impl ConfigIssue {
         Self::new(format!("model-roles.{}", model_role_block(kind)), detail)
     }
 
+    /// A problem inside one `[models.<alias>]` entry.
+    pub fn model(alias: &str, detail: impl Into<String>) -> Self {
+        Self::new(format!("models.{alias}"), detail)
+    }
+
     /// A problem inside `[providers.<name>]`.
     pub fn provider(name: &str, detail: impl Into<String>) -> Self {
         Self::new(format!("providers.{name}"), detail)
@@ -68,6 +73,10 @@ mod tests {
         assert_eq!(
             ConfigIssue::model_role(ModelKind::Chat, "no provider is named").to_string(),
             "[model-roles.default] no provider is named"
+        );
+        assert_eq!(
+            ConfigIssue::model("sonnet", "provider is required").to_string(),
+            "[models.sonnet] provider is required"
         );
         assert_eq!(
             ConfigIssue::provider("openai", "needs an api-key").to_string(),

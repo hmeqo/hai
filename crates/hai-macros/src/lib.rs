@@ -7,7 +7,8 @@ use syn::{
 };
 
 /// Attribute syntax: `args = none` / `args = Type` / `speaks` / `ends_turn` / `reads_only`,
-/// comma-separated so they compose (for example `args = FooArgs, ends_turn`). The generated
+/// comma-separated so they compose (for example `args = FooArgs, ends_turn`). `args = none`
+/// declares the empty object schema, since a tool never goes out without one. The generated
 /// implementation always uses `crate::` paths, so a call site needs neither the trait nor the error
 /// type imported (this crate is workspace-internal).
 #[derive(Default)]
@@ -120,15 +121,18 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                 impl crate::agentcore::tool::AgentTool for #struct_name {
                     fn name(&self) -> &str { #name_lit }
                     fn description(&self) -> &str { #description }
-                    fn schema(&self) -> ::std::option::Option<::serde_json::Value> { None }
+                    fn schema(&self) -> ::serde_json::Value {
+                        crate::agentcore::tool::schema::empty()
+                    }
                     async fn execute(
                         &self,
                         _args: ::serde_json::Value,
+                        _ctx: &crate::agentcore::tool::ToolCallContext,
                     ) -> ::std::result::Result<
-                        ::serde_json::Value,
+                        crate::agentcore::tool::ToolOutput,
                         crate::agentcore::tool::ToolError,
                     > {
-                        self.exec().await
+                        self.exec().await.map(crate::agentcore::tool::ToolOutput::data)
                     }
                     #metadata
                 }
@@ -197,20 +201,21 @@ fn expand_with_args(
         impl crate::agentcore::tool::AgentTool for #struct_name {
             fn name(&self) -> &str { #name_lit }
             fn description(&self) -> &str { #description }
-            fn schema(&self) -> ::std::option::Option<::serde_json::Value> {
-                ::std::option::Option::Some(
-                    crate::agentcore::tool::schema_of::<#args_type>()
-                )
+            fn schema(&self) -> ::serde_json::Value {
+                crate::agentcore::tool::schema_of::<#args_type>()
             }
             async fn execute(
                 &self,
                 args: ::serde_json::Value,
+                _ctx: &crate::agentcore::tool::ToolCallContext,
             ) -> ::std::result::Result<
-                ::serde_json::Value,
+                crate::agentcore::tool::ToolOutput,
                 crate::agentcore::tool::ToolError,
             > {
                 let typed: #args_type = ::serde_json::from_value(args)?;
-                self.exec(typed).await
+                self.exec(typed)
+                    .await
+                    .map(crate::agentcore::tool::ToolOutput::data)
             }
             #metadata
         }

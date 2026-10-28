@@ -2,7 +2,7 @@
 
 ## Project overview
 
-HAI is a long-term companion AI assistant running as a Telegram bot and a TeamSpeak 3 text-chat client. Rust workspace (`hai` + `hai-macros`), layered `bootstrap → platform → agent → agentcore + config + domain` over `util` / `error`. The `docs/` tree is the spec authority; `docs/CONTEXT.md` is the term authority and `docs/architecture.md` holds the dependency rules.
+HAI is a long-term companion AI assistant running as a Telegram bot and a TeamSpeak 3 text-chat client. Rust workspace (`hai` + `hai-macros`), layered `bootstrap → platform → agent → agentcore + config + domain` over `util` / `error`. The `docs/topics/` tree is the implementation spec authority, `docs/usage.md` is the user manual, and `docs/CONTEXT.md` is the term authority; `docs/architecture.md` holds the dependency rules.
 
 Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 
@@ -34,7 +34,7 @@ Terms that are easy to get wrong (definitions in `docs/CONTEXT.md`):
 | `hai db rebuild embeddings` | rebuild every vector and its index |
 | `hai log [--id N] [--chat ID] [--event TAG] [--session PREFIX]` | event-log TUI; `--id N` prints one event |
 | `hai kb import/list/search/delete/reindex` | knowledge-base management (idempotent import, semantic search, rebuild) |
-| `hai conversation attach/detach/list` | move a Chat and its pending entries between Conversations; `list` prints membership |
+| `hai conversation (conv) list/attach/detach`, `hai conversation <CONVERSATION> [lang|model|content-policy|persona]` | inspect a Conversation's Chats and settings, change one setting out of band, or move a Chat and its pending entries |
 
 ## Code style
 
@@ -80,6 +80,7 @@ Read the matching doc before changing code.
 
 | Task | Doc |
 |---|---|
+| User setup, configuration, CLI and chat commands | docs/usage.md |
 | ConversationAgent lifecycle, per-origin Turns, chapter reopen | docs/topics/chat-agent.md |
 | Prompt rendering, personality, skills | docs/topics/prompting.md |
 | Tools, execution, multimodal, MCP, networking | docs/topics/tools.md |

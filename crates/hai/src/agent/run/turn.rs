@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
-use genai::Client;
+use genai::{Client, chat::ReasoningEffort};
 
 use crate::{
     agent::{
         channel::{ChannelHandle, ChannelRouter},
         environment::sandbox::Sandbox,
         events::WakeEvents,
+        model::ModelCapabilities,
         multimodal::MultimodalService,
         process::AppContext,
+        prompt::role::ChatOptionsSpec,
     },
     agentcore::skills::SkillManager,
     config::{
@@ -27,9 +29,23 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct SelectedModel {
     pub alias: Option<ModelAlias>,
+    pub name: Option<String>,
     pub client: Client,
     pub model: String,
     pub chat: ChatConfig,
+    pub capabilities: ModelCapabilities,
+    pub max_tokens: Option<u32>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl SelectedModel {
+    pub(crate) fn chat_options(&self) -> ChatOptionsSpec<'_> {
+        ChatOptionsSpec {
+            chat: &self.chat,
+            max_tokens: self.max_tokens,
+            reasoning_effort: self.reasoning_effort.as_ref(),
+        }
+    }
 }
 
 pub struct TurnContext {

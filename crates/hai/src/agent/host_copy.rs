@@ -7,6 +7,17 @@ use crate::{
     domain::vo::{Stretch, TimeUnit, whole_units},
 };
 
+/// How a content level reads in a Conversation's language; the command argument stays the
+/// kebab-case value.
+pub(crate) fn level_label(language: Language, level: ContentPolicy) -> &'static str {
+    match (language.text_catalog(), level) {
+        (crate::agent::prompt::text::TextCatalog::Zh, ContentPolicy::Safe) => "安全",
+        (crate::agent::prompt::text::TextCatalog::Zh, ContentPolicy::Standard) => "标准",
+        (crate::agent::prompt::text::TextCatalog::Zh, ContentPolicy::Unrestricted) => "无限制",
+        (crate::agent::prompt::text::TextCatalog::En, level) => level.as_str(),
+    }
+}
+
 /// How a stretch reads in a Conversation's language: everything, a relative span in the largest
 /// whole unit that divides it, or an absolute one as the two local times it covers. Every command
 /// that names a stretch reads it here — a range button and the page it leads to are the same words.
@@ -74,13 +85,6 @@ pub(crate) enum HostCopy {
     LanguageSet,
     LanguageReset,
     LanguageUnsupported,
-    ModelCurrent {
-        effective: String,
-        aliases: Vec<String>,
-    },
-    ModelSet(String),
-    ModelReset(String),
-    ModelUnknown(String),
     ContentPolicyCurrent(ContentPolicy),
     ContentPolicySet(ContentPolicy),
     ContentPolicyReset(ContentPolicy),
@@ -118,64 +122,30 @@ impl HostCopy {
             Self::LanguageSet => (LANGUAGE_SET.get(catalog))(name),
             Self::LanguageReset => (LANGUAGE_RESET.get(catalog))(name),
             Self::LanguageUnsupported => LANGUAGE_UNSUPPORTED.get(catalog).into(),
-            Self::ModelCurrent { effective, aliases } => {
-                let list = if aliases.is_empty() {
-                    MATCH_NONE.get(catalog).to_owned()
-                } else {
-                    aliases.join(", ")
-                };
+            Self::ContentPolicyCurrent(policy) => {
+                let levels = ContentPolicy::ALL
+                    .map(|level| level_label(language, level))
+                    .join(", ");
                 match catalog {
-                    crate::agent::prompt::text::TextCatalog::Zh => {
-                        format!("当前模型：{effective}\n可用：{list}")
-                    }
-                    crate::agent::prompt::text::TextCatalog::En => {
-                        format!("Current model: {effective}\nAvailable: {list}")
-                    }
+                    crate::agent::prompt::text::TextCatalog::Zh => format!(
+                        "内容尺度：{}。\n级别：{}",
+                        level_label(language, policy),
+                        levels
+                    ),
+                    crate::agent::prompt::text::TextCatalog::En => format!(
+                        "Content policy: {}.\nLevels: {}",
+                        level_label(language, policy),
+                        levels
+                    ),
                 }
             }
-            Self::ModelSet(alias) => match catalog {
-                crate::agent::prompt::text::TextCatalog::Zh => format!("模型已设为 {alias}。"),
-                crate::agent::prompt::text::TextCatalog::En => format!("Model set to {alias}."),
-            },
-            Self::ModelReset(alias) => match catalog {
-                crate::agent::prompt::text::TextCatalog::Zh => format!("已恢复默认模型：{alias}。"),
-                crate::agent::prompt::text::TextCatalog::En => {
-                    format!("Back to the default model: {alias}.")
-                }
-            },
-            Self::ModelUnknown(alias) => match catalog {
-                crate::agent::prompt::text::TextCatalog::Zh => {
-                    format!("没有配置模型 `{alias}`。")
-                }
-                crate::agent::prompt::text::TextCatalog::En => {
-                    format!("no model named `{alias}` is configured.")
-                }
-            },
-            Self::ContentPolicyCurrent(policy) => match catalog {
-                crate::agent::prompt::text::TextCatalog::Zh => format!(
-                    "内容尺度：成熟度 {}，政治 {}。\n预设：{}",
-                    policy.maturity.as_str(),
-                    policy.politics.as_str(),
-                    ContentPolicy::PRESETS.join(", ")
-                ),
-                crate::agent::prompt::text::TextCatalog::En => format!(
-                    "Content policy: maturity {}, politics {}.\nPresets: {}",
-                    policy.maturity.as_str(),
-                    policy.politics.as_str(),
-                    ContentPolicy::PRESETS.join(", ")
-                ),
-            },
             Self::ContentPolicySet(policy) | Self::ContentPolicyReset(policy) => match catalog {
-                crate::agent::prompt::text::TextCatalog::Zh => format!(
-                    "内容尺度已设为：成熟度 {}，政治 {}。",
-                    policy.maturity.as_str(),
-                    policy.politics.as_str()
-                ),
-                crate::agent::prompt::text::TextCatalog::En => format!(
-                    "Content policy set to maturity {}, politics {}.",
-                    policy.maturity.as_str(),
-                    policy.politics.as_str()
-                ),
+                crate::agent::prompt::text::TextCatalog::Zh => {
+                    format!("内容尺度已设为：{}。", level_label(language, policy))
+                }
+                crate::agent::prompt::text::TextCatalog::En => {
+                    format!("Content policy set to {}.", level_label(language, policy))
+                }
             },
             Self::PersonaCurrent(Some(text)) => text,
             Self::PersonaCurrent(None) => match catalog {
@@ -244,11 +214,6 @@ const UNAUTHORIZED: PerCatalog<&'static str> = PerCatalog {
 const GREETING: PerCatalog<&'static str> = PerCatalog {
     zh: "你好！在的，有事就说。",
     en: "Hello! I am here — talk to me whenever.",
-};
-
-const MATCH_NONE: PerCatalog<&'static str> = PerCatalog {
-    zh: "无",
-    en: "none",
 };
 
 const STATUS_EMPTY: PerCatalog<&'static str> = PerCatalog {

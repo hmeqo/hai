@@ -16,7 +16,12 @@ use genai::Client;
 
 use crate::{
     agent::{
-        events::AgentEventBus, multimodal::MultimodalService, run::SelectedModel, web::WebService,
+        events::AgentEventBus,
+        model::{ModelCatalog, ModelEntry},
+        multimodal::MultimodalService,
+        prompt::layers::{PromptLayers, resolve as resolve_prompt_layers},
+        run::SelectedModel,
+        web::WebService,
     },
     agentcore::{mcp::McpManager, provider, skills::SkillManager},
     config::AppConfig,
@@ -34,7 +39,7 @@ pub struct AgentRuntimeInner {
     pub clients: HashMap<ModelAlias, Client>,
     pub mcp_manager: McpManager,
     pub skill_manager: SkillManager,
-    pub prompts: crate::agent::prompt::layers::PromptLayers,
+    pub prompts: PromptLayers,
     pub web: WebService,
 }
 
@@ -43,7 +48,7 @@ impl AgentRuntime {
         let cfg = Arc::clone(&app.cfg);
         let mcp_manager = McpManager::from_config(&cfg.mcp).await?;
         let skill_manager = SkillManager::load(&cfg.skills.dirs, &cfg.skills.disabled).await?;
-        let prompts = crate::agent::prompt::layers::resolve(&cfg)?;
+        let prompts = resolve_prompt_layers(&cfg)?;
         let web = WebService::from_config(&cfg.web)?;
 
         let chat = &app.chat_transport;
@@ -51,10 +56,11 @@ impl AgentRuntime {
 
         let model = chat.target.model.clone();
         let mut clients = HashMap::new();
-        for choice in app.model_catalog.aliases() {
+        for entry in app.model_catalog.chat_entries() {
+            let transport = entry.chat.as_ref().expect("a chat entry has a transport");
             clients.insert(
-                ModelAlias::new(choice.alias.clone()),
-                provider::create_genai_client(choice.transport.kind, &choice.transport.target)?,
+                ModelAlias::new(entry.alias.clone()),
+                provider::create_genai_client(transport.kind, &transport.target)?,
             );
         }
 
@@ -87,29 +93,160 @@ impl AgentRuntime {
         &self.app.multimodal
     }
 
+    pub(crate) fn model_catalog(&self) -> &ModelCatalog {
+        &self.app.model_catalog
+    }
+
     /// A stored alias the catalog no longer has resolves to the default; the caller clears the
     /// stale preference.
     pub(crate) fn model_exists(&self, alias: &ModelAlias) -> bool {
-        self.app.model_catalog.get(alias.as_str()).is_some()
+        self.app
+            .model_catalog
+            .get(alias.as_str())
+            .is_some_and(|entry| entry.chat.is_some())
     }
 
     pub(crate) fn resolve_model(&self, alias: Option<&ModelAlias>) -> SelectedModel {
         if let Some(alias) = alias
-            && let Some(choice) = self.app.model_catalog.get(alias.as_str())
+            && let Some(entry) = self.app.model_catalog.get(alias.as_str())
+            && entry.chat.is_some()
             && let Some(client) = self.clients.get(alias)
         {
-            return SelectedModel {
-                alias: Some(alias.clone()),
-                client: client.clone(),
-                model: choice.transport.target.model.clone(),
-                chat: choice.chat.clone(),
-            };
+            return selected_model(Some(alias.clone()), client.clone(), entry, self.cfg());
+        }
+        let default_alias = self.cfg().model_roles.default.model.as_str();
+        if let Some(entry) = self.app.model_catalog.get(default_alias) {
+            return selected_model(None, self.client.clone(), entry, self.cfg());
         }
         SelectedModel {
             alias: None,
+            name: None,
             client: self.client.clone(),
             model: self.model.clone(),
             chat: self.cfg().model_roles.default.clone(),
+            capabilities: Default::default(),
+            max_tokens: None,
+            reasoning_effort: None,
         }
+    }
+}
+
+fn selected_model(
+    alias: Option<ModelAlias>,
+    client: Client,
+    entry: &ModelEntry,
+    cfg: &AppConfig,
+) -> SelectedModel {
+    let mut chat = cfg.model_roles.default.clone();
+    chat.temperature = chat.temperature.or(entry.config.temperature);
+    let identity = entry.identity();
+    let reasoning_effort = entry.reasoning_effort(chat.thinking);
+    SelectedModel {
+        alias,
+        name: entry.config.name.clone(),
+        client,
+        model: identity.model.to_owned(),
+        chat,
+        capabilities: entry.capabilities(),
+        max_tokens: entry.config.max_tokens,
+        reasoning_effort,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use genai::chat::ReasoningEffort;
+
+    use super::*;
+    use crate::{
+        agentcore::{ModelKind, ThinkingEffort},
+        config::schema::{InputModality, ModelConfig, ThinkingConfig, ThinkingLevel},
+    };
+
+    fn entry(temperature: Option<f32>) -> ModelEntry {
+        ModelEntry {
+            alias: "sonnet".into(),
+            config: ModelConfig {
+                model: "openrouter/anthropic/claude-sonnet-4.5".into(),
+                name: Some("Claude Sonnet".into()),
+                roles: [ModelKind::Chat].into(),
+                input: [InputModality::Text, InputModality::Image].into(),
+                max_tokens: Some(4096),
+                context_window: None,
+                temperature,
+                thinking: Some(ThinkingConfig {
+                    efforts: vec![ThinkingEffort::Low, ThinkingEffort::High],
+                    default: Some(ThinkingEffort::High),
+                }),
+                pricing: None,
+            },
+            chat: None,
+        }
+    }
+
+    #[test]
+    fn a_role_temperature_overrides_the_model_default() {
+        let mut cfg = AppConfig::default();
+        let selected = selected_model(
+            None,
+            crate::agent::test_support::genai_client(),
+            &entry(Some(0.6)),
+            &cfg,
+        );
+        assert_eq!(selected.chat.temperature, Some(0.6));
+        assert!(selected.capabilities.image_input);
+        assert_eq!(selected.max_tokens, Some(4096));
+        assert_eq!(selected.name.as_deref(), Some("Claude Sonnet"));
+        assert_eq!(
+            selected
+                .reasoning_effort
+                .as_ref()
+                .map(ReasoningEffort::variant_name),
+            Some("high")
+        );
+
+        cfg.model_roles.default.temperature = Some(0.2);
+        cfg.model_roles.default.thinking = ThinkingLevel::Effort(ThinkingEffort::Low);
+        let selected = selected_model(
+            None,
+            crate::agent::test_support::genai_client(),
+            &entry(Some(0.6)),
+            &cfg,
+        );
+        assert_eq!(selected.chat.temperature, Some(0.2));
+        assert_eq!(
+            selected
+                .reasoning_effort
+                .as_ref()
+                .map(ReasoningEffort::variant_name),
+            Some("low")
+        );
+
+        cfg.model_roles.default.thinking = ThinkingLevel::Off;
+        let selected = selected_model(
+            None,
+            crate::agent::test_support::genai_client(),
+            &entry(Some(0.6)),
+            &cfg,
+        );
+        assert_eq!(
+            selected
+                .reasoning_effort
+                .as_ref()
+                .map(ReasoningEffort::variant_name),
+            Some("zero")
+        );
+    }
+
+    #[test]
+    fn no_model_or_role_temperature_sends_none() {
+        let cfg = AppConfig::default();
+        let selected = selected_model(
+            None,
+            crate::agent::test_support::genai_client(),
+            &entry(None),
+            &cfg,
+        );
+        assert_eq!(selected.chat.temperature, None);
     }
 }

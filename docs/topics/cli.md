@@ -4,13 +4,13 @@
 
 ## Overview
 
-One binary, two modes: with no subcommand it starts the bot (`bootstrap.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` / `conversation` management command, assembled by `cli/mod.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log`, `kb` and `conversation` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves that role alone, so it needs no chat model; the flags are the `clap` definitions behind `--help`.
+One binary, two modes: with no subcommand it starts the bot (`bootstrap.rs:serve`), otherwise it runs one `config` / `db` / `log` / `kb` / `conversation` (`conv`) management command, assembled by `cli/mod.rs:Cli::execute`, which loads `.env`, the config, then dispatches — a failure exits 1 after printing the error (`main.rs:main`). A management command never starts the platform layer (`log`, `kb` and `conversation` build their own pool), and `[model-roles.embedding]` is required for `db migrate`, `kb` and the rebuild (`docs/topics/config.md`) — the rebuild resolves only the embedding selector and builds no chat transport; the flags are the `clap` definitions behind `--help`.
 
 ## Design
 
 ### db
 
-`create` rewrites the configured URL onto the `postgres` database (`domain/storage.rs:create_database`) and issues `CREATE DATABASE`. `migrate` is one call into `domain/storage.rs:migrate`, which runs `domain/storage.rs:apply_schema` — `crates/hai/migrations/schema.sql` creates the current tables, indexes and constraints — and then `domain/repo/vector.rs:ensure_embedding_schema`, which adds the vector extension and the `embedding` column at the configured dimension. Nothing runs automatically, so a deploy must run this. A database written before the Conversation boundary is migrated by the operator.
+`create` rewrites the configured URL onto the `postgres` database (`domain/storage.rs:create_database`) and issues `CREATE DATABASE`. `migrate` is one call into `domain/storage.rs:migrate`, which runs `domain/storage.rs:apply_schema` — `crates/hai/migrations/schema.sql` creates the current tables, indexes and constraints — and then `domain/repo/vector.rs:ensure_embedding_schema`, which adds the vector extension and the `embedding` column at the configured dimension. Nothing runs automatically, so a deploy must run this.
 
 ### rebuild embeddings (`cli/rebuild.rs:rebuild_embeddings`)
 
@@ -24,9 +24,13 @@ One binary, two modes: with no subcommand it starts the bot (`bootstrap.rs:serve
 - `search` prints `p=` (the reranker's score) when reranking is configured, `d=` (the vector leg's L2 distance) otherwise, and `-` for a chunk only the lexical leg recalled.
 - A `---` block is frontmatter only when it holds a `key: value` line, so a document opening with a horizontal rule keeps its body; the title comes from that block, otherwise the file stem, and `--title` overrides both.
 
-### conversation (`cli/mod.rs:ConversationAction`)
+### conversation (`cli/conversation.rs:execute`)
 
-`list` prints every Conversation with its member Chats. `attach --chat <id> --conversation <id>` moves one Chat and its pending entries into an existing Conversation; `detach --chat <id>` creates a fresh Conversation and moves it there. History is a cutover: `message.conversation_id` stays in the source Conversation; only `chat.conversation_id` and the unconsumed pending entries move. Both operations are one transaction.
+`conversation` (alias `conv`) addresses one Conversation by id before the setting command: `conversation <CONVERSATION>` prints the member table and every effective setting, and `conversation <CONVERSATION> lang [CODE]`, `model [ALIAS]`, `content-policy [LEVEL]` or `persona [TEXT]` reads one setting when no value is given, writes it when one is, and restores the configured default with `--reset`. One command changes one setting; `--reset` with a value is refused. `list`, `attach --chat <id> --conversation <id>` and `detach --chat <id>` keep their own grammar; `conversation list` lists, while `conversation <id> list`/`attach`/`detach` are refused. A setting command without an id is refused. `reset` is never a reset word: it is an ordinary value (invalid as a language or level, literal text as a persona), so `--reset` is the only reset.
+
+`TEXT` is one shell-quoted argument; a value beginning with `-` is written after `--`. The table's `NAME` is the platform's title, `-` when the platform gives none (a Telegram private chat), and a Conversation with no Chat keeps a `(no chat)` row. A single setting prints one line; `conversation <CONVERSATION>` prints the table and the `settings` block with `(conversation)` or `(default)` per value. `model` names a `[models]` key whose entry declares `chat`; `content-policy` takes `safe`, `standard` or `unrestricted`.
+
+The operator is the authority: `allow-persona-change` and `allow-content-policy-change` govern chat commands and do not apply. A write takes effect on the next Turn, records its `HostAction`, and appends `PolicyChanged` when the effective content level tightens. Writes are ordered, not one transaction: a database failure after a write keeps that write and exits non-zero. A Conversation with no Chat cannot announce a change, so a setting write is refused; reading it is allowed.
 
 ### log (`cli/log.rs`)
 

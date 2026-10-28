@@ -1,4 +1,4 @@
-//! `/content-policy`: fixed presets; the page collects one and the handler applies it.
+//! `/content-policy`: fixed levels; the page collects one and the handler applies it.
 
 pub(crate) mod copy;
 mod dialog;
@@ -20,7 +20,7 @@ use crate::{
     error::{AppError, Result},
 };
 
-/// Puts the picker out: the effective axes and every fixed preset beside them.
+/// Puts the picker out: the effective level and every fixed level beside it.
 pub(crate) async fn open(
     pages: &Pages,
     choices: &dyn ChannelChoices,
@@ -49,7 +49,7 @@ pub(crate) async fn open(
         .await
 }
 
-/// One button press: the command writes the preset through the same handler the command line
+/// One button press: the command writes the level through the same handler the command line
 /// reaches, then the page turns into its confirmation.
 pub(crate) async fn apply(
     ctx: &CommandContext,
@@ -58,7 +58,7 @@ pub(crate) async fn apply(
     press: &Press<'_>,
 ) -> Result<()> {
     let arg = match action {
-        ContentPolicyAction::Set(preset) => ContentPolicyArg::Set(preset),
+        ContentPolicyAction::Set(level) => ContentPolicyArg::Set(level),
         ContentPolicyAction::Reset => ContentPolicyArg::Reset,
     };
     let command = Command::System(SystemCommand::ContentPolicy(arg));

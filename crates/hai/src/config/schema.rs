@@ -1,12 +1,15 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    str::FromStr,
+};
 
-use genai::chat::ReasoningEffort;
-use serde::{Deserialize, Serialize};
-use strum::{EnumString, IntoStaticStr};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use strum::{EnumString, IntoEnumIterator, IntoStaticStr};
 
 use super::{AGENT_NAME, PROJECT_NAME};
 use crate::{
-    agentcore::{ModelKind, ProviderKind},
+    agentcore::{ModelKind, ProviderKind, ThinkingEffort},
     config::{
         ConfigIssue, Paths,
         conversation::{ContentPolicy, ConversationScope, Language},
@@ -64,8 +67,6 @@ impl Default for AgentConfig {
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ConversationConfig {
     pub language: Language,
-    /// An alias from `[models]`; absent means `[model-roles.default]`.
-    pub model: Option<String>,
     pub persona: Option<String>,
     pub allow_persona_change: bool,
     pub allow_content_policy_change: bool,
@@ -205,8 +206,8 @@ impl Default for RetrievalConfig {
     }
 }
 
-/// Model selection per ModelRole: the `default` chat role plus one block per role. A block declares
-/// the model and how to call it; how HAI behaves around it lives under `[agent]`.
+/// Model selection per ModelRole: the `default` chat role plus one block per role. A block names a
+/// `[models]` alias and only its own values; how HAI behaves around it lives under `[agent]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ModelRolesConfig {
@@ -220,33 +221,141 @@ pub struct ModelRolesConfig {
     pub rerank: Option<RerankConfig>,
 }
 
-/// The `default` ModelRole: the chat model both `AgentRole`s run on.
+/// The `default` ModelRole: the chat model every pass runs on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ChatConfig {
-    /// `provider/model`; the provider owns the endpoint.
+    /// A `[models]` alias or a direct `provider/model`; the model entry owns provider, limits and
+    /// thinking.
     pub model: String,
-    pub max_tokens: Option<u32>,
-    pub reasoning: bool,
-    pub reasoning_effort: String,
-    pub temperature: f32,
+    /// Role-level override of the model's recommended sampling temperature.
+    pub temperature: Option<f32>,
+    /// Role-level thinking selection; `inherit` uses the model's default.
+    pub thinking: ThinkingLevel,
 }
 
-impl ChatConfig {
-    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
-        let r = ReasoningEffort::from_keyword(&self.reasoning_effort);
-        if r.is_none() {
-            tracing::warn!("Invalid reasoning_effort '{}'", self.reasoning_effort);
-        }
-        r
+/// One `[models.<alias>]` entry: what the alias names and what the model can do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ModelConfig {
+    /// `provider/model`; the first `/` splits the provider name from the model id.
+    pub model: String,
+    /// Display label for status; the map key remains the alias.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// ModelRoles this model may fill; declared, never inferred from the model id.
+    #[serde(default = "default_model_roles")]
+    pub roles: BTreeSet<ModelKind>,
+    /// Input modalities the model accepts directly; independent from the roles it fills.
+    #[serde(default = "default_input_modalities")]
+    pub input: BTreeSet<InputModality>,
+    /// Maximum output tokens one response may ask for; omitted means do not send a cap.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    /// Total context capacity the model accepts; omitted means unknown.
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    /// Model-recommended sampling temperature; omitted means do not send one.
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Optional effort control; absence means the model accepts no effort setting.
+    #[serde(default)]
+    pub thinking: Option<ThinkingConfig>,
+    /// Display-only prices; no billing arithmetic reads them.
+    #[serde(default)]
+    pub pricing: Option<ModelPricing>,
+}
+
+fn default_model_roles() -> BTreeSet<ModelKind> {
+    BTreeSet::from([ModelKind::Chat])
+}
+
+fn default_input_modalities() -> BTreeSet<InputModality> {
+    BTreeSet::from([InputModality::Text])
+}
+
+/// The efforts a model accepts and the one a role inherits.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ThinkingConfig {
+    /// Efforts this model accepts, e.g. `["low", "high", "max"]`.
+    pub efforts: Vec<ThinkingEffort>,
+    /// The effort used when the role inherits; must be one of `efforts`.
+    pub default: Option<ThinkingEffort>,
+}
+
+/// `inherit` applies the model default, `off` disables reasoning, and `Effort` selects one
+/// declared effort.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingLevel {
+    #[default]
+    Inherit,
+    Off,
+    Effort(ThinkingEffort),
+}
+
+impl Serialize for ThinkingLevel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Inherit => "inherit",
+            Self::Off => "off",
+            Self::Effort(effort) => effort.keyword(),
+        })
     }
 }
 
-/// The `rerank` ModelRole: the cross-encoder that scores retrieval candidates. `model` is
-/// `provider/model`; the provider owns the endpoint.
+impl<'de> Deserialize<'de> for ThinkingLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "inherit" => Ok(Self::Inherit),
+            "off" => Ok(Self::Off),
+            other => ThinkingEffort::from_keyword(other)
+                .map(Self::Effort)
+                .ok_or_else(|| {
+                    let variants: Vec<&str> = std::iter::once("inherit")
+                        .chain(std::iter::once("off"))
+                        .chain(ThinkingEffort::iter().map(ThinkingEffort::keyword))
+                        .collect();
+                    D::Error::custom(format!(
+                        "unknown thinking level {other:?}: use one of {}",
+                        variants.join(", ")
+                    ))
+                }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputModality {
+    Text,
+    Image,
+    Audio,
+    Video,
+}
+
+/// USD per 1M tokens, stored for display; no billing arithmetic is derived from it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ModelPricing {
+    pub input: Option<f64>,
+    pub cached_input: Option<f64>,
+    pub output: Option<f64>,
+}
+
+/// The `rerank` ModelRole: the cross-encoder that scores retrieval candidates. `model` is a
+/// `[models]` alias whose entry declares `rerank`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RerankConfig {
+    /// A `[models]` alias.
     pub model: Option<String>,
 }
 
@@ -286,8 +395,9 @@ impl Default for SpeechConfig {
     }
 }
 
-/// The `embedding` ModelRole. `dimension` is the model's output width, and the pgvector columns are
-/// created with it; the block has to state it, since HAI does not know a model's width.
+/// The `embedding` ModelRole. `model` is a `[models]` alias declaring `embedding` or a direct
+/// `provider/model`; `dimension` is the model's output width, which the pgvector columns are created
+/// with.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct EmbeddingConfig {
@@ -704,6 +814,16 @@ mod tests {
     #[test]
     fn the_agent_budget_defaults_to_forty() {
         assert_eq!(AgentConfig::default().max_steps, 40);
+    }
+
+    #[test]
+    fn role_thinking_defaults_to_inherit() {
+        let role: ChatConfig = serde_json::from_str(r#"{"model":"sonnet"}"#).expect("role config");
+        assert_eq!(role.thinking, ThinkingLevel::Inherit);
+
+        let role: ChatConfig =
+            serde_json::from_str(r#"{"model":"sonnet","thinking":"xhigh"}"#).expect("role config");
+        assert_eq!(role.thinking, ThinkingLevel::Effort(ThinkingEffort::XHigh));
     }
 
     /// `[channel.<name>]` is neutral: the shared layer keeps the platform's own keys untouched, so a

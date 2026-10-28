@@ -1,15 +1,13 @@
 use super::{
     ArgName, Command, CommandContext, CommandOutcome, ContentPolicyArg, Dialog, DialogArg,
-    DialogFallback, DigestArg, DigestStart, LanguageArg, ModelArg, PersonaArg, PurgeArg, Reply,
-    Said, Started, SystemCommand,
+    DialogFallback, DigestArg, DigestStart, LanguageArg, PersonaArg, PurgeArg, Reply, Said,
+    Started, SystemCommand,
     parse::{RANGE, YES},
 };
 use crate::{
     agent::{command::digest::Delivery, host_copy::HostCopy},
     config::conversation::{ContentPolicy, Language},
-    domain::vo::{
-        AgentCommand, ChatEntry, EntryAudience, EntryKind, HostAction, ModelAlias, PurgeSpec,
-    },
+    domain::vo::{AgentCommand, ChatEntry, EntryAudience, EntryKind, HostAction, PurgeSpec},
     error::Result,
 };
 
@@ -37,7 +35,6 @@ async fn answer(ctx: &CommandContext, command: SystemCommand) -> Result<CommandO
     match command {
         SystemCommand::Status => Ok(status(ctx).await?.into()),
         SystemCommand::Lang(arg) => language(ctx, arg).await,
-        SystemCommand::Model(arg) => model(ctx, arg).await,
         SystemCommand::ContentPolicy(arg) => content_policy(ctx, arg).await,
         SystemCommand::Persona(arg) => persona(ctx, arg).await,
         SystemCommand::Purge(arg) => match submit_purge(arg) {
@@ -136,64 +133,9 @@ async fn language(ctx: &CommandContext, arg: LanguageArg) -> Result<CommandOutco
     })
 }
 
-/// A set or reset model is a change the next Turn has to see; a query and an unknown alias change
-/// nothing and say so.
-async fn model(ctx: &CommandContext, arg: ModelArg) -> Result<CommandOutcome> {
-    let configured = ctx
-        .settings
-        .configured_model()
-        .filter(|alias| ctx.settings.model_exists(alias.as_str()));
-    let current = ctx
-        .settings
-        .model(ctx.conversation_id)
-        .await?
-        .filter(|alias| ctx.settings.model_exists(alias.as_str()))
-        .or(configured);
-    match arg {
-        ModelArg::Current => {
-            let effective = current
-                .as_ref()
-                .map(ModelAlias::to_string)
-                .unwrap_or_else(|| ctx.settings.default_model_label().to_owned());
-            let aliases = ctx.settings.model_aliases().map(str::to_owned).collect();
-            Ok(CommandOutcome::said(
-                said(ctx, HostCopy::ModelCurrent { effective, aliases }).await?,
-            ))
-        }
-        ModelArg::Reset => {
-            ctx.settings.reset_model(ctx.conversation_id).await?;
-            let effective = ctx
-                .settings
-                .model(ctx.conversation_id)
-                .await?
-                .filter(|alias| ctx.settings.model_exists(alias.as_str()))
-                .map(|alias| alias.to_string())
-                .unwrap_or_else(|| ctx.settings.default_model_label().to_owned());
-            Ok(
-                CommandOutcome::said(said(ctx, HostCopy::ModelReset(effective)).await?)
-                    .with_action(HostAction::ModelChanged),
-            )
-        }
-        ModelArg::Set(alias) => {
-            if !ctx.settings.model_exists(&alias) {
-                return Ok(CommandOutcome::said(
-                    said(ctx, HostCopy::ModelUnknown(alias)).await?,
-                ));
-            }
-            ctx.settings
-                .set_model(ctx.conversation_id, ModelAlias::new(alias.clone()))
-                .await?;
-            Ok(
-                CommandOutcome::said(said(ctx, HostCopy::ModelSet(alias)).await?)
-                    .with_action(HostAction::ModelChanged),
-            )
-        }
-    }
-}
-
 /// A set or reset content policy is a change the next Turn has to see, and a stricter one also
 /// reopens the chapter through the wrap-up. The bare line opens the picker, or reports the current
-/// axes where the channel has no page.
+/// level where the channel has no page.
 async fn content_policy(ctx: &CommandContext, arg: ContentPolicyArg) -> Result<CommandOutcome> {
     let old = ctx.settings.content_policy(ctx.conversation_id).await?;
     match arg {
@@ -214,8 +156,8 @@ async fn content_policy(ctx: &CommandContext, arg: ContentPolicyArg) -> Result<C
                     .with_action(HostAction::ContentPolicyChanged),
             )
         }
-        ContentPolicyArg::Set(preset) => {
-            let new = preset.policy();
+        ContentPolicyArg::Set(level) => {
+            let new = level;
             ctx.settings
                 .set_content_policy(ctx.conversation_id, new)
                 .await?;
@@ -231,7 +173,7 @@ async fn content_policy(ctx: &CommandContext, arg: ContentPolicyArg) -> Result<C
 }
 
 /// The bare `/content-policy` line: the picker where the channel has one, and the same current
-/// axes as a spoken answer where it has none.
+/// level as a spoken answer where it has none.
 fn content_policy_picker(language: Language, current: ContentPolicy) -> Dialog {
     Dialog {
         language,
@@ -392,20 +334,23 @@ mod tests {
         );
     }
 
-    /// A bare `/content-policy` line answers with its current axes where the channel cannot show a
+    /// A bare `/content-policy` line answers with its current level where the channel cannot show a
     /// page; the picker only adds buttons to that same answer.
     #[test]
     fn a_bare_content_policy_line_answers_where_no_page_exists() {
-        let dialog = content_policy_picker(Language::Zh, ContentPolicy::MATURE);
+        let dialog = content_policy_picker(Language::Zh, ContentPolicy::Standard);
         assert_eq!(
             dialog.arg,
-            DialogArg::ContentPolicy(ContentPolicy::MATURE),
-            "the page carries the axes it reports"
+            DialogArg::ContentPolicy(ContentPolicy::Standard),
+            "the page carries the level it reports"
         );
         match dialog.fallback {
             DialogFallback::Answer(Said { copy, language }) => {
                 assert_eq!(language, Language::Zh);
-                assert_eq!(copy, HostCopy::ContentPolicyCurrent(ContentPolicy::MATURE));
+                assert_eq!(
+                    copy,
+                    HostCopy::ContentPolicyCurrent(ContentPolicy::Standard)
+                );
             }
             DialogFallback::Missing(_) => {
                 panic!("a complete line answers instead of naming an argument")

@@ -1,12 +1,11 @@
-use genai::chat::ChatMessage;
 use serde_json::Value;
 
-use crate::domain::vo::ContextMeta;
+use crate::domain::vo::{ContextMeta, StoredMessage};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConversationSnapshot {
-    /// Accumulated sequence handed to the LLM, injections and tool chains included.
-    pub context_messages: Vec<ChatMessage>,
+    /// The provider-neutral chapter message log: text, tool calls, and media references.
+    pub messages: Vec<StoredMessage>,
     pub context_meta: ContextMeta,
 }
 

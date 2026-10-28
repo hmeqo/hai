@@ -7,7 +7,7 @@ use crate::agent::{
         menu,
         parse::{
             self, CONTENT_POLICY_GRAMMAR, DIGEST_GRAMMAR, EXPLAIN_GRAMMAR, LANG_GRAMMAR,
-            MODEL_GRAMMAR, PERSONA_GRAMMAR, PURGE_GRAMMAR,
+            PERSONA_GRAMMAR, PURGE_GRAMMAR,
         },
     },
     prompt::text::PerCatalog,
@@ -89,7 +89,7 @@ impl Declaration {
 }
 
 /// Every command the agent offers, in the order a menu lists them.
-pub(crate) const DECLARATIONS: [Declaration; 8] = [
+pub(crate) const DECLARATIONS: [Declaration; 7] = [
     Declaration {
         name: "status",
         aliases: &[],
@@ -109,21 +109,12 @@ pub(crate) const DECLARATIONS: [Declaration; 8] = [
         gate: Gate::Always,
     },
     Declaration {
-        name: "model",
-        aliases: &[],
-        copy: menu::MODEL_COPY,
-        grammar: MODEL_GRAMMAR,
-        examples: &["fast", "--reset"],
-        parse: parse::model,
-        gate: Gate::Always,
-    },
-    Declaration {
         name: "content-policy",
         // Telegram's menu vocabulary allows lowercase letters, digits and underscores only.
         aliases: &["contentpolicy"],
         copy: menu::CONTENT_POLICY_COPY,
         grammar: CONTENT_POLICY_GRAMMAR,
-        examples: &["mature", "--reset"],
+        examples: &["standard", "--reset"],
         parse: parse::content_policy,
         gate: Gate::ContentPolicyChange,
     },
@@ -229,10 +220,9 @@ mod tests {
             [
                 ("status", "status".to_owned()),
                 ("lang", "lang [CODE] [--reset]".to_owned()),
-                ("model", "model [ALIAS] [--reset]".to_owned()),
                 (
                     "content-policy",
-                    "content-policy [PRESET] [--reset]".to_owned()
+                    "content-policy [LEVEL] [--reset]".to_owned()
                 ),
                 ("persona", "persona [--] [TEXT...]".to_owned()),
                 (
@@ -255,8 +245,7 @@ mod tests {
         let complete = [
             ("status", ""),
             ("lang", "zh"),
-            ("model", "fast"),
-            ("content-policy", "mature"),
+            ("content-policy", "standard"),
             ("persona", "speak plainly"),
             ("purge", "7d --yes"),
             ("explain", "something worth explaining"),
@@ -343,19 +332,19 @@ mod tests {
             find("contentpolicy", CommandGates::ALL).expect("the Telegram alias resolves");
         assert_eq!(
             content_policy.synopsis_as("contentpolicy"),
-            "contentpolicy [PRESET] [--reset]"
+            "contentpolicy [LEVEL] [--reset]"
         );
         assert_eq!(
             content_policy.example_lines_as("/", "contentpolicy"),
             vec![
-                "/contentpolicy mature".to_owned(),
+                "/contentpolicy standard".to_owned(),
                 "/contentpolicy --reset".to_owned(),
             ]
         );
         assert_eq!(
             content_policy.example_lines_as("/", "content-policy"),
             vec![
-                "/content-policy mature".to_owned(),
+                "/content-policy standard".to_owned(),
                 "/content-policy --reset".to_owned(),
             ]
         );

@@ -10,11 +10,64 @@ use crate::{
         channel::{CallbackAnswer, ChannelAccess, ChannelChoices, ChoiceOption},
         environment::workspace::Workspace,
     },
-    agentcore::tool::{AgentTool, ToolError},
+    agentcore::{
+        ModelKind,
+        tool::{AgentTool, ToolCallContext, ToolError, ToolMedia, ToolOutput},
+    },
+    config::{
+        AppConfig,
+        schema::{EmbeddingConfig, InputModality, ModelConfig},
+    },
     domain::vo::{ChatAddress, ConversationId},
     error::{AppError, Result},
     test_support::TempDir,
 };
+
+/// A client for tests that exercise message construction; it never reaches a provider.
+pub(crate) fn genai_client() -> genai::Client {
+    genai::Client::new().expect("a genai client")
+}
+
+/// One `[models]` entry without restating the fields a test does not exercise.
+pub(crate) fn model_config(
+    provider: &str,
+    model: &str,
+    roles: impl IntoIterator<Item = ModelKind>,
+) -> ModelConfig {
+    ModelConfig {
+        model: format!("{provider}/{model}"),
+        name: None,
+        roles: roles.into_iter().collect(),
+        input: [InputModality::Text].into_iter().collect(),
+        max_tokens: None,
+        context_window: None,
+        temperature: None,
+        thinking: None,
+        pricing: None,
+    }
+}
+
+/// One chat model plus the embedding role every service insists on; both providers are declared, so
+/// the catalog resolves without availability questions.
+pub(crate) fn chat_embedding_config(provider: &str, model: &str) -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.model_roles.default.model = "main".into();
+    cfg.models.insert(
+        "main".into(),
+        model_config(provider, model, [ModelKind::Chat]),
+    );
+    cfg.providers.insert(provider.into(), Default::default());
+    cfg.model_roles.embedding = EmbeddingConfig {
+        model: "embed".into(),
+        dimension: None,
+    };
+    cfg.models.insert(
+        "embed".into(),
+        model_config("openai", "text-embedding-3-small", [ModelKind::Embedding]),
+    );
+    cfg.providers.insert("openai".into(), Default::default());
+    cfg
+}
 
 /// One document the recording access received: chat, filename, bytes, caption.
 pub(crate) type RecordedDocument = (String, String, Vec<u8>, String);
@@ -156,6 +209,7 @@ pub(crate) struct StubTool {
     speaks: bool,
     produces: bool,
     reads_only: bool,
+    media: Vec<ToolMedia>,
 }
 
 impl StubTool {
@@ -166,6 +220,7 @@ impl StubTool {
             speaks: false,
             produces: false,
             reads_only: false,
+            media: Vec::new(),
         }
     }
 
@@ -189,6 +244,11 @@ impl StubTool {
         self
     }
 
+    pub(crate) fn media(mut self, media: ToolMedia) -> Self {
+        self.media.push(media);
+        self
+    }
+
     pub(crate) fn into_dyn(self) -> Arc<dyn AgentTool> {
         Arc::new(self)
     }
@@ -204,12 +264,12 @@ impl AgentTool for StubTool {
         ""
     }
 
-    fn schema(&self) -> Option<Value> {
-        None
+    fn schema(&self) -> Value {
+        crate::agentcore::tool::schema::empty()
     }
 
-    async fn execute(&self, _args: Value) -> Result<Value, ToolError> {
-        Ok(Value::Null)
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::with_media(Value::Null, self.media.clone()))
     }
 
     fn ends_turn(&self) -> bool {

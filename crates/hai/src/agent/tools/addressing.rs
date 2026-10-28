@@ -70,9 +70,28 @@ pub(crate) fn deserialize_optional_address<'de, D: Deserializer<'de>>(
         .map_err(serde::de::Error::custom)
 }
 
+/// A list of addresses in its wire form, absent when the field is.
+pub(crate) fn deserialize_optional_addresses<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<Address>>, D::Error> {
+    let raw = Option::<Vec<String>>::deserialize(d)?;
+    raw.map(|items| {
+        items
+            .into_iter()
+            .map(|raw| parse(&raw).map_err(serde::de::Error::custom))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .transpose()
+}
+
 /// `path` → its address; a scheme no tool accepts is an error naming the ones they do.
 pub(crate) fn parse(path: &str) -> Result<Address, ToolError> {
     let path = path.trim();
+    if path.starts_with("data:") {
+        return Err(tool_err(
+            "data: URLs are not a source address; use a URL, workspace://, file:// or attachment://",
+        ));
+    }
     if let Some(rest) = path.strip_prefix(FILE_SCHEME) {
         return Ok(Address::Local(PathBuf::from(rest)));
     }
@@ -169,11 +188,39 @@ impl Directory {
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
+    use serde_json::json;
+
     use super::*;
     use crate::{
         agent::environment::workspace::Workspace, config::schema::SandboxConfig,
         domain::vo::ConversationId,
     };
+
+    #[derive(Deserialize)]
+    struct AddressList {
+        #[serde(deserialize_with = "deserialize_optional_addresses")]
+        items: Option<Vec<Address>>,
+    }
+
+    #[test]
+    fn a_data_url_is_not_a_source_address() {
+        let error = parse("data:image/png;base64,AAAA").expect_err("rejected");
+        assert!(error.to_string().contains("data: URLs"), "{error}");
+    }
+
+    #[test]
+    fn an_address_list_arrives_typed() {
+        let list: AddressList = serde_json::from_value(json!({
+            "items": ["workspace://a.png", "https://example.com/a.png"]
+        }))
+        .expect("addresses");
+        let items = list.items.expect("a list");
+        assert!(matches!(items[0], Address::Workspace(ref path) if path == Path::new("a.png")));
+        assert!(
+            matches!(items[1], Address::Url(ref url) if url.as_str() == "https://example.com/a.png")
+        );
+    }
 
     #[test]
     fn a_bare_path_is_the_local_scheme() {

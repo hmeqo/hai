@@ -7,7 +7,7 @@ use crate::{
     config::conversation::{ContentPolicy, Language},
 };
 
-/// The page reports the effective axes and puts the fixed presets beside them.
+/// The page reports the effective level and puts the fixed levels beside it.
 pub(crate) fn page(language: Language, current: ContentPolicy) -> String {
     HostCopy::ContentPolicyCurrent(current).render(language)
 }

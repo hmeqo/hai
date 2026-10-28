@@ -14,7 +14,7 @@ use tokio::{
     process::{ChildStderr, Command},
 };
 
-use super::tool::{AgentTool, ToolError, tool_err};
+use super::tool::{AgentTool, ToolCallContext, ToolError, ToolOutput, tool_err};
 use crate::error::{AppError, Result, bail};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -267,11 +267,15 @@ impl AgentTool for McpAgentTool {
         self.tool.description.as_deref().unwrap_or("")
     }
 
-    fn schema(&self) -> Option<Value> {
-        Some(Value::Object((*self.tool.input_schema).clone()))
+    fn schema(&self) -> Value {
+        Value::Object((*self.tool.input_schema).clone())
     }
 
-    async fn execute(&self, args: Value) -> std::result::Result<Value, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext,
+    ) -> std::result::Result<ToolOutput, ToolError> {
         let json_map = args.as_object().ok_or_else(|| {
             tool_err(format!(
                 "MCP tool {} expected object args, got {:?}",
@@ -282,6 +286,7 @@ impl AgentTool for McpAgentTool {
         self.server
             .call_tool(&self.tool.name, json_map.clone())
             .await
+            .map(ToolOutput::data)
     }
 }
 

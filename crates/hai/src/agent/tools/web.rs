@@ -13,7 +13,7 @@ use crate::{
     },
     agentcore::{
         render::{Node, render_json},
-        tool::{AgentTool, ToolError, schema_of, tool_data},
+        tool::{AgentTool, ToolCallContext, ToolError, ToolOutput, schema_of, tool_data},
     },
     util::text::truncate_chars,
 };
@@ -44,11 +44,11 @@ impl AgentTool for WebSearch {
         &self.description
     }
 
-    fn schema(&self) -> Option<Value> {
-        Some(schema_of::<WebSearchArgs>())
+    fn schema(&self) -> Value {
+        schema_of::<WebSearchArgs>()
     }
 
-    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let args: WebSearchArgs = serde_json::from_value(args)?;
         let request = SearchRequest {
             query: args.query,
@@ -60,6 +60,7 @@ impl AgentTool for WebSearch {
             "search": render_json(&section(&response)),
             "count": response.results.len(),
         }))
+        .map(ToolOutput::data)
     }
 }
 

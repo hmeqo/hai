@@ -8,15 +8,17 @@ use genai::Client;
 use super::{
     Messages,
     record::SessionRecord,
-    step_loop::{Steering, StepLoop, StepLoopOutput},
+    step_loop::{Steering, StepConfig, StepLoop, StepLoopOutput},
     turn::SelectedModel,
 };
 use crate::{
     agent::{
         events::{AgentEventBus, Doorbell},
+        model::ModelCapabilities,
+        process::AgentRuntime,
         prompt::role::RoleSpec,
     },
-    agentcore::tool::{AgentTool, ToolError},
+    agentcore::tool::{AgentTool, ToolCallContext, ToolError},
     domain::vo::{ChatId, SessionRef, TurnNumber},
 };
 
@@ -24,6 +26,7 @@ use crate::{
 pub(crate) struct LoopTurn {
     pub client: Client,
     pub model: String,
+    pub capabilities: ModelCapabilities,
     pub messages: Messages,
     pub spec: RoleSpec,
     pub steering: Doorbell,
@@ -46,7 +49,7 @@ pub(crate) struct TurnIdentity {
 
 impl LoopTurn {
     pub(crate) fn new(
-        runtime: &crate::agent::process::AgentRuntime,
+        runtime: &AgentRuntime,
         selected: &SelectedModel,
         spec: RoleSpec,
         identity: TurnIdentity,
@@ -57,6 +60,7 @@ impl LoopTurn {
         Self {
             client: selected.client.clone(),
             model: selected.model.clone(),
+            capabilities: selected.capabilities,
             messages,
             spec,
             steering,
@@ -77,6 +81,7 @@ pub(crate) async fn run_loop(
     let LoopTurn {
         client,
         model,
+        capabilities,
         spec,
         messages,
         steering,
@@ -92,14 +97,19 @@ pub(crate) async fn run_loop(
     let step_loop = StepLoop::new(
         client,
         model,
+        ToolCallContext {
+            image_input: capabilities.image_input,
+        },
         messages,
         spec,
-        budget,
-        watches_arrivals.then_some(Steering {
-            chat_id,
-            since: steering_since,
-            doorbell: steering,
-        }),
+        StepConfig {
+            budget,
+            steering: watches_arrivals.then_some(Steering {
+                chat_id,
+                since: steering_since,
+                doorbell: steering,
+            }),
+        },
         SessionRecord {
             event_bus,
             chat_id,

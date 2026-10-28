@@ -11,8 +11,8 @@ const PERSONA: PerCatalog<&'static str> = PerCatalog {
 };
 
 const MODEL: PerCatalog<&'static str> = PerCatalog {
-    zh: "用户切换了模型。",
-    en: "The user switched the model.",
+    zh: "管理员切换了模型。",
+    en: "An administrator switched the model.",
 };
 
 const LANGUAGE: PerCatalog<&'static str> = PerCatalog {

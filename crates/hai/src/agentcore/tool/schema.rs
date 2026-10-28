@@ -9,6 +9,13 @@ use serde_json::{Map, Value, json};
 /// degraded to an empty object schema.
 const MAX_DEPTH: u8 = 4;
 
+/// The schema of a tool that takes no arguments, and the last resort of normalization.
+/// OpenAI-shaped endpoints reject `parameters: null`, so an absent argument list is stated as an
+/// empty object instead.
+pub fn empty() -> Value {
+    json!({ "type": "object", "properties": {} })
+}
+
 pub fn normalize_root(tool: &str, schema: Value) -> Value {
     let defs = schema.get("$defs").cloned();
     let mut normalized = match object_root(&schema, &schema, MAX_DEPTH) {
@@ -18,7 +25,7 @@ pub fn normalize_root(tool: &str, schema: Value) -> Value {
                 tool,
                 "tool schema has no object root; normalized to an empty object schema"
             );
-            json!({ "type": "object", "properties": {} })
+            empty()
         }
     };
     // A root `$ref` resolves away the object that carried `$defs`; keep it so nested `#/$defs/…`

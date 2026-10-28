@@ -65,7 +65,7 @@ mod tests {
     /// A snapshot missing a field is unreadable, not a chapter with an invented session.
     #[test]
     fn a_snapshot_without_a_session_is_an_error() {
-        let legacy = serde_json::json!({ "tokens": 0, "turn_count": 0, "step_count": 0 });
-        assert!(serde_json::from_value::<ContextMeta>(legacy).is_err());
+        let without_session = serde_json::json!({ "tokens": 0, "turn_count": 0, "step_count": 0 });
+        assert!(serde_json::from_value::<ContextMeta>(without_session).is_err());
     }
 }

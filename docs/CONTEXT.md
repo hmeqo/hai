@@ -54,6 +54,10 @@ _Avoid_: "knowledge base"
 
 **attachment**: one occurrence of a file in one message — the occurrence id the model reads, the platform handle, the kind, the caption and the meta. Two occurrences of the same file in one Conversation are distinct rows that share one **Perception**; another Conversation has its own cache row.
 
+**image reference (ImageRef)**: one image's SHA-256 id and MIME type in the Conversation's **image store**. A `StoredMessage` image part holds this reference, never the pixels; the renderer resolves it into the provider's image part.
+
+**image store**: the Conversation-scoped content-addressed directory (`<data_dir>/images/<conversation id>/<sha256>`) that keeps image bytes once per Conversation. It is rehydrated at render time, cleared with the chapter, and removed with the agent surface on purge.
+
 **subject** / **subject_kind**: what a **Perception** row is cached against — `handle` spells `<platform>:<file_unique_id>`, falling back to the platform's download handle when no stable id was given, `url` a normalized URL, and the kind travels with the value (`domain/vo/subject.rs:Subject`). Every writer and reader spells it identically.
 _Avoid_: "key" bare when the perception key is meant
 
@@ -78,7 +82,7 @@ _Avoid_: "log" (log is tracing output)
 
 **Session**: the trace's top unit — one model run. A main session is one **Chapter**; a wrap-up and a digest each run as their own session (`SessionKind`: `main`, `wrap-up`, `digest`), and a wrap-up names the chapter it closes as its parent. A host transaction (a purge) is conversation-scoped and belongs to no session. Events carry their `SessionRef` in the envelope, so `(session, turn, step)` names a row even though turn numbers restart with every session.
 
-**ConversationRecord**: the persisted Conversation state — accumulated context messages, the chapter scalars, and the Conversation's `pending` accumulation. Each pending entry names its origin Chat. Its row is the one place a Conversation's state lives; the execution environment is rebuilt from it.
+**ConversationRecord**: the persisted Conversation state — the provider-neutral `StoredMessage` log, the chapter scalars, and the Conversation's `pending` accumulation. Each pending entry names its origin Chat. Its row is the one place a Conversation's state lives; the execution environment is rebuilt from it.
 _Avoid_: conflating with the in-memory Conversation
 
 **Chapter**: the segmentation unit of conversation history — the current chapter plus the retention summary of the previous one. Older content is discarded.
@@ -96,6 +100,8 @@ _Avoid_: "shell" for the environment as a whole
 
 **Workspace**: the one writable directory of a Conversation, given by `agent/environment/workspace.rs:Workspace::for_conversation` as `<data_dir>/workspaces/<conversation id>`, bound at `/workspace` inside a container and the default working directory there; `workspace://<path>` is how a tool addresses it, so the directory's real location never enters the model's own spelling. A generated image lands in `generated/` inside it, and nothing reaches the chat except through `send_message`.
 
+**Source address**: the shared `agent/tools/addressing.rs:Address` grammar a tool uses for a file (`file://` or a bare path), the workspace (`workspace://`), a chat attachment (`attachment://`) or an `http(s)://` URL; `read` also accepts `skill://`, `topic://` and `memory://`. `send_message.source` and `generate_image.reference_images` accept it, and `agent/tools/source.rs:SourceResolver` turns it into bytes or a URL.
+
 **Turn**: the execution unit in which the agent fully responds to one wake-up — the whole loop from taking the accumulated changes to replying, possibly several Steps and tool calls. It ends as Success, Steered (a new event interrupted it, and what it already did takes effect) or Failed (an exception, with no state side effects). Numbered within its session (a main session is one chapter).
 _Avoid_: "round"
 
@@ -105,7 +111,7 @@ _Avoid_: "step" for a process description rather than an LLM call
 **AgentRole**: the role the model plays in one loop — `Default`, the companion in everyday conversation, or `WrapUp`, the chapter-close record-keeper whose text output is machine-extracted. A role owns its loop: prompt, options, tool surface, stopping and steering.
 _Avoid_: conflating with ModelRole; bare "role"; "persona" (a future dynamic mask above the Default role's soul)
 
-**ModelRole**: a named use of a model — vision, transcription, speech, embedding, image or rerank — selected through the `[model-roles]` config blocks rather than an enum, each block naming a `provider/model` entry. The main model is the default.
+**ModelRole**: a named use of a model — vision, transcription, speech, embedding, image or rerank — selected through the `[model-roles]` config blocks rather than an enum, each block naming a `[models]` alias whose entry declares that role. The main model is the default.
 _Avoid_: "model config"
 
 **ModelKind**: what a ModelRole asks a provider for — `chat`, `vision`, `transcription`, `embedding`, `image`, `speech`, `rerank`. A model kind is one endpoint class of a provider, not one model, and the role names it.
@@ -118,16 +124,16 @@ _Avoid_: "judge" for this stage (a judgement model is a criteria-based verifier,
 
 **agents**: the operational prompt layer — interaction rhythm plus memory and topic maintenance. Not the identity or voice, and not this repository's own AGENTS.md.
 
-**context messages**: the accumulated sequence handed to the LLM — rendered messages, the chapter-opening block, and tool call/result chains, appended per Turn and persisted in the snapshot. Message is the stored content; context messages are the accumulated LLM product.
+**context messages**: the accumulated provider-neutral `StoredMessage` sequence — rendered messages, the chapter-opening block, tool call/result chains, and image references — appended per Turn and persisted in the snapshot. Message is the stored content; context messages are the accumulated LLM product, materialized into the provider's wire shape at Turn start.
 
 **ContextMeta**: the chapter's persisted scalars — context tokens, successful Turn count, Step count, and the chapter's session id — reset on reopen, which mints a new session id.
 
-**conversation preference**: a per-Conversation setting that overrides the configured default — language, model alias, content policy, persona; no row means the Conversation inherits the default, and the stored blob tolerates fields a newer build added. `agent/settings.rs:ConversationSettings` resolves a preference and the configured default into the value a Conversation runs with.
+**conversation preference**: a per-Conversation setting that overrides the configured default — language, model alias, content policy, persona; no row means the Conversation inherits the default, and the stored blob tolerates fields a newer build added. `agent/settings.rs:ConversationSettings` resolves a preference and the configured default into the value a Conversation runs with; `hai conversation <CONVERSATION> <setting>` writes it and `hai conversation <CONVERSATION>` displays the resolved values and their sources.
 
-**model alias**: a name in `[models]`, mapped to a `provider/model` entry and resolved at startup; `/model` selects one per Conversation. No alias means `[model-roles.default]`.
+**model alias**: a key in `[models]` naming one provider model and its capabilities (roles, input, limits, thinking control). A Conversation may store a chat alias preference; no stored value means `[model-roles.default]`.
 _Avoid_: "model role" for this catalog entry
 
-**content policy**: the prompt-only axes a Conversation runs with — maturity (`safe`, `standard`, `mature`) and politics (`restricted`, `unrestricted`). Presets are the typed `config/conversation/content_policy.rs:ContentPolicyPreset` — `safe`, `standard`, `mature`, `unrestricted` — and any other spelling is an unreadable argument, not a silent default; a stricter change reopens the chapter through the existing wrap-up. The `unrestricted` preset adds no application-side restriction and tells the model not to refuse; a provider's or platform's own block remains outside the application.
+**content policy**: the one prompt-only level a Conversation runs with — `safe`, `standard` or `unrestricted` (`config/conversation/content_policy.rs:ContentPolicy`) — and any other spelling is an unreadable argument, not a silent default; a stricter change reopens the chapter through the existing wrap-up. `standard` allows adult material, explicit included; `unrestricted` adds no restriction of any form and tells the model not to refuse, while a provider's or platform's own block remains outside the application.
 
 **persona**: a user-set overlay above the Default role's soul, governing voice and style only; it cannot override the interface contract, tool rules or content policy. Wrap-up and digest passes do not read it.
 
@@ -153,7 +159,7 @@ _Avoid_: "command list", "registry" (the agent registry is a different thing)
 
 **command declaration**: one row of the **command table** — what a platform advertises in its menu, where it has one, and what the agent resolves a typed name through. A platform's own commands are declarations of its own (Telegram's `/start`), listed before the agent's.
 
-**host operation**: a command the host answers itself, without handing the command to the agent (`/start`, `/status`, `/lang`, `/model`, `/content-policy`, `/persona`). It writes no message. One that changes a Conversation setting records a **HostAction** — context for the next Turn, never a reason to start one — and one that only reports records nothing.
+**host operation**: a command the host answers itself, without handing the command to the agent (`/start`, `/status`, `/lang`, `/content-policy`, `/persona`), or the out-of-band `hai conversation <CONVERSATION> <setting>` that writes the same preference. It writes no message. One that changes a Conversation setting records a **HostAction** — context for the next Turn, never a reason to start one — and one that only reports records nothing.
 _Avoid_: "built-in", "admin command"
 
 **HostAction**: the typed record that a host operation changed one Conversation setting — persona, model, language or content policy (`domain/vo/host_action.rs:HostAction`). It says what moved, never to what: the new value is read from the Conversation's settings snapshot, so the accumulation never carries a second copy of mutable state. It is an entry of `EntryKind::HostAction` with audience `Context` (`EntryAudience::Context`) — silent, persisted in the accumulation, rendered as `<host_actions>` by the next normal Turn and consumed when that Turn ends normally. It reports something the host already did; it is not an instruction the agent must carry out and not a reason to dispatch.

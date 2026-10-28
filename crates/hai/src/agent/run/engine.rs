@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     agent::{
-        chat::types::BusySignal,
+        chat::passes::BusySignal,
         events::Doorbell,
         process::AgentRuntime,
         prompt::role::{self, AgentRole},
@@ -42,7 +42,8 @@ pub(crate) struct AgentEngine {
 }
 
 /// The tools one chat mounts, built once. A digest pass is handed the reads-only subset before its
-/// loop starts (`chat/mod.rs:start_digest`); every other role narrows the set at call time
+/// loop starts (`agent/chat/passes/digest.rs:ConversationAgent::start_digest`); every other role
+/// narrows the set at call time
 /// (`RoleSpec::rejects`).
 pub(crate) fn mounted_tools(
     runtime: &AgentRuntime,
@@ -59,6 +60,10 @@ impl AgentEngine {
             runtime: runtime.clone(),
             shutdown,
         }
+    }
+
+    pub(crate) fn shutdown(&self) -> CancellationToken {
+        self.shutdown.clone()
     }
 
     /// One busy task: mount the tools, run the loop, hand the outcome to `finish` and send its signal
@@ -123,7 +128,7 @@ impl AgentEngine {
 
         let spec = AgentRole::Default.spec(
             &self.runtime,
-            &model.chat,
+            model.chat_options(),
             ctx.chat_type,
             ctx.language,
             ctx.persona.as_deref(),
@@ -244,7 +249,7 @@ impl AgentEngine {
         ));
         let spec = AgentRole::WrapUp.spec(
             &self.runtime,
-            &model.chat,
+            model.chat_options(),
             ctx.chat_type,
             ctx.language,
             None,

@@ -1,5 +1,6 @@
 use crate::{
     domain::{
+        model::{ChatType, Platform},
         repo::Repos,
         vo::{ChannelKey, ChatId, ConversationId},
     },
@@ -19,6 +20,9 @@ pub struct ChatSummary {
     pub alias: String,
     pub external_id: String,
     pub channel_key: ChannelKey,
+    pub platform: Platform,
+    pub chat_type: ChatType,
+    pub name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -56,14 +60,31 @@ impl ConversationService {
                     summaries.last_mut().expect("just pushed")
                 }
             };
-            match (row.chat_id, row.alias, row.external_id, row.channel_key) {
-                (None, None, None, None) => {}
-                (Some(id), Some(alias), Some(external_id), Some(channel_key)) => {
+            match (
+                row.chat_id,
+                row.alias,
+                row.external_id,
+                row.channel_key,
+                row.platform,
+                row.chat_type,
+            ) {
+                (None, None, None, None, None, None) => {}
+                (
+                    Some(id),
+                    Some(alias),
+                    Some(external_id),
+                    Some(channel_key),
+                    Some(platform),
+                    Some(chat_type),
+                ) => {
                     summary.chats.push(ChatSummary {
                         id,
                         alias,
                         external_id,
                         channel_key,
+                        platform,
+                        chat_type,
+                        name: row.name,
                     });
                 }
                 _ => {

@@ -12,11 +12,6 @@ pub(super) const LANG_COPY: PerCatalog<&'static str> = PerCatalog {
     en: "Set the language for this conversation",
 };
 
-pub(super) const MODEL_COPY: PerCatalog<&'static str> = PerCatalog {
-    zh: "选择本会话的模型",
-    en: "Choose this conversation's model",
-};
-
 pub(super) const CONTENT_POLICY_COPY: PerCatalog<&'static str> = PerCatalog {
     zh: "设置本会话的内容尺度",
     en: "Set this conversation's content policy",

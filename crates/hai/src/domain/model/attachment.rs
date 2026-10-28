@@ -43,7 +43,7 @@ impl Attachment {
     }
 
     /// The codec the audio or video model has to be told about: what the platform declared with the
-    /// file, else what the kind implies — the fallback for rows written before that declaration.
+    /// file, else what the kind and file name imply.
     pub fn media_format(&self) -> Option<MediaCodec> {
         self.meta.media_codec.or_else(|| match self.kind {
             AttachmentKind::Voice => Some(MediaCodec::Ogg),

@@ -2,26 +2,26 @@
 
 use super::copy;
 use crate::{
-    agent::command::dialog::DialogPage,
-    config::conversation::{ContentPolicyPreset, Language},
+    agent::{command::dialog::DialogPage, host_copy::level_label},
+    config::conversation::{ContentPolicy, Language},
 };
 
-/// What one button asks for. A preset is the typed spelling the command line parses too.
+/// What one button asks for. A level is the typed spelling the command line parses too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContentPolicyAction {
-    Set(ContentPolicyPreset),
+    Set(ContentPolicy),
     Reset,
 }
 
 /// One page's buttons, in the order they are shown; the layout is the platform's.
 pub(crate) fn options(language: Language) -> Vec<(String, DialogPage)> {
-    ContentPolicyPreset::ALL
+    ContentPolicy::ALL
         .into_iter()
-        .map(|preset| {
+        .map(|level| {
             (
-                preset.as_str().to_owned(),
+                level_label(language, level).to_owned(),
                 DialogPage::ContentPolicy {
-                    action: ContentPolicyAction::Set(preset),
+                    action: ContentPolicyAction::Set(level),
                 },
             )
         })
@@ -38,9 +38,9 @@ pub(crate) fn options(language: Language) -> Vec<(String, DialogPage)> {
 mod tests {
     use super::*;
 
-    /// Every fixed preset is a button, and reset is the one action that is not a preset.
+    /// Every level is a button, and reset is the one action that is not a level.
     #[test]
-    fn the_page_offers_every_preset_and_reset() {
+    fn the_page_offers_every_level_and_reset() {
         let actions: Vec<_> = options(Language::Zh)
             .into_iter()
             .map(|(label, page)| {
@@ -55,23 +55,25 @@ mod tests {
             actions,
             [
                 (
-                    "safe".to_owned(),
-                    ContentPolicyAction::Set(ContentPolicyPreset::Safe)
+                    "安全".to_owned(),
+                    ContentPolicyAction::Set(ContentPolicy::Safe)
                 ),
                 (
-                    "standard".to_owned(),
-                    ContentPolicyAction::Set(ContentPolicyPreset::Standard)
+                    "标准".to_owned(),
+                    ContentPolicyAction::Set(ContentPolicy::Standard)
                 ),
                 (
-                    "mature".to_owned(),
-                    ContentPolicyAction::Set(ContentPolicyPreset::Mature)
-                ),
-                (
-                    "unrestricted".to_owned(),
-                    ContentPolicyAction::Set(ContentPolicyPreset::Unrestricted)
+                    "无限制".to_owned(),
+                    ContentPolicyAction::Set(ContentPolicy::Unrestricted)
                 ),
                 ("恢复默认".to_owned(), ContentPolicyAction::Reset),
             ]
         );
+
+        let labels: Vec<_> = options(Language::En)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["safe", "standard", "unrestricted", "Reset"]);
     }
 }

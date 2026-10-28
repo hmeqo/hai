@@ -102,6 +102,14 @@ pub(crate) async fn run(
         .await
         .map_err(|e| e.to_string())?;
 
+    if spec.surfaces.agent {
+        services
+            .images
+            .purge(conversation_id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     if spec.surfaces.derived {
         events.flush().await;
         wiped.counts.events = services

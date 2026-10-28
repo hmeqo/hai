@@ -3,10 +3,25 @@
 use std::sync::Arc;
 
 use reqwest::header::HeaderMap;
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, IntoStaticStr};
 
 /// What a ModelRole asks a provider for; `Chat` runs the Step loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumIter, IntoStaticStr)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Display,
+    EnumIter,
+    IntoStaticStr,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum ModelKind {
     Chat,
@@ -53,4 +68,18 @@ pub struct ModelTarget {
     pub model: String,
     pub credential: Credential,
     pub headers: Arc<HeaderMap>,
+}
+
+#[cfg(test)]
+mod tests {
+    use strum::IntoEnumIterator;
+
+    use super::ModelKind;
+    use crate::test_support::assert_names_agree;
+
+    /// The serde tag and the strum name are one spelling, pinned wherever both are derived.
+    #[test]
+    fn wire_form_and_strum_names_agree() {
+        assert_names_agree(ModelKind::iter(), |kind| (*kind).into());
+    }
 }

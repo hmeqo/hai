@@ -24,12 +24,74 @@ impl From<serde_json::Error> for ToolError {
     }
 }
 
+/// What one tool call produced: the JSON the model receives, plus media that only a model with the
+/// matching input capability consumes.
+#[derive(Debug)]
+pub struct ToolOutput {
+    pub data: Value,
+    pub media: Vec<ToolMedia>,
+}
+
+#[derive(Clone)]
+pub enum ToolMedia {
+    Image {
+        mime: String,
+        data: Vec<u8>,
+        /// The caller's focus, carried into the user message beside the image.
+        focus: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for ToolMedia {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Image { mime, data, focus } => f
+                .debug_struct("ToolMedia::Image")
+                .field("mime", mime)
+                .field("bytes", &data.len())
+                .field("focus", focus)
+                .finish(),
+        }
+    }
+}
+
+impl ToolOutput {
+    /// A tool result carrying a JSON value as the model receives it.
+    pub fn data(data: Value) -> Self {
+        Self {
+            data,
+            media: Vec::new(),
+        }
+    }
+
+    pub fn with_media(data: Value, media: Vec<ToolMedia>) -> Self {
+        Self { data, media }
+    }
+
+    /// A successful result whose payload goes under `data`, the envelope every tool result shares.
+    pub fn ok(data: Value) -> Self {
+        Self::data(envelope(data))
+    }
+}
+
+fn envelope(data: Value) -> Value {
+    json!({ "ok": true, "data": data })
+}
+
+/// The capabilities of the model a tool call runs on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolCallContext {
+    pub image_input: bool,
+}
+
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn schema(&self) -> Option<Value>;
-    async fn execute(&self, args: Value) -> Result<Value, ToolError>;
+    /// The tool's argument schema. A tool that takes no arguments states
+    /// `agentcore::tool::schema::empty`; the wire never sees an absent one.
+    fn schema(&self) -> Value;
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError>;
 
     fn ends_turn(&self) -> bool {
         false
@@ -64,7 +126,7 @@ pub fn tool_ok() -> Result<Value, ToolError> {
 }
 
 pub fn tool_data(data: Value) -> Result<Value, ToolError> {
-    Ok(json!({ "ok": true, "data": data }))
+    Ok(envelope(data))
 }
 
 pub fn tool_err(msg: impl Into<String>) -> ToolError {

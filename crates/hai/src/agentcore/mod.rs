@@ -4,6 +4,7 @@ pub mod model_kind;
 pub mod provider;
 pub mod render;
 pub mod skills;
+pub mod thinking;
 pub mod tool;
 pub(crate) mod url;
 
@@ -11,3 +12,4 @@ pub use api::ApiClient;
 pub use model_kind::{Credential, ModelKind, ModelKindSpec, ModelTarget};
 pub use provider::ProviderKind;
 pub use skills::{Skill, SkillManager};
+pub use thinking::ThinkingEffort;

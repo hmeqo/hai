@@ -11,7 +11,7 @@ use crate::{
         environment::sandbox::Sandbox, run::turn::ToolContext,
         tools::util::deserialize_option_lenient_u64,
     },
-    agentcore::tool::{AgentTool, ToolError, schema_of, tool_data},
+    agentcore::tool::{AgentTool, ToolCallContext, ToolError, ToolOutput, schema_of, tool_data},
 };
 
 const HEAD_BYTES: usize = 24 * 1024;
@@ -46,11 +46,11 @@ impl AgentTool for Bash {
         &self.description
     }
 
-    fn schema(&self) -> Option<Value> {
-        Some(schema_of::<ShellArgs>())
+    fn schema(&self) -> Value {
+        schema_of::<ShellArgs>()
     }
 
-    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let typed: ShellArgs = serde_json::from_value(args)?;
         // A relative workdir resolves against the environment's own root, an absolute one stands: a
         // command's `cd` target must exist where the command runs.
@@ -74,6 +74,7 @@ impl AgentTool for Bash {
             "stdout_elided_bytes": stdout_elided_bytes,
             "stderr_elided_bytes": stderr_elided_bytes,
         }))
+        .map(ToolOutput::data)
     }
 }
 

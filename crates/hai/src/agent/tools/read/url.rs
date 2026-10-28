@@ -1,6 +1,9 @@
 use super::{Read, ReadArgs, ReadOutput, paging::paginate};
 use crate::{
-    agent::web::{Fetched, WebUrl},
+    agent::{
+        multimodal::analysis::{ResolvedMedia, resolve_parser},
+        web::{Fetched, WebUrl},
+    },
     agentcore::tool::ToolError,
     domain::vo::Subject,
 };
@@ -19,16 +22,18 @@ impl Read {
                 Some(engine),
             ))),
             fetched => {
-                let (payload, parser) = fetched
+                let (payload, detected) = fetched
                     .into_payload()
                     .expect("a non-text fetch carries a payload");
+                let parser = resolve_parser(detected, args.parser)?;
                 let content = self
                     .analyzer
                     .analyze(
-                        payload,
-                        parser,
-                        args.parser,
-                        Some(Subject::url(url.as_str())),
+                        ResolvedMedia {
+                            parser,
+                            payload,
+                            subject: Some(Subject::url(url.as_str())),
+                        },
                         args.focus.as_deref(),
                     )
                     .await?;

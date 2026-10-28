@@ -1,9 +1,12 @@
 use tokio::sync::{mpsc, oneshot};
 
-use super::{BusyPass, scheduler::SchedulerStatus};
+use super::{
+    ConversationAgent,
+    passes::{BusyPass, DigestRequest},
+    scheduler::SchedulerStatus,
+};
 use crate::{
     agent::{
-        chat::types::DigestRequest,
         command::digest::run::DigestReport,
         events::Doorbell,
         prompt::text::{LanguageText, PerCatalog},
@@ -133,6 +136,8 @@ fn fmt_tokens(n: u32) -> String {
     }
 }
 
+/// A cloneable command proxy for one running agent. It owns no task; `AgentRegistry`'s lease owns
+/// the task and cancels it when the entry is dropped.
 #[derive(Clone)]
 pub struct ConversationAgentHandle {
     conversation_id: ConversationId,
@@ -209,5 +214,24 @@ impl ConversationAgentHandle {
                 None
             }
         }
+    }
+}
+
+impl ConversationAgent {
+    pub(crate) fn build_status(&mut self) -> ConversationAgentStatus {
+        let (turn_elapsed, busy) = self.pass.status();
+        ConversationAgentStatus {
+            scheduler: self.pacing.snapshot(),
+            step_count: self.conversation.step_count() as usize,
+            context_tokens: self.conversation.context_tokens(),
+            conversation_msgs: self.conversation.message_count(),
+            turn_elapsed_secs: turn_elapsed,
+            busy,
+            model: self.model_label.clone(),
+        }
+    }
+
+    pub(crate) fn answer_status(&mut self, query: oneshot::Sender<ConversationAgentStatus>) {
+        let _ = query.send(self.build_status());
     }
 }

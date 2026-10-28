@@ -23,9 +23,16 @@ use crate::{
             },
             role::AgentRole,
         },
-        run::{Messages, SelectedModel, record::SessionRecord, step_loop::StepLoop},
+        run::{
+            Messages, SelectedModel,
+            record::SessionRecord,
+            step_loop::{StepConfig, StepLoop},
+        },
     },
-    agentcore::{render::Node, tool::AgentTool},
+    agentcore::{
+        render::Node,
+        tool::{AgentTool, ToolCallContext},
+    },
     config::conversation::{ContentPolicy, Language},
     domain::{
         model::ChatType,
@@ -168,7 +175,7 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
 
     let spec = AgentRole::Digest.spec(
         runtime,
-        &model.chat,
+        model.chat_options(),
         chat_type,
         language,
         None,
@@ -177,11 +184,16 @@ async fn run_inner(pass: DigestPass<'_>, session: SessionRef) -> Result<DigestRe
     let step_loop = StepLoop::new(
         model.client.clone(),
         model.model.clone(),
+        ToolCallContext {
+            image_input: model.capabilities.image_input,
+        },
         Messages::new(vec![ChatMessage::user(&rendered)]),
         spec,
-        // The pass reads before it writes, so it spends `[agent] max-steps` like a Turn does.
-        cfg.agent.max_steps,
-        None,
+        StepConfig {
+            // The pass reads before it writes, so it spends `[agent] max-steps` like a Turn does.
+            budget: cfg.agent.max_steps,
+            steering: None,
+        },
         SessionRecord {
             event_bus: runtime.event_bus().clone(),
             chat_id,

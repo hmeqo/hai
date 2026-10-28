@@ -234,10 +234,10 @@ mod tests {
     fn env_multi_word_key_maps_to_kebab_field() {
         let _guard = env_lock();
         let path = temp_toml("hai_cfg_env_kebab.toml", "");
-        unsafe { std::env::set_var("HAI__MODEL_ROLES__DEFAULT__MAX_TOKENS", "1234") };
+        unsafe { std::env::set_var("HAI__MODEL_ROLES__DEFAULT__TEMPERATURE", "0.7") };
         let cfg = AppConfig::load(&path).unwrap();
-        unsafe { std::env::remove_var("HAI__MODEL_ROLES__DEFAULT__MAX_TOKENS") };
-        assert_eq!(cfg.model_roles.default.max_tokens, Some(1234));
+        unsafe { std::env::remove_var("HAI__MODEL_ROLES__DEFAULT__TEMPERATURE") };
+        assert_eq!(cfg.model_roles.default.temperature, Some(0.7));
     }
 
     /// The file's other fields of the same section survive an environment override of one key.
@@ -246,16 +246,16 @@ mod tests {
         let _guard = env_lock();
         let path = temp_toml(
             "hai_cfg_env_merge.toml",
-            "[model-roles.default]\nreasoning = false\n",
+            "[model-roles.default]\nmodel = \"sonnet\"\n",
         );
         unsafe { std::env::set_var("HAI__MODEL_ROLES__DEFAULT__TEMPERATURE", "0.7") };
         let cfg = AppConfig::load(&path).unwrap();
         unsafe { std::env::remove_var("HAI__MODEL_ROLES__DEFAULT__TEMPERATURE") };
-        assert!(
-            !cfg.model_roles.default.reasoning,
-            "the file's reasoning value was replaced"
+        assert_eq!(
+            cfg.model_roles.default.model, "sonnet",
+            "the file's alias was replaced"
         );
-        assert!((cfg.model_roles.default.temperature - 0.7).abs() < f32::EPSILON);
+        assert_eq!(cfg.model_roles.default.temperature, Some(0.7));
     }
 
     #[test]

@@ -20,10 +20,11 @@ use self::paging::{Page, page_data};
 use super::addressing::{self, Address};
 use crate::{
     agent::{
+        attachment::ToolAttachments,
         environment::sandbox::Sandbox,
         multimodal::{
             MultimodalService,
-            analysis::{InlineLimit, MediaAnalyzer},
+            analysis::{InlineLimit, MediaAnalyzer, MediaResolver},
         },
         process::AgentRuntime,
         run::turn::ToolContext,
@@ -31,9 +32,12 @@ use crate::{
     },
     agentcore::{
         skills::{SkillManager, SkillName},
-        tool::{AgentTool, ToolError, schema_of, tool_data},
+        tool::{AgentTool, ToolCallContext, ToolError, ToolMedia, ToolOutput, schema_of},
     },
-    domain::vo::{AttachmentId, AttachmentParser, ConversationId, MemoryId, TopicId},
+    domain::{
+        service::Services,
+        vo::{AttachmentId, AttachmentParser, ConversationId, MemoryId, TopicId},
+    },
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -57,6 +61,8 @@ pub struct Read {
     conversation_id: ConversationId,
     web: WebService,
     analyzer: MediaAnalyzer,
+    resolver: MediaResolver,
+    services: Services,
     sandbox: Arc<Sandbox>,
     skill_manager: SkillManager,
 }
@@ -65,6 +71,25 @@ enum ReadOutput {
     Text { content: String },
     Paged(Page),
     Skill { name: String, instructions: String },
+    Image { media: ToolMedia },
+}
+
+impl ReadOutput {
+    fn into_tool_output(self) -> ToolOutput {
+        let data = match self {
+            Self::Text { content } => json!({ "content": content }),
+            Self::Paged(page) => page_data(page),
+            Self::Skill { name, instructions } => {
+                json!({ "skill": name, "instructions": instructions })
+            }
+            Self::Image { media } => {
+                let mut output = ToolOutput::ok(json!({ "content": "Image" }));
+                output.media = vec![media];
+                return output;
+            }
+        };
+        ToolOutput::ok(data)
+    }
 }
 
 #[async_trait]
@@ -77,20 +102,13 @@ impl AgentTool for Read {
         &self.description
     }
 
-    fn schema(&self) -> Option<Value> {
-        Some(schema_of::<ReadArgs>())
+    fn schema(&self) -> Value {
+        schema_of::<ReadArgs>()
     }
 
-    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let args: ReadArgs = serde_json::from_value(args)?;
-        let data = match self.read(&args).await? {
-            ReadOutput::Text { content } => json!({ "content": content }),
-            ReadOutput::Paged(page) => page_data(page),
-            ReadOutput::Skill { name, instructions } => {
-                json!({ "skill": name, "instructions": instructions })
-            }
-        };
-        tool_data(data)
+        Ok(self.read(&args, ctx).await?.into_tool_output())
     }
 
     /// A read changes nothing: it opens what the chat already has.
@@ -125,14 +143,17 @@ fn target<'a>(address: &'a Address, sandbox: &Sandbox) -> Target<'a> {
 }
 
 impl Read {
-    async fn read(&self, args: &ReadArgs) -> Result<ReadOutput, ToolError> {
+    async fn read(&self, args: &ReadArgs, ctx: &ToolCallContext) -> Result<ReadOutput, ToolError> {
         let focus = args.focus.as_deref();
         match target(&args.path, &self.sandbox) {
-            Target::Attachment(id) => self.read_attachment(id, args.parser, focus).await,
+            Target::Attachment(id) => {
+                self.read_attachment(id, args.parser, focus, ctx.image_input)
+                    .await
+            }
             Target::Skill(name) => skill::skill_body(&self.skill_manager, name),
             Target::Topic(id) => {
                 record::topic(
-                    self.analyzer.services(),
+                    &self.services,
                     self.conversation_id,
                     id,
                     args.offset,
@@ -140,18 +161,19 @@ impl Read {
                 )
                 .await
             }
-            Target::Memory(id) => {
-                record::memory(self.analyzer.services(), self.conversation_id, id).await
-            }
+            Target::Memory(id) => record::memory(&self.services, self.conversation_id, id).await,
             Target::Url(url) => self.read_url(url, args).await,
-            Target::Local(path) => self.read_local(&path, args).await,
+            Target::Local(path) => self.read_local(&path, args, ctx.image_input).await,
         }
     }
 }
 
 pub fn tools(runtime: &AgentRuntime, ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    let parsers = enabled_parsers(&ctx.multimodal);
-    let inline_limit = InlineLimit::new(runtime.cfg().agent.multimodal.inline_max_bytes);
+    let parsers = enabled_parsers(
+        &ctx.multimodal,
+        runtime.model_catalog().any_chat_image_input(),
+    );
+    let inline_limit = InlineLimit::new(ctx.multimodal.inline_max_bytes());
     vec![Arc::new(Read {
         description: describe(&parsers, !ctx.skill_manager.is_empty()),
         conversation_id: ctx.conversation_id,
@@ -160,9 +182,13 @@ pub fn tools(runtime: &AgentRuntime, ctx: &ToolContext) -> Vec<Arc<dyn AgentTool
             ctx.multimodal.clone(),
             ctx.services.clone(),
             ctx.conversation_id,
-            ctx.chat.clone(),
             inline_limit,
         ),
+        resolver: MediaResolver::new(
+            Arc::new(ToolAttachments::new(ctx.services.clone(), ctx.chat.clone())),
+            inline_limit,
+        ),
+        services: ctx.services.clone(),
         sandbox: ctx.sandbox.clone(),
         skill_manager: ctx.skill_manager.clone(),
     })]
@@ -177,7 +203,10 @@ fn describe(parsers: &[AttachmentParser], skills: bool) -> String {
     let media = if kinds.is_empty() {
         String::new()
     } else {
-        format!("; a media file is analyzed instead ({})", kinds.join("/"))
+        format!(
+            "; media is analyzed ({}) and an image is loaded directly when the active model can see it",
+            kinds.join("/")
+        )
     };
     let mut lines = vec![
         "Reads content. `path` accepts:".to_owned(),
@@ -209,14 +238,20 @@ fn describe(parsers: &[AttachmentParser], skills: bool) -> String {
     lines.join("\n")
 }
 
-/// The attachment parsers the model is told about: only what the resolved service can actually read.
-fn enabled_parsers(multimodal: &MultimodalService) -> Vec<AttachmentParser> {
+/// The attachment parsers the model is told about: only what the resolved service can actually read,
+/// plus an image a native vision chat model can load without the analyzer.
+fn enabled_parsers(
+    multimodal: &MultimodalService,
+    chat_image_input: bool,
+) -> Vec<AttachmentParser> {
     let mut parsers = Vec::new();
     if multimodal.transcription_enabled() {
         parsers.push(AttachmentParser::Audio);
     }
     if multimodal.vision_enabled() {
         parsers.push(AttachmentParser::Video);
+        parsers.push(AttachmentParser::Image);
+    } else if chat_image_input {
         parsers.push(AttachmentParser::Image);
     }
     parsers
@@ -288,6 +323,22 @@ mod tests {
         let id = serde_json::from_value::<ReadArgs>(json!({ "path": "topic://nope" }))
             .expect_err("bad id");
         assert!(id.to_string().contains("Invalid topic id"));
+    }
+
+    #[test]
+    fn an_image_output_carries_bytes_in_media_not_text() {
+        let output = ReadOutput::Image {
+            media: ToolMedia::Image {
+                mime: "image/png".into(),
+                data: vec![1, 2, 3],
+                focus: Some("what is this".into()),
+            },
+        }
+        .into_tool_output();
+
+        assert_eq!(output.media.len(), 1);
+        assert!(!output.data.to_string().contains("base64"));
+        assert_eq!(output.data["data"]["content"], "Image");
     }
 
     #[test]

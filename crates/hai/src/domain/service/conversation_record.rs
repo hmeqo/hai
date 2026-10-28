@@ -51,7 +51,7 @@ impl ConversationRecordService {
     /// The clean chapter a purge resets a conversation to.
     pub(crate) fn fresh_chapter(&self) -> Result<ChapterWrite> {
         snapshot_values(&ConversationSnapshot {
-            context_messages: Vec::new(),
+            messages: Vec::new(),
             context_meta: ContextMeta::new(),
         })
     }
@@ -109,7 +109,7 @@ impl ConversationRecordService {
 
 fn snapshot_values(snap: &ConversationSnapshot) -> Result<ChapterWrite> {
     Ok(ChapterWrite {
-        messages: serde_json::to_value(&snap.context_messages)?,
+        messages: serde_json::to_value(&snap.messages)?,
         context_meta: serde_json::to_value(snap.context_meta)?,
     })
 }
@@ -128,7 +128,7 @@ fn restore_snapshot(record: &ConversationRecord) -> Result<ConversationSnapshot>
     })?;
 
     Ok(ConversationSnapshot {
-        context_messages: messages,
+        messages,
         context_meta,
     })
 }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn a_snapshot_survives_its_own_write() {
         let snap = ConversationSnapshot {
-            context_messages: Vec::new(),
+            messages: Vec::new(),
             context_meta: ContextMeta {
                 tokens: 3,
                 turn_count: 1,

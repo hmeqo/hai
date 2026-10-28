@@ -218,7 +218,9 @@ pub(crate) fn create_genai_client(kind: ProviderKind, chat: &ModelTarget) -> Res
         builder = builder
             .with_web_config(WebConfig::default().with_default_headers((*chat.headers).clone()));
     }
-    Ok(builder.build())
+    builder
+        .build()
+        .map_err(|e| AppError::message(format!("Failed to build genai client for {kind:?}: {e}")))
 }
 
 /// The provider's declared headers as a header map; a malformed name or value fails startup rather

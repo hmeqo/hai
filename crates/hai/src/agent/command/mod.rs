@@ -19,7 +19,7 @@ pub(crate) use spec::{CommandGates, Declaration, declarations, find};
 
 use crate::{
     agent::{command::digest::Delivery, host_copy::HostCopy},
-    config::conversation::{ContentPolicy, ContentPolicyPreset, Language},
+    config::conversation::{ContentPolicy, Language},
     domain::vo::{AgentCommand, HostAction, PurgeSpec, PurgeSurfaces, Stretch},
 };
 
@@ -37,27 +37,18 @@ pub(crate) enum Invocation {
 pub(crate) enum SystemCommand {
     Status,
     Lang(LanguageArg),
-    Model(ModelArg),
     ContentPolicy(ContentPolicyArg),
     Persona(PersonaArg),
     Purge(PurgeArg),
     Digest(DigestArg),
 }
 
-/// What `/model` was asked to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ModelArg {
-    Current,
-    Reset,
-    Set(String),
-}
-
-/// What `/content-policy` was asked to do; the preset is the typed spelling the parser accepts.
+/// What `/content-policy` was asked to do; the level is the typed spelling the parser accepts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ContentPolicyArg {
     Current,
     Reset,
-    Set(ContentPolicyPreset),
+    Set(ContentPolicy),
 }
 
 /// What `/persona` was asked to do.
@@ -201,7 +192,7 @@ pub(crate) enum DialogFallback {
 pub(crate) enum DialogArg {
     Purge(PurgeArg),
     Digest(DigestArg),
-    /// The bare content-policy line: the picker reports this policy and offers the presets.
+    /// The bare content-policy line: the picker reports this policy and offers the levels.
     ContentPolicy(ContentPolicy),
 }
 

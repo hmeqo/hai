@@ -6,6 +6,7 @@ pub(crate) mod engine;
 pub(crate) mod record;
 pub(crate) mod step_loop;
 pub(crate) mod turn;
+pub(crate) mod wire_messages;
 
 use std::sync::Arc;
 

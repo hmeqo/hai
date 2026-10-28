@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use genai::{
     Client,
     chat::{ChatMessage, ContentPart, MessageContent, Tool, ToolCall, ToolResponse},
@@ -15,7 +16,7 @@ use crate::{
         events::Doorbell,
         prompt::role::{RoleSpec, StepDecision, StepFacts},
     },
-    agentcore::tool::{AgentTool, ToolError, schema, tool_err},
+    agentcore::tool::{AgentTool, ToolCallContext, ToolError, ToolMedia, schema, tool_err},
     domain::vo::{ChatId, ModelRetryReason, Step, StepNumber, ToolCallResult},
 };
 
@@ -67,6 +68,7 @@ pub(crate) trait StepObserver: Send {
 pub(crate) struct StepLoop<O: StepObserver> {
     pub(crate) client: Client,
     pub(crate) model: String,
+    pub(crate) tool_context: ToolCallContext,
     pub(crate) messages: Messages,
     pub(crate) spec: RoleSpec,
     pub(crate) budget: usize,
@@ -80,8 +82,9 @@ pub(crate) struct StepLoop<O: StepObserver> {
     /// A speaking call has already succeeded in this run: text after it is a closing remark, not an
     /// unsent reply.
     spoke: bool,
-    /// Where this run's own injected messages sit, so [`transcript`](Self::transcript) can drop them.
-    notices: Vec<usize>,
+    /// Where this run's own notices sit, so [`into_messages`](Self::into_messages) can drop them.
+    /// Images are message content and are never listed here.
+    transient: Vec<usize>,
 }
 
 /// Where an interrupting arrival must come from, and the doorbell it rings.
@@ -89,6 +92,12 @@ pub(crate) struct Steering {
     pub chat_id: ChatId,
     pub since: u64,
     pub doorbell: Doorbell,
+}
+
+/// The run's budget and its optional arrival check.
+pub(crate) struct StepConfig {
+    pub budget: usize,
+    pub steering: Option<Steering>,
 }
 
 pub(crate) struct StepLoopOutput {
@@ -106,24 +115,25 @@ impl<O: StepObserver> StepLoop<O> {
     pub(crate) fn new(
         client: Client,
         model: String,
+        tool_context: ToolCallContext,
         messages: Messages,
         spec: RoleSpec,
-        budget: usize,
-        steering: Option<Steering>,
+        config: StepConfig,
         observer: O,
     ) -> Self {
         Self {
             client,
             model,
+            tool_context,
             messages,
             spec,
-            budget,
-            steering,
+            budget: config.budget,
+            steering: config.steering,
             observer,
             warned: false,
             stall: StallGuard::default(),
             spoke: false,
-            notices: Vec::new(),
+            transient: Vec::new(),
         }
     }
 
@@ -159,7 +169,7 @@ impl<O: StepObserver> StepLoop<O> {
             if step.stop || hit_step_limit {
                 return Ok(StepLoopOutput {
                     steps,
-                    messages: self.transcript(),
+                    messages: self.into_messages(),
                     steered: false,
                     truncated: hit_step_limit,
                 });
@@ -172,7 +182,7 @@ impl<O: StepObserver> StepLoop<O> {
             {
                 return Ok(StepLoopOutput {
                     steps,
-                    messages: self.transcript(),
+                    messages: self.into_messages(),
                     steered: true,
                     truncated: false,
                 });
@@ -183,13 +193,13 @@ impl<O: StepObserver> StepLoop<O> {
     /// Appends a run-local message for the next Step, remembering where it sits: a later Turn must
     /// not read a spent budget's warning, or a contract guide, as its own.
     fn notice(&mut self, message: ChatMessage) {
-        self.notices.push(self.messages.len());
+        self.transient.push(self.messages.len());
         self.messages.push(message);
     }
 
-    /// The transcript this run leaves: everything it read and wrote, minus its own notices.
-    fn transcript(mut self) -> Messages {
-        for at in self.notices.iter().rev() {
+    /// The messages this run leaves: everything it read and wrote, minus its own notices.
+    fn into_messages(mut self) -> Messages {
+        for at in self.transient.iter().rev() {
             self.messages.remove(*at);
         }
         self.messages
@@ -213,16 +223,31 @@ impl<O: StepObserver> StepLoop<O> {
         .await?;
 
         let response_text = res.texts().join("\n");
-        let reasoning = res.reasoning_content.clone();
         let prompt_tokens = res.usage.prompt_tokens.unwrap_or(0) as u32;
         let completion_tokens = res.usage.completion_tokens.unwrap_or(0) as u32;
-        let active_calls: Vec<ToolCall> = res.into_tool_calls();
+        let active_calls: Vec<ToolCall> = res.tool_calls().into_iter().cloned().collect();
 
-        self.messages.push(build_assistant_message(
-            &response_text,
-            &active_calls,
-            reasoning.clone(),
-        ));
+        // The Step and the assistant message both need the reasoning text, and the tool-use builder
+        // folds its own copy into the content: one clone is the cost of keeping both.
+        let (assistant, reasoning) = if active_calls.is_empty() {
+            let reasoning = res.reasoning_content;
+            let mut message = ChatMessage::assistant(res.content);
+            let carries_reasoning = message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::ReasoningContent(_)));
+            if !carries_reasoning && let Some(text) = &reasoning {
+                message = message.with_reasoning_content(Some(text.clone()));
+            }
+            (message, reasoning)
+        } else {
+            let reasoning = res.reasoning_content.clone();
+            let message = res
+                .into_assistant_message_for_tool_use()
+                .expect("a response with tool calls builds a tool-use message");
+            (message, reasoning)
+        };
+        self.messages.push(assistant);
 
         self.observer.observed(StepEvent::Completed {
             step,
@@ -276,7 +301,7 @@ impl<O: StepObserver> StepLoop<O> {
             let speaking = tools
                 .iter()
                 .any(|tool| tool.name() == call.fn_name && tool.speaks());
-            let result = execute_single_tool(call, tools, &self.spec, &mut self.messages).await;
+            let ExecutedTool { result, media } = self.execute_tool(call, tools).await;
             if speaking && result.success {
                 self.spoke = true;
             }
@@ -285,9 +310,58 @@ impl<O: StepObserver> StepLoop<O> {
                 result: &result,
             });
             stalled |= self.stall.observe(call, &result);
+            if !media.is_empty() {
+                self.messages.push(image_message(call, media));
+            }
             results.push(result);
         }
         (results, stalled)
+    }
+
+    async fn execute_tool(
+        &mut self,
+        call: &ToolCall,
+        tools: &[Arc<dyn AgentTool>],
+    ) -> ExecutedTool {
+        let tool_name = &call.fn_name;
+        let args = &call.fn_arguments;
+
+        let result = match tools.iter().find(|t| t.name() == tool_name) {
+            Some(t) if self.spec.rejects(t.as_ref()) => Err(tool_err(format!(
+                "{tool_name} is not available in this pass"
+            ))),
+            Some(tool) => tool.execute(args.clone(), &self.tool_context).await,
+            None => Err(tool_err(format!("Unknown tool: {tool_name}"))),
+        };
+
+        match result {
+            Ok(output) => {
+                self.messages
+                    .push(ChatMessage::from(ToolResponse::from_tool_call(
+                        call,
+                        output.data.to_string(),
+                    )));
+                ExecutedTool {
+                    result: ToolCallResult::ok(
+                        tool_name.clone(),
+                        args.clone(),
+                        output.data.clone(),
+                    ),
+                    media: output.media,
+                }
+            }
+            Err(e) => {
+                self.messages
+                    .push(ChatMessage::from(ToolResponse::from_tool_call(
+                        call,
+                        format!("Error: {e}"),
+                    )));
+                ExecutedTool {
+                    result: ToolCallResult::err(tool_name.clone(), args.clone(), format!("{e}")),
+                    media: Vec::new(),
+                }
+            }
+        }
     }
 }
 
@@ -297,6 +371,37 @@ struct StepRun {
     retry: Option<ModelRetryReason>,
     /// Whether one call returned what it already did twice in a row.
     stalled: bool,
+}
+
+struct ExecutedTool {
+    result: ToolCallResult,
+    media: Vec<ToolMedia>,
+}
+
+/// The user-content message that carries tool media. genai's OpenAI and Anthropic tool roles do not
+/// accept image parts, so pixels travel as a user message beside the text-only tool result.
+fn image_message(call: &ToolCall, media: Vec<ToolMedia>) -> ChatMessage {
+    let focus = media.iter().find_map(|media| match media {
+        ToolMedia::Image { focus, .. } => focus
+            .as_deref()
+            .map(str::trim)
+            .filter(|focus| !focus.is_empty()),
+    });
+    let mut text = format!("Image from {}({})", call.fn_name, call.fn_arguments);
+    if let Some(focus) = focus {
+        text.push_str("\nFocus: ");
+        text.push_str(focus);
+    }
+    let mut parts = vec![ContentPart::from_text(text)];
+    for media in media {
+        let ToolMedia::Image { mime, data, .. } = media;
+        parts.push(ContentPart::from_binary_base64(
+            mime,
+            BASE64_STANDARD.encode(data),
+            None,
+        ));
+    }
+    ChatMessage::user(MessageContent::from_parts(parts))
 }
 
 /// What the last tool call was and what it returned; the same pair [`STALL_REPEATS`] times in a row
@@ -337,67 +442,11 @@ fn prepare_genai_tools(tools: &[Arc<dyn AgentTool>]) -> Vec<Tool> {
     tools
         .iter()
         .map(|t| {
-            let mut tool = Tool::new(t.name()).with_description(t.description());
-            if let Some(s) = t.schema() {
-                tool = tool.with_schema(schema::normalize_root(t.name(), s));
-            }
-            tool
+            Tool::new(t.name())
+                .with_description(t.description())
+                .with_schema(schema::normalize_root(t.name(), t.schema()))
         })
         .collect()
-}
-
-fn build_assistant_message(
-    response_text: &str,
-    tool_calls: &[ToolCall],
-    reasoning_content: Option<String>,
-) -> ChatMessage {
-    let mut parts = Vec::new();
-    if !response_text.is_empty() {
-        parts.push(ContentPart::from_text(response_text));
-    }
-    for call in tool_calls {
-        parts.push(ContentPart::ToolCall(call.clone()));
-    }
-    let mut msg = ChatMessage::assistant(MessageContent::from_parts(parts));
-    if let Some(r) = reasoning_content {
-        msg = msg.with_reasoning_content(Some(r));
-    }
-    msg
-}
-
-async fn execute_single_tool(
-    call: &ToolCall,
-    tools: &[Arc<dyn AgentTool>],
-    spec: &RoleSpec,
-    messages: &mut Messages,
-) -> ToolCallResult {
-    let tool_name = &call.fn_name;
-    let args = &call.fn_arguments;
-
-    let result = match tools.iter().find(|t| t.name() == tool_name) {
-        Some(tool) if spec.rejects(tool.as_ref()) => Err(tool_err(format!(
-            "{tool_name} is not available in this pass"
-        ))),
-        Some(tool) => tool.execute(args.clone()).await,
-        None => Err(tool_err(format!("Unknown tool: {tool_name}"))),
-    };
-
-    match result {
-        Ok(val) => {
-            messages.push(ChatMessage::from(ToolResponse::from_tool_call(
-                call,
-                val.to_string(),
-            )));
-            ToolCallResult::ok(tool_name.clone(), args.clone(), val.clone())
-        }
-        Err(e) => {
-            messages.push(ChatMessage::from(ToolResponse::from_tool_call(
-                call,
-                format!("Error: {e}"),
-            )));
-            ToolCallResult::err(tool_name.clone(), args.clone(), format!("{e}"))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -405,6 +454,118 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::agent::{prompt::role::AgentRole, test_support::StubTool};
+
+    struct Noop;
+
+    impl StepObserver for Noop {
+        fn observed(&mut self, _: StepEvent<'_>) {}
+    }
+
+    #[test]
+    fn an_image_message_stays_in_the_messages_and_carries_no_text_base64() {
+        let call = ToolCall {
+            call_id: "1".into(),
+            fn_name: "read".into(),
+            fn_arguments: json!({ "path": "attachment://a" }),
+            thought_signatures: None,
+        };
+        let image = image_message(
+            &call,
+            vec![ToolMedia::Image {
+                mime: "image/png".into(),
+                data: vec![1, 2, 3],
+                focus: Some("what is this".into()),
+            }],
+        );
+        let parts: Vec<ContentPart> = image.content.clone().into_iter().collect();
+        assert!(
+            parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::Binary(_))),
+            "the image is a binary part"
+        );
+        assert!(parts.iter().all(|part| !matches!(
+            part,
+            ContentPart::Text(text) if text.contains("AQID") || text.contains("base64")
+        )));
+
+        let mut step_loop = StepLoop::new(
+            crate::agent::test_support::genai_client(),
+            "model".into(),
+            ToolCallContext::default(),
+            Messages::new(vec![ChatMessage::user("start")]),
+            RoleSpec::stub(AgentRole::Default),
+            StepConfig {
+                budget: 3,
+                steering: None,
+            },
+            Noop,
+        );
+        step_loop
+            .messages
+            .push(ChatMessage::from(ToolResponse::from_tool_call(
+                &call,
+                "{\"ok\":true}",
+            )));
+        step_loop.messages.push(image);
+
+        let messages = step_loop.into_messages().to_vec();
+        assert_eq!(messages.len(), 3, "start, tool result, image");
+        assert!(
+            messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Binary(_)))),
+            "the image remains message content"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_image_is_appended_beside_its_result_and_kept() {
+        let call = ToolCall {
+            call_id: "1".into(),
+            fn_name: "read".into(),
+            fn_arguments: json!({ "path": "attachment://a" }),
+            thought_signatures: None,
+        };
+        let tool = StubTool::new("read")
+            .media(ToolMedia::Image {
+                mime: "image/png".into(),
+                data: vec![1, 2, 3],
+                focus: None,
+            })
+            .into_dyn();
+        let mut step_loop = StepLoop::new(
+            crate::agent::test_support::genai_client(),
+            "model".into(),
+            ToolCallContext::default(),
+            Messages::new(vec![ChatMessage::user("start")]),
+            RoleSpec::stub(AgentRole::Default),
+            StepConfig {
+                budget: 3,
+                steering: None,
+            },
+            Noop,
+        );
+
+        let (results, stalled) = step_loop
+            .run_tool_calls(&[call], &[tool], StepNumber::from(1))
+            .await;
+        assert!(!stalled);
+        assert_eq!(results.len(), 1);
+        assert_eq!(step_loop.messages.len(), 3, "start, tool result, image");
+
+        let messages = step_loop.into_messages().to_vec();
+        assert_eq!(messages.len(), 3, "start, tool result, image");
+        assert!(
+            messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Binary(_)))),
+            "the image is kept"
+        );
+    }
 
     #[test]
     fn a_repeated_call_trips_the_stall_guard() {
@@ -426,5 +587,17 @@ mod tests {
         assert!(!guard.observe(&call, &other));
         assert!(!guard.observe(&call, &other));
         assert!(guard.observe(&call, &other));
+    }
+
+    /// A provider validates tool parameters as an object, so a tool that takes no arguments still
+    /// goes out with an empty object schema rather than `null`.
+    #[test]
+    fn a_tool_without_arguments_carries_an_object_schema() {
+        let skip: Arc<dyn AgentTool> = Arc::new(crate::agent::tools::skip::Skip);
+        let tools = prepare_genai_tools(&[skip]);
+        assert_eq!(
+            tools[0].schema,
+            Some(json!({ "type": "object", "properties": {} }))
+        );
     }
 }

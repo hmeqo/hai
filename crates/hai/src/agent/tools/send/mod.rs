@@ -12,19 +12,22 @@ use uuid::Uuid;
 use self::generate::GenerateImage;
 use super::{
     addressing::{Address, deserialize_optional_address},
+    source::SourceResolver,
     util::required,
 };
 use crate::{
     agent::{
+        attachment::ToolAttachments,
         channel::{
             BuildCapability, ChannelCapabilities, ChannelHandle, OutboundForm, OutboundKind,
             OutboundPayload, ReplyTo,
         },
-        environment::sandbox::Sandbox,
         multimodal::MultimodalService,
         run::turn::ToolContext,
     },
-    agentcore::tool::{AgentTool, ToolError, schema_of, tool_err, tool_ok},
+    agentcore::tool::{
+        AgentTool, ToolCallContext, ToolError, ToolOutput, schema_of, tool_err, tool_ok,
+    },
     domain::vo::{MessageId, TopicId},
 };
 
@@ -50,7 +53,7 @@ pub struct SendMessageArgs {
 
 pub struct SendMessage {
     pub(super) chat: ChannelHandle,
-    pub(super) sandbox: Arc<Sandbox>,
+    pub(super) resolver: SourceResolver,
     pub(super) multimodal: MultimodalService,
     /// What the platform declares, and the forms this build can serve from it: fixed for the life of
     /// the tool, so the surface is computed once instead of on every schema read.
@@ -59,17 +62,13 @@ pub struct SendMessage {
 }
 
 impl SendMessage {
-    pub(super) fn new(ctx: &ToolContext) -> Self {
-        Self::of(
-            ctx.chat.clone(),
-            ctx.sandbox.clone(),
-            ctx.multimodal.clone(),
-        )
+    pub(super) fn new(ctx: &ToolContext, resolver: SourceResolver) -> Self {
+        Self::of(ctx.chat.clone(), resolver, ctx.multimodal.clone())
     }
 
     /// The declared surface is derived here and nowhere else: the platform declares the forms, this
     /// build declares which of them it can serve.
-    fn of(chat: ChannelHandle, sandbox: Arc<Sandbox>, multimodal: MultimodalService) -> Self {
+    fn of(chat: ChannelHandle, resolver: SourceResolver, multimodal: MultimodalService) -> Self {
         let capabilities = chat.capabilities();
         let forms = ServedForms(
             capabilities
@@ -84,7 +83,7 @@ impl SendMessage {
         );
         Self {
             chat,
-            sandbox,
+            resolver,
             multimodal,
             capabilities,
             forms,
@@ -102,19 +101,19 @@ impl AgentTool for SendMessage {
         "Send something to the chat. `kind` selects what goes out."
     }
 
-    fn schema(&self) -> Option<Value> {
-        Some(self.advertised_schema())
+    fn schema(&self) -> Value {
+        self.advertised_schema()
     }
 
     fn speaks(&self) -> bool {
         true
     }
 
-    async fn execute(&self, args: Value) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let args: SendMessageArgs = serde_json::from_value(args)?;
         let (reply, payload) = self.outbound(args).await?;
         self.chat.send(reply, payload).await?;
-        tool_ok()
+        tool_ok().map(ToolOutput::data)
     }
 }
 
@@ -274,11 +273,17 @@ fn drop_property(schema: &mut Value, name: &str) {
 }
 
 pub fn tools(ctx: &ToolContext) -> Vec<Arc<dyn AgentTool>> {
-    let mut all: Vec<Arc<dyn AgentTool>> = vec![Arc::new(SendMessage::new(ctx))];
+    let resolver = SourceResolver::new(
+        ctx.sandbox.clone(),
+        Arc::new(ToolAttachments::new(ctx.services.clone(), ctx.chat.clone())),
+    );
+    let mut all: Vec<Arc<dyn AgentTool>> = vec![Arc::new(SendMessage::new(ctx, resolver.clone()))];
     if ctx.multimodal.image_enabled() {
         all.push(Arc::new(GenerateImage {
             sandbox: ctx.sandbox.clone(),
             multimodal: ctx.multimodal.clone(),
+            resolver,
+            max_reference_bytes: ctx.multimodal.inline_max_bytes(),
         }));
     }
     all
@@ -296,10 +301,13 @@ mod tests {
                 OutboundField, OutboundMessage, OutboundSource, TypingGuard,
             },
             environment::{sandbox::Sandbox, workspace::Workspace},
-            model::ProviderRegistry,
+            model::{ModelCatalog, ProviderRegistry, resolve as resolve_models},
+            test_support::{chat_embedding_config, created_workspace, model_config},
+            tools::source::{FixedAttachments, NoAttachments},
         },
-        config::AppConfig,
-        domain::vo::{AccountId, ChannelKey, ChatId, ConversationId},
+        agentcore::{ModelKind, tool::ToolCallContext},
+        config::{AppConfig, schema::SpeechConfig},
+        domain::vo::{AccountId, AttachmentKind, ChannelKey, ChatId, ConversationId},
     };
 
     const TEXT_FIELDS: [OutboundField; 1] = [OutboundField {
@@ -319,7 +327,7 @@ mod tests {
     const FILE_FIELDS: [OutboundField; 2] = [
         OutboundField {
             name: "source",
-            description: "An existing thing to send",
+            description: "An existing file or attachment: file://, workspace://, attachment:// or http(s)://",
         },
         OutboundField {
             name: "content",
@@ -440,31 +448,18 @@ mod tests {
         }
     }
 
-    /// The config both services start from: a chat model with its provider registered, plus the
-    /// embedding role the roles insist on.
-    fn service_config(provider: &str, model: &str) -> AppConfig {
-        let mut cfg = AppConfig::default();
-        cfg.model_roles.default.model = format!("{provider}/{model}");
-        cfg.providers.insert(provider.into(), Default::default());
-        cfg.model_roles.embedding = crate::config::schema::EmbeddingConfig {
-            model: "openai/text-embedding-3-small".into(),
-            dimension: None,
-        };
-        cfg.providers.insert("openai".into(), Default::default());
-        cfg
-    }
-
     /// A multimodal service over one config: the tests differ only in which roles it declares.
     fn service_of(cfg: &AppConfig) -> MultimodalService {
         let registry =
             ProviderRegistry::from_sources(cfg, &|_| Some("test-key".to_owned()), &|_| true);
-        let roles = crate::agent::model::resolve(cfg, &registry).expect("model roles");
+        let catalog = ModelCatalog::resolve(cfg, &registry).expect("model catalog");
+        let roles = resolve_models(cfg, &registry, &catalog).expect("model roles");
         MultimodalService::from_config(cfg, &roles).expect("multimodal service")
     }
 
     /// A service whose provider cannot speak or generate: the local media paths stay reachable.
     fn service() -> MultimodalService {
-        service_of(&service_config("anthropic", "claude-sonnet-4-5"))
+        service_of(&chat_embedding_config("anthropic", "claude-sonnet-4-5"))
     }
 
     /// The sandbox a tool under test acts in: the Conversation's own workspace, host-mode.
@@ -478,22 +473,26 @@ mod tests {
     fn tool(channel: Arc<dyn Channel>) -> SendMessage {
         SendMessage::of(
             ChannelHandle::new(channel, ChatId(42)),
-            host_sandbox(),
+            SourceResolver::new(host_sandbox(), Arc::new(NoAttachments)),
             service(),
         )
     }
 
-    fn recording_in(sandbox: Arc<Sandbox>) -> (SendMessage, Arc<RecordingChannel>) {
+    fn recording_with_resolver(resolver: SourceResolver) -> (SendMessage, Arc<RecordingChannel>) {
         let channel = Arc::new(RecordingChannel {
             capabilities: capabilities(&ALL_FORMS, true, true),
             sent: Mutex::new(None),
         });
         let tool = SendMessage::of(
             ChannelHandle::new(channel.clone(), ChatId(42)),
-            sandbox,
+            resolver,
             service(),
         );
         (tool, channel)
+    }
+
+    fn recording_in(sandbox: Arc<Sandbox>) -> (SendMessage, Arc<RecordingChannel>) {
+        recording_with_resolver(SourceResolver::new(sandbox, Arc::new(NoAttachments)))
     }
 
     fn recording() -> (SendMessage, Arc<RecordingChannel>) {
@@ -508,9 +507,13 @@ mod tests {
 
     /// A service that can speak: the voice form then needs `prompt` even without image generation.
     fn speaking_service() -> MultimodalService {
-        let mut cfg = service_config("openai", "gpt-4o");
-        cfg.model_roles.speech = Some(crate::config::schema::SpeechConfig {
-            model: Some("openai/gpt-4o-mini-tts".into()),
+        let mut cfg = chat_embedding_config("openai", "gpt-4o");
+        cfg.models.insert(
+            "speech-model".into(),
+            model_config("openai", "gpt-4o-mini-tts", [ModelKind::Speech]),
+        );
+        cfg.model_roles.speech = Some(SpeechConfig {
+            model: Some("speech-model".into()),
             voice: "alloy".into(),
             speed: 1.0,
         });
@@ -524,16 +527,14 @@ mod tests {
         });
         SendMessage::of(
             ChannelHandle::new(channel, ChatId(42)),
-            host_sandbox(),
+            SourceResolver::new(host_sandbox(), Arc::new(NoAttachments)),
             multimodal,
         )
     }
 
     #[tokio::test]
     async fn a_field_stays_while_an_advertised_kind_needs_it() {
-        let schema = tool_with(speaking_service(), capabilities(&ALL_FORMS, true, true))
-            .schema()
-            .expect("schema");
+        let schema = tool_with(speaking_service(), capabilities(&ALL_FORMS, true, true)).schema();
 
         // The voice form takes `prompt`, and this build can speak, so the argument stays.
         assert!(schema["properties"].get("prompt").is_some(), "{schema}");
@@ -550,7 +551,10 @@ mod tests {
         tokio::fs::write(&path, b"a report").await.expect("write");
 
         let error = tool
-            .execute(json!({ "kind": "file", "source": format!("file://{}", path.display()) }))
+            .execute(
+                json!({ "kind": "file", "source": format!("file://{}", path.display()) }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("over the ceiling");
         assert!(error.to_string().contains("larger than"), "{error}");
@@ -562,7 +566,7 @@ mod tests {
     async fn text_without_content_is_refused() {
         let (tool, _bot) = recording();
         let error = tool
-            .execute(json!({ "kind": "text" }))
+            .execute(json!({ "kind": "text" }), &ToolCallContext::default())
             .await
             .expect_err("missing content");
         assert!(error.to_string().contains("requires"), "{error}");
@@ -577,12 +581,15 @@ mod tests {
         let tool = tool(channel);
 
         let error = tool
-            .execute(json!({ "kind": "voice", "prompt": "softly" }))
+            .execute(
+                json!({ "kind": "voice", "prompt": "softly" }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("voice is not available");
         assert!(error.to_string().contains("not available here"), "{error}");
 
-        let schema = tool.schema().expect("schema");
+        let schema = tool.schema();
         let kinds = schema["properties"]["kind"]["enum"]
             .as_array()
             .expect("kind enum")
@@ -605,7 +612,7 @@ mod tests {
             capabilities: capabilities(&ALL_FORMS, false, false),
             sent: Mutex::new(None),
         });
-        let schema = tool(channel).schema().expect("schema");
+        let schema = tool(channel).schema();
 
         assert!(schema["properties"].get("reference").is_none(), "{schema}");
         assert!(schema["properties"].get("quote").is_none(), "{schema}");
@@ -621,7 +628,10 @@ mod tests {
         let tool = tool(channel);
 
         let error = tool
-            .execute(json!({ "kind": "text", "content": "hi", "reference": 7 }))
+            .execute(
+                json!({ "kind": "text", "content": "hi", "reference": 7 }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("no references on this platform");
         assert!(
@@ -630,7 +640,10 @@ mod tests {
         );
 
         let error = tool
-            .execute(json!({ "kind": "text", "content": "hi", "quote": "hi" }))
+            .execute(
+                json!({ "kind": "text", "content": "hi", "quote": "hi" }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("no quotes on this platform");
         assert!(error.to_string().contains("takes no `quote`"), "{error}");
@@ -641,13 +654,19 @@ mod tests {
         let (tool, _bot) = recording();
 
         let error = tool
-            .execute(json!({ "kind": "text", "content": "hi", "source": "workspace://a.png" }))
+            .execute(
+                json!({ "kind": "text", "content": "hi", "source": "workspace://a.png" }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("a source on text");
         assert!(error.to_string().contains("takes no `source`"), "{error}");
 
         let error = tool
-            .execute(json!({ "kind": "file", "source": "workspace://a.png", "prompt": "a cat" }))
+            .execute(
+                json!({ "kind": "file", "source": "workspace://a.png", "prompt": "a cat" }),
+                &ToolCallContext::default(),
+            )
             .await
             .expect_err("a prompt on file");
         assert!(error.to_string().contains("takes no `prompt`"), "{error}");
@@ -659,9 +678,12 @@ mod tests {
         let path = std::env::temp_dir().join(format!("send-test-{}.png", uuid::Uuid::new_v4()));
         tokio::fs::write(&path, PNG_MAGIC).await.expect("write");
 
-        tool.execute(json!({ "kind": "file", "source": format!("file://{}", path.display()) }))
-            .await
-            .expect("send");
+        tool.execute(
+            json!({ "kind": "file", "source": format!("file://{}", path.display()) }),
+            &ToolCallContext::default(),
+        )
+        .await
+        .expect("send");
         assert!(
             matches!(sent_payload(&channel), OutboundPayload::Photo { .. }),
             "expected a photo"
@@ -676,9 +698,12 @@ mod tests {
         let path = std::env::temp_dir().join(format!("send-test-{}.log", uuid::Uuid::new_v4()));
         tokio::fs::write(&path, b"a report").await.expect("write");
 
-        tool.execute(json!({ "kind": "file", "source": format!("file://{}", path.display()) }))
-            .await
-            .expect("send");
+        tool.execute(
+            json!({ "kind": "file", "source": format!("file://{}", path.display()) }),
+            &ToolCallContext::default(),
+        )
+        .await
+        .expect("send");
         match sent_payload(&channel) {
             OutboundPayload::Document { filename, .. } => {
                 assert!(filename.ends_with(".log"), "{filename}")
@@ -693,9 +718,12 @@ mod tests {
     async fn a_url_source_stays_a_url() {
         let (tool, channel) = recording();
 
-        tool.execute(json!({ "kind": "file", "source": "https://example.com/a.pdf" }))
-            .await
-            .expect("send");
+        tool.execute(
+            json!({ "kind": "file", "source": "https://example.com/a.pdf" }),
+            &ToolCallContext::default(),
+        )
+        .await
+        .expect("send");
         match sent_payload(&channel) {
             OutboundPayload::Document {
                 source: OutboundSource::Url(url),
@@ -711,16 +739,19 @@ mod tests {
 
     #[tokio::test]
     async fn a_relative_source_reads_the_workspace() {
-        let (workspace, _dir) = crate::agent::test_support::created_workspace().await;
+        let (workspace, _dir) = created_workspace().await;
         let sandbox = Arc::new(Sandbox::host(workspace, 30));
         tokio::fs::write(sandbox.host_workspace().join("a.png"), PNG_MAGIC)
             .await
             .expect("write");
 
         let (tool, channel) = recording_in(sandbox);
-        tool.execute(json!({ "kind": "file", "source": "a.png" }))
-            .await
-            .expect("send");
+        tool.execute(
+            json!({ "kind": "file", "source": "a.png" }),
+            &ToolCallContext::default(),
+        )
+        .await
+        .expect("send");
 
         assert!(
             matches!(
@@ -732,5 +763,34 @@ mod tests {
             ),
             "a relative source resolves inside the workspace"
         );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_source_is_sent_as_a_photo() {
+        let mut row = crate::domain::test_support::attachment(AttachmentKind::Photo);
+        row.meta.file_name = Some("ref.png".into());
+        let resolver = SourceResolver::new(
+            host_sandbox(),
+            Arc::new(FixedAttachments {
+                attachment: row.clone(),
+                bytes: PNG_MAGIC.to_vec(),
+            }),
+        );
+        let (tool, channel) = recording_with_resolver(resolver);
+
+        tool.execute(
+            json!({ "kind": "file", "source": format!("attachment://{}", row.id) }),
+            &ToolCallContext::default(),
+        )
+        .await
+        .expect("send");
+
+        match sent_payload(&channel) {
+            OutboundPayload::Photo {
+                source: OutboundSource::Bytes(bytes),
+                ..
+            } => assert_eq!(bytes, PNG_MAGIC),
+            other => panic!("expected a photo, got {other:?}"),
+        }
     }
 }
